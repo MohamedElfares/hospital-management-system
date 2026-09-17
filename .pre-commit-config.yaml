@@ -1,0 +1,27 @@
+# Git hooks that run before every commit. Install once with:
+#   cd backend && uv run pre-commit install --config ../.pre-commit-config.yaml
+# The hooks match what CI checks, so problems are caught before pushing.
+
+repos:
+  # General hygiene for every file in the repository.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      # Blocks accidental commits of private keys.
+      - id: detect-private-key
+
+  # Ruff lint (with fixes) and format, limited to the backend.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/

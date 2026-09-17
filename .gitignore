@@ -1,0 +1,47 @@
+# Secrets: real settings stay local; the template (.env.example) is committed.
+.env
+.env.*
+!.env.example
+
+# Python bytecode and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments (uv creates backend/.venv)
+.venv/
+venv/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Test coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node.js and the built web app (Phase 2)
+node_modules/
+frontend/dist/
+
+# Playwright output (Phase 2)
+frontend/test-results/
+frontend/playwright-report/
+
+# Logs
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# Claude Code personal settings; the shared .claude/settings.json is committed
+.claude/settings.local.json

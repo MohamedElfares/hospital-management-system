@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/backend/.env)",
+      "Edit(/backend/.env.example)",
+      "Edit(/backend/app/core/config.py)",
+      "Edit(/backend/alembic.ini)",
+      "Edit(/backend/migrations/**)",
+      "Bash(alembic revision *)",
+      "Bash(uv run alembic revision *)",
+      "Bash(uv run * alembic revision *)"
+    ],
+    "ask": [
+      "Bash(uv run alembic upgrade *)",
+      "Bash(uv run alembic downgrade *)"
+    ]
+  }
+}

@@ -1,33 +1,43 @@
+"""Alembic migration environment for the HMS database.
+
+Alembic runs this file for every migration command. It takes the database
+URL from the application settings, so no credentials live in alembic.ini,
+and it compares the database with Base.metadata so that autogenerate and
+``alembic check`` see every model.
+"""
+
+# Configures Python logging from the [loggers] sections of alembic.ini.
 from logging.config import fileConfig
 
+# Alembic's runtime context: the config object and the migration runner.
 from alembic import context
+
+# Builds an engine from the sqlalchemy.* options in the Alembic config.
 from sqlalchemy import engine_from_config
+
+# Connection pool classes; NullPool opens one connection for the command.
 from sqlalchemy import pool
 
+# Cached application settings; supplies the database URL.
 from app.core.config import get_settings
+
+# Declarative base whose metadata lists every table for autogenerate.
 from app.db.base import Base
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
+# Alembic config object, giving access to the values in alembic.ini.
 config = context.config
 
 settings = get_settings()
+# configparser treats "%" as special, so escape it in case the password contains one.
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+
+# Set up loggers from alembic.ini.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
+# Tables appear in Base.metadata only after their models module is imported,
+# so every new models module must be imported in this file.
 target_metadata = Base.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:

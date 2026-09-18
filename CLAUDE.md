@@ -103,6 +103,12 @@ def allocate_fefo(batches: list[tuple[str, int]], quantity: int) -> list[Allocat
     ...
 ```
 
+## Tutorials
+
+- Tutorial pages live in `tutorial/` at the repository root, one self-contained HTML page per completed stage, built with the `hms-tutorial` skill (`.claude/skills/hms-tutorial/`).
+- When a stage is finished — acceptance criteria met, linters and tests passing, work committed — offer to write its tutorial page in one line, then wait for my answer. Never generate one unasked, and never write one for unfinished work.
+- Everything on a page must be true of the repository: code copied from the committed files, terminal blocks showing output that was actually produced.
+
 ## Commands
 
 ```bash

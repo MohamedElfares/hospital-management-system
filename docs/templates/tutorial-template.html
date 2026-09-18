@@ -1,0 +1,2100 @@
+<!doctype html>
+<html lang="en" class="no-js">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Database layer &amp; Alembic — HMS Tutorial</title>
+		<meta
+			name="description"
+			content="Stage 03 of the Hospital Management System build: the declarative base, column mixins, sessions, and wiring Alembic."
+		/>
+		<script>
+			/* Applied before first paint, so a stored theme or text size
+			   never flashes the default one first. */
+			document.documentElement.className = "js";
+			try {
+				var savedTheme = localStorage.getItem("hms-tutorial-theme");
+				if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+				var savedScale = localStorage.getItem("hms-tutorial-type-scale");
+				if (savedScale) {
+					document.documentElement.style.setProperty("--type-scale", savedScale);
+				}
+			} catch (e) {
+				/* Private mode or blocked storage: defaults are fine. */
+			}
+		</script>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+			rel="stylesheet"
+		/>
+
+		<!-- Syntax highlighting only; the colour theme below is ours. -->
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+
+		<style>
+			/* ==========================================================
+			   DESIGN TOKENS
+			   Every colour, font, size, space and radius lives here.
+			   Change a value once and the whole page follows.
+			   ========================================================== */
+			:root {
+				/* Dark is the default these pages ship with; the light
+				   palette below is the reader's opt-in. */
+				color-scheme: dark;
+
+				/* --- Colour: canvas (70%) --------------------------- */
+				--bg: #161512;
+
+				/* --- Colour: surfaces (20%) ------------------------- */
+				--surface: #1e1d19;
+				--surface-sunken: #1a1916;
+				--rule: #2e2c27;
+				--rule-strong: #46423a;
+				--shadow-panel: rgba(0, 0, 0, 0.5);
+				--scrim: rgba(0, 0, 0, 0.55);
+
+				/* --- Colour: ink ------------------------------------ */
+				--ink: #ece7dc;
+				--ink-mid: #bab3a6;
+				--ink-soft: #948d81;
+
+				/* --- Colour: accent (10%) --------------------------- */
+				--accent: #6fc3b5;
+				--accent-ink: #14201e; /* text or marks drawn on the accent */
+				--accent-wash: rgba(111, 195, 181, 0.12);
+				--accent-line: rgba(111, 195, 181, 0.42);
+
+				/* --- Colour: code surface --------------------------- */
+				--code-bg: #100f0d;
+				--code-head: #1a1916;
+				--code-rule: #2b2924;
+				--code-ink: #ece7dc;
+				--code-dim: #9a9388;
+
+				/* --- Colour: syntax --------------------------------- */
+				--syn-comment: #928a7c;
+				--syn-keyword: #c8a2c8;
+				--syn-string: #a8c37a;
+				--syn-number: #e0b070;
+				--syn-func: #7fb5c9;
+				--syn-class: #7cc9ba;
+				--syn-meta: #d8a657;
+
+				/* --- Type ------------------------------------------- */
+				--font-display: "Fraunces", Georgia, serif;
+				--font-body: "DM Sans", system-ui, sans-serif;
+				--font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+				/* One multiplier drives every size below, so the reader's
+				   text-size control keeps the hierarchy intact instead of
+				   flattening everything to one size. */
+				--type-scale: 1;
+
+				--size-label: calc(0.6875rem * var(--type-scale)); /* 11px */
+				--size-small: calc(0.8125rem * var(--type-scale)); /* 13px */
+				--size-code: calc(0.8125rem * var(--type-scale)); /* 13px  */
+				--size-task: calc(0.9375rem * var(--type-scale)); /* 15px  */
+				--size-body: calc(1.0625rem * var(--type-scale)); /* 17px  */
+				--size-lede: calc(1.1875rem * var(--type-scale)); /* 19px  */
+				--size-brand: calc(1.05rem * var(--type-scale));
+				--size-h3: calc(clamp(1.1rem, 1.6vw, 1.25rem) * var(--type-scale));
+				--size-h2: calc(clamp(1.55rem, 3vw, 2rem) * var(--type-scale));
+				--size-h1: calc(clamp(2.1rem, 5vw, 3.2rem) * var(--type-scale));
+
+				--leading-body: 1.75;
+				--leading-head: 1.15;
+				--track-label: 0.14em;
+				--measure: 68ch;
+
+				/* --- Space (8px base) ------------------------------- */
+				--sp-1: 0.5rem;
+				--sp-2: 1rem;
+				--sp-3: 1.5rem;
+				--sp-4: 2rem;
+				--sp-6: 3rem;
+				--sp-8: 4rem;
+				--sp-12: 6rem;
+
+				/* --- Shape ------------------------------------------ */
+				--radius-panel: 10px;
+				--radius-control: 6px;
+				--radius-check: 4px;
+				--radius-pill: 999px;
+				--hairline: 1px solid var(--rule);
+				--check-size: calc(1.05rem * var(--type-scale));
+
+				/* --- Motion ----------------------------------------- */
+				--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+				--dur-reveal: 0.55s;
+				--dur-ui: 0.18s;
+
+				/* --- Layout ----------------------------------------- */
+				--sidebar-w: 264px;
+				--content-max: 820px;
+				--gutter: clamp(1.25rem, 4vw, 3.5rem);
+			}
+
+			/* ==========================================================
+			   LIGHT THEME
+			   The same warm family in reverse: ivory canvas, white cards,
+			   and a code panel that stays dark so code still reads as code.
+			   Applied only when the reader picks it from the toggle, which
+			   stores the choice — the operating system's preference is
+			   deliberately not consulted, so every page opens the same way.
+			   Syntax colours are shared by both themes.
+			   ========================================================== */
+			:root[data-theme="light"] {
+				color-scheme: light;
+
+				--bg: #faf8f4;
+				--surface: #ffffff;
+				--surface-sunken: #f6f2ea;
+				--rule: #e6e0d5;
+				--rule-strong: #cfc7b7;
+				--shadow-panel: rgba(0, 0, 0, 0.05);
+				--scrim: rgba(27, 26, 23, 0.35);
+
+				--ink: #1b1a17;
+				--ink-mid: #57534b;
+				--ink-soft: #6f6a60;
+
+				--accent: #0f766e;
+				--accent-ink: #ffffff;
+				--accent-wash: rgba(15, 118, 110, 0.09);
+				--accent-line: rgba(15, 118, 110, 0.35);
+
+				--code-bg: #1b1a17;
+				--code-head: #232220;
+				--code-rule: #302e2a;
+				--code-ink: #ece7dc;
+				--code-dim: #979085;
+			}
+
+			/* ==========================================================
+			   BASE
+			   ========================================================== */
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			html {
+				scroll-behavior: smooth;
+				scroll-padding-top: var(--sp-6);
+			}
+
+			body {
+				background: var(--bg);
+				color: var(--ink);
+				font-family: var(--font-body);
+				font-size: var(--size-body);
+				line-height: var(--leading-body);
+				-webkit-font-smoothing: antialiased;
+				text-rendering: optimizeLegibility;
+				transition: background-color var(--dur-ui) ease,
+					color var(--dur-ui) ease;
+			}
+
+			a {
+				color: var(--accent);
+				text-decoration: none;
+			}
+
+			:focus-visible {
+				outline: 2px solid var(--accent);
+				outline-offset: 3px;
+				border-radius: 2px;
+			}
+
+			.skip-link {
+				position: absolute;
+				left: -9999px;
+				top: var(--sp-1);
+				background: var(--ink);
+				color: var(--bg);
+				padding: var(--sp-1) var(--sp-2);
+				border-radius: var(--radius-control);
+				z-index: 60;
+			}
+			.skip-link:focus {
+				left: var(--sp-1);
+			}
+
+			/* ==========================================================
+			   READING PROGRESS
+			   ========================================================== */
+			.progress {
+				position: fixed;
+				inset: 0 0 auto 0;
+				height: 2px;
+				background: transparent;
+				z-index: 50;
+			}
+			.progress__fill {
+				height: 100%;
+				width: 0;
+				background: var(--accent);
+			}
+
+			/* ==========================================================
+			   SIDEBAR — stage contents
+			   ========================================================== */
+			.sidebar {
+				position: fixed;
+				inset: 0 auto 0 0;
+				width: var(--sidebar-w);
+				padding: var(--sp-6) var(--sp-3);
+				border-right: var(--hairline);
+				background: var(--bg);
+				overflow-y: auto;
+				z-index: 40;
+			}
+
+			.sidebar__brand {
+				font-family: var(--font-display);
+				font-size: var(--size-brand);
+				font-weight: 500;
+				line-height: 1.3;
+			}
+
+			.sidebar__stage {
+				margin-top: 2px;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.nav-group {
+				margin-top: var(--sp-4);
+			}
+
+			.nav-group__label {
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+				padding-bottom: var(--sp-1);
+				margin-bottom: var(--sp-1);
+				border-bottom: var(--hairline);
+			}
+
+			.nav-link {
+				display: block;
+				padding: 0.4rem 0 0.4rem var(--sp-2);
+				margin-left: -1px;
+				border-left: 1px solid transparent;
+				color: var(--ink-mid);
+				font-size: var(--size-small);
+				line-height: 1.45;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.nav-link:hover {
+				color: var(--ink);
+			}
+			.nav-link.is-active {
+				color: var(--accent);
+				border-left-color: var(--accent);
+			}
+			.nav-link__num {
+				font-family: var(--font-mono);
+				font-size: 0.6875rem;
+				color: var(--ink-soft);
+				margin-right: 0.5em;
+			}
+			.nav-link.is-active .nav-link__num {
+				color: var(--accent);
+			}
+
+			/* Mobile disclosure button for the sidebar */
+			.nav-toggle {
+				display: none;
+				position: fixed;
+				top: var(--sp-1);
+				left: var(--sp-1);
+				z-index: 45;
+				gap: 0.5em;
+				align-items: center;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				padding: 0.55rem 0.95rem;
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				color: var(--ink);
+				cursor: pointer;
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.overlay {
+				display: none;
+				position: fixed;
+				inset: 0;
+				background: var(--scrim);
+				z-index: 35;
+			}
+
+			/* ==========================================================
+			   READER CONTROLS — text size and theme
+			   Fixed opposite the mobile Contents button, out of the
+			   reading column at every width.
+			   ========================================================== */
+			.controls {
+				position: fixed;
+				top: var(--sp-1);
+				right: var(--sp-1);
+				z-index: 45;
+				display: flex;
+				align-items: center;
+				gap: 0.15rem;
+				padding: 0.25rem;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.controls button {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 2rem;
+				height: 2rem;
+				border: 0;
+				border-radius: var(--radius-pill);
+				background: transparent;
+				color: var(--ink-mid);
+				font-family: var(--font-body);
+				font-weight: 500;
+				line-height: 1;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease, color var(--dur-ui) ease;
+			}
+			.controls button:hover:not(:disabled) {
+				background: var(--surface-sunken);
+				color: var(--ink);
+			}
+			.controls button:disabled {
+				opacity: 0.35;
+				cursor: default;
+			}
+
+			/* The two text-size buttons carry the same letter at different
+			   sizes, which says what they do without a tooltip. */
+			.controls__type--down {
+				font-size: 0.75rem;
+			}
+			.controls__type--up {
+				font-size: 1.0625rem;
+			}
+
+			.controls__divider {
+				width: 1px;
+				height: 1.1rem;
+				background: var(--rule);
+				margin: 0 0.15rem;
+			}
+
+			/* The theme button shows the theme it switches to; the script
+			   swaps which icon is hidden. */
+			.controls__theme svg {
+				display: block;
+			}
+			.controls__theme svg[hidden] {
+				display: none;
+			}
+
+			/* ==========================================================
+			   PAGE SHELL — one stacked column at every width
+			   ========================================================== */
+			.shell {
+				margin-left: var(--sidebar-w);
+				padding: 0 var(--gutter) var(--sp-12);
+			}
+
+			.column {
+				max-width: var(--content-max);
+				margin: 0 auto;
+			}
+
+			/* ==========================================================
+			   HERO — topic title, stage number, one-line intro
+			   ========================================================== */
+			.hero {
+				padding: var(--sp-12) 0 var(--sp-6);
+				border-bottom: var(--hairline);
+			}
+
+			.hero__eyebrow {
+				display: flex;
+				align-items: center;
+				gap: 0.75em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.stage-badge {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				color: var(--accent);
+				background: var(--accent-wash);
+				border-radius: var(--radius-pill);
+				padding: 0.3em 0.75em;
+			}
+
+			.hero h1 {
+				font-family: var(--font-display);
+				font-size: var(--size-h1);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.02em;
+				margin: var(--sp-3) 0 var(--sp-2);
+				max-width: 20ch;
+			}
+
+			.lede {
+				font-size: var(--size-lede);
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			/* Files this stage touches — one slim row under the intro. */
+			.hero__files {
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				margin-top: var(--sp-3);
+				padding-top: var(--sp-2);
+				border-top: var(--hairline);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--ink-mid);
+			}
+
+			.hero__files span {
+				display: inline-flex;
+				align-items: baseline;
+				gap: 0.5em;
+			}
+
+			.hero__files em {
+				font-family: var(--font-body);
+				font-style: normal;
+				font-size: var(--size-label);
+				letter-spacing: 0.04em;
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   SECTIONS & PROSE
+			   ========================================================== */
+			.section {
+				padding-top: var(--sp-8);
+			}
+
+			.section__kicker {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.section h2 {
+				font-family: var(--font-display);
+				font-size: var(--size-h2);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.015em;
+				margin: var(--sp-1) 0 var(--sp-2);
+			}
+
+			.section h3 {
+				font-family: var(--font-display);
+				font-size: var(--size-h3);
+				font-weight: 500;
+				line-height: 1.3;
+				margin: var(--sp-4) 0 var(--sp-1);
+			}
+
+			.section p {
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			.section p + p {
+				margin-top: var(--sp-2);
+			}
+
+			.section strong {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			:not(pre) > code {
+				font-family: var(--font-mono);
+				font-size: 0.85em;
+				background: var(--surface-sunken);
+				border: var(--hairline);
+				border-radius: 4px;
+				padding: 0.1em 0.35em;
+				color: var(--ink);
+			}
+
+			/* Shared label above task, hint and check blocks. */
+			.block-label {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--accent);
+			}
+
+			/* ==========================================================
+			   BLOCK: task — what the code has to do, not how to type it
+			   ========================================================== */
+			.task {
+				margin-top: var(--sp-4);
+			}
+
+			.task ol {
+				list-style: none;
+				counter-reset: task;
+				margin-top: var(--sp-2);
+				max-width: var(--measure);
+			}
+
+			.task li {
+				position: relative;
+				counter-increment: task;
+				padding: 0.55rem 0 0.55rem 2.5rem;
+				border-top: var(--hairline);
+				font-size: var(--size-task);
+				line-height: 1.65;
+				color: var(--ink-mid);
+			}
+
+			.task li::before {
+				content: counter(task, decimal-leading-zero);
+				position: absolute;
+				left: 0;
+				top: 0.8rem;
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				color: var(--ink-soft);
+			}
+
+			.task li b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: hint — the imports this step needs, folded away
+			   ========================================================== */
+			.hint {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3);
+			}
+
+			.hint summary {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				list-style: none;
+				cursor: pointer;
+			}
+			.hint summary::-webkit-details-marker {
+				display: none;
+			}
+			.hint summary svg {
+				transition: transform var(--dur-ui) ease;
+			}
+			.hint[open] summary svg {
+				transform: rotate(90deg);
+			}
+
+			.import-list {
+				margin-top: var(--sp-2);
+			}
+			.import-list div {
+				display: grid;
+				grid-template-columns: minmax(12ch, 20ch) 1fr;
+				gap: 0.35em var(--sp-2);
+				padding: 0.45rem 0;
+				border-top: var(--hairline);
+				break-inside: avoid;
+			}
+			.import-list dt {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				color: var(--ink);
+			}
+			.import-list dd {
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+			}
+			.import-list dd b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: code panel — path label, copy button, blur-to-reveal
+			   ========================================================== */
+			.code {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.code__head {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: var(--sp-2);
+				padding: 0.6rem 0.75rem 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+			}
+
+			.code__path {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+				min-width: 0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.code__path svg {
+				flex: none;
+				color: var(--syn-class);
+			}
+
+			.code__copy {
+				flex: none;
+				display: inline-flex;
+				align-items: center;
+				gap: 0.45em;
+				background: transparent;
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-control);
+				color: var(--code-dim);
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				text-transform: uppercase;
+				padding: 0.38rem 0.6rem;
+				cursor: pointer;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.code__copy:hover {
+				color: var(--code-ink);
+				border-color: var(--code-dim);
+			}
+			.code__copy.is-done {
+				color: var(--syn-class);
+				border-color: var(--syn-class);
+			}
+
+			.code__body {
+				position: relative;
+			}
+
+			.code pre {
+				margin: 0;
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+			}
+
+			.code code {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.75;
+				color: var(--code-ink);
+				background: none;
+				tab-size: 4;
+			}
+
+			/* Masked state: the code is there, just unreadable until asked for. */
+			.code.is-masked pre {
+				filter: blur(6px);
+				user-select: none;
+			}
+
+			.code__mask {
+				position: absolute;
+				inset: 0;
+				display: grid;
+				place-items: center;
+				gap: 0.5em;
+				background: transparent;
+				border: 0;
+				width: 100%;
+				color: var(--code-dim);
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				cursor: pointer;
+				transition: opacity var(--dur-ui) ease;
+			}
+			.code__mask span {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.5em;
+				background: var(--code-head);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-pill);
+				padding: 0.5rem 1rem;
+			}
+			.code__mask:hover span {
+				color: var(--code-ink);
+			}
+			/* Once revealed the button is gone for good — including from the tab order. */
+			.code:not(.is-masked) .code__mask {
+				opacity: 0;
+				pointer-events: none;
+				visibility: hidden;
+			}
+
+			/* ==========================================================
+			   BLOCK: check list — empty boxes the reader ticks off
+			   ========================================================== */
+			.check {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3) var(--sp-3);
+			}
+
+			.check .block-label {
+				color: var(--ink-soft);
+			}
+
+			.check ul {
+				list-style: none;
+				margin-top: var(--sp-1);
+			}
+
+			.check li {
+				border-top: var(--hairline);
+			}
+			.check li:first-child {
+				border-top: 0;
+			}
+
+			.check label {
+				display: flex;
+				gap: 0.85em;
+				align-items: flex-start;
+				padding: 0.6rem 0;
+				font-size: var(--size-task);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				cursor: pointer;
+				transition: color var(--dur-ui) ease;
+			}
+			.check label:hover {
+				color: var(--ink);
+			}
+
+			.check input {
+				appearance: none;
+				-webkit-appearance: none;
+				flex: none;
+				width: var(--check-size);
+				height: var(--check-size);
+				margin-top: 0.3em;
+				border: 1.5px solid var(--rule-strong);
+				border-radius: var(--radius-check);
+				background: var(--bg);
+				display: grid;
+				place-content: center;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.check input::after {
+				content: "";
+				width: 0.3em;
+				height: 0.55em;
+				margin-top: -0.12em;
+				border: solid transparent;
+				border-width: 0 2px 2px 0;
+				transform: rotate(45deg);
+				transition: border-color var(--dur-ui) ease;
+			}
+			.check label:hover input {
+				border-color: var(--accent);
+			}
+			.check input:checked {
+				background: var(--accent);
+				border-color: var(--accent);
+			}
+			.check input:checked::after {
+				border-color: var(--accent-ink);
+			}
+			.check input:checked ~ span {
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   BLOCK: terminal — command and its output
+			   ========================================================== */
+			.term {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.term__head {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				padding: 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+			}
+			.term__head svg {
+				color: var(--syn-func);
+			}
+
+			.term__body {
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.8;
+				white-space: pre;
+			}
+
+			.term__cmd {
+				color: var(--code-ink);
+			}
+			.term__cmd::before {
+				content: "$";
+				color: var(--syn-class);
+				margin-right: 0.75em;
+			}
+			.term__out {
+				color: var(--code-dim);
+			}
+			.term__out--ok {
+				color: var(--syn-string);
+			}
+
+			/* ==========================================================
+			   BLOCK: callout — packages this stage relies on
+			   ========================================================== */
+			.callout {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-3);
+			}
+
+			.callout__list {
+				list-style: none;
+				margin-top: var(--sp-2);
+			}
+			.callout__list li {
+				display: flex;
+				gap: 0.75em;
+				padding: 0.4rem 0;
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				border-top: var(--hairline);
+			}
+			.callout__list li:first-child {
+				border-top: 0;
+			}
+			.callout__list b {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				font-weight: 500;
+				color: var(--ink);
+				flex: none;
+				min-width: 11ch;
+			}
+
+			/* ==========================================================
+			   FOOTER
+			   ========================================================== */
+			.foot {
+				margin-top: var(--sp-12);
+				padding-top: var(--sp-3);
+				border-top: var(--hairline);
+				font-size: var(--size-small);
+				color: var(--ink-soft);
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				justify-content: space-between;
+			}
+
+			/* ==========================================================
+			   SYNTAX THEME (highlight.js classes, our colours)
+			   ========================================================== */
+			.hljs-comment,
+			.hljs-quote {
+				color: var(--syn-comment);
+				font-style: italic;
+			}
+			.hljs-keyword,
+			.hljs-literal,
+			.hljs-type {
+				color: var(--syn-keyword);
+			}
+			.hljs-string,
+			.hljs-meta .hljs-string {
+				color: var(--syn-string);
+			}
+			.hljs-number {
+				color: var(--syn-number);
+			}
+			.hljs-title,
+			.hljs-title.function_ {
+				color: var(--syn-func);
+			}
+			.hljs-title.class_,
+			.hljs-built_in {
+				color: var(--syn-class);
+			}
+			.hljs-meta,
+			.hljs-decorator {
+				color: var(--syn-meta);
+			}
+			.hljs-params,
+			.hljs-attr,
+			.hljs-variable {
+				color: var(--code-ink);
+			}
+
+			/* ==========================================================
+			   MOTION — one slow fade-up, nothing bouncy
+			   ========================================================== */
+			.js .reveal {
+				opacity: 0;
+				transform: translateY(12px);
+				transition: opacity var(--dur-reveal) var(--ease-out),
+					transform var(--dur-reveal) var(--ease-out);
+			}
+			.js .reveal.is-in {
+				opacity: 1;
+				transform: none;
+			}
+
+			/* ==========================================================
+			   RESPONSIVE
+			   ========================================================== */
+			@media (max-width: 1080px) {
+				.sidebar {
+					transform: translateX(-100%);
+					transition: transform 0.25s var(--ease-out);
+					width: min(320px, 86vw);
+					box-shadow: 0 8px 30px var(--shadow-panel);
+				}
+				.sidebar.is-open {
+					transform: none;
+				}
+				.overlay.is-open {
+					display: block;
+				}
+				.nav-toggle {
+					display: inline-flex;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.hero {
+					padding-top: calc(var(--sp-8) + var(--sp-2));
+				}
+			}
+
+			@media (max-width: 640px) {
+				:root {
+					--size-body: calc(1rem * var(--type-scale));
+					--size-lede: calc(1.0625rem * var(--type-scale));
+					--size-code: calc(0.75rem * var(--type-scale));
+					--sp-8: 3rem;
+					--sp-12: 4rem;
+				}
+				.code pre,
+				.term__body {
+					padding: var(--sp-2);
+				}
+				.callout,
+				.check,
+				.hint {
+					padding: var(--sp-2);
+				}
+				.import-list div {
+					grid-template-columns: 1fr;
+					gap: 0.15em;
+				}
+				.callout__list li {
+					flex-direction: column;
+					gap: 0.15em;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				html {
+					scroll-behavior: auto;
+				}
+				*,
+				*::before,
+				*::after {
+					transition-duration: 0.01ms !important;
+					animation-duration: 0.01ms !important;
+				}
+				.js .reveal {
+					opacity: 1;
+					transform: none;
+				}
+			}
+
+			@media print {
+				.sidebar,
+				.progress,
+				.nav-toggle,
+				.controls,
+				.code__copy,
+				.code__mask {
+					display: none !important;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.code.is-masked pre {
+					filter: none;
+				}
+				.hint[open],
+				.code,
+				.term,
+				.check {
+					break-inside: avoid;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<div class="progress"><div class="progress__fill" id="progressFill"></div></div>
+		<a class="skip-link" href="#main">Skip to content</a>
+
+		<button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="sidebar">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+				<path d="M4 6h16M4 12h16M4 18h16" />
+			</svg>
+			Contents
+		</button>
+
+		<!-- BLOCK: reader controls — text size and theme ---------------- -->
+		<div class="controls" role="group" aria-label="Reading preferences">
+			<button class="controls__type--down" id="typeDown" type="button" aria-label="Decrease text size">A</button>
+			<button class="controls__type--up" id="typeUp" type="button" aria-label="Increase text size">A</button>
+			<span class="controls__divider" aria-hidden="true"></span>
+			<button class="controls__theme" id="themeToggle" type="button" aria-label="Switch to dark theme">
+				<svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+				</svg>
+				<svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+					<circle cx="12" cy="12" r="4" />
+					<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+				</svg>
+			</button>
+		</div>
+
+		<div class="overlay" id="overlay"></div>
+
+		<!-- BLOCK: sidebar contents ------------------------------------ -->
+		<nav class="sidebar" id="sidebar" aria-label="Stage contents">
+			<div class="sidebar__brand">Hospital Management System</div>
+			<div class="sidebar__stage">Milestone 1.1 · Stage 03</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Before you start</div>
+				<a class="nav-link" href="#libraries">What you already have</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Build it</div>
+				<a class="nav-link" href="#step-01"><span class="nav-link__num">01</span>Declarative base</a>
+				<a class="nav-link" href="#step-02"><span class="nav-link__num">02</span>UUID primary keys</a>
+				<a class="nav-link" href="#step-03"><span class="nav-link__num">03</span>Timestamps</a>
+				<a class="nav-link" href="#step-04"><span class="nav-link__num">04</span>Engine &amp; sessions</a>
+				<a class="nav-link" href="#step-05"><span class="nav-link__num">05</span>One session per request</a>
+				<a class="nav-link" href="#step-06"><span class="nav-link__num">06</span>Wire up Alembic</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Finish</div>
+				<a class="nav-link" href="#verify">Check your work</a>
+			</div>
+		</nav>
+
+		<div class="shell">
+			<div class="column">
+				<!-- BLOCK: page header ---------------------------------- -->
+				<header class="hero">
+					<div class="hero__eyebrow">
+						<span class="stage-badge">Stage 03</span>
+						<span>Milestone 1.1 · Foundation</span>
+					</div>
+					<h1>The database layer</h1>
+					<p class="lede">
+						Every table in this project gets a UUID primary key and UTC timestamps from
+						the same three files — and Alembic has to see all of them.
+					</p>
+					<div class="hero__files">
+						<span>app/db/base.py <em>new</em></span>
+						<span>app/db/session.py <em>new</em></span>
+						<span>migrations/env.py <em>edit</em></span>
+					</div>
+				</header>
+
+				<main class="content" id="main">
+					<!-- BLOCK: callout — packages already installed ------ -->
+					<section class="section reveal" id="libraries">
+						<div class="section__kicker">Before you start</div>
+						<h2>What you already have</h2>
+						<p>
+							Nothing new to install: all three packages came with the project setup in
+							Stage 02. What changes here is which names you import from them — each step
+							below carries its own hint list, folded away until you want it.
+						</p>
+
+						<aside class="callout">
+							<div class="block-label">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+									<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+								</svg>
+								Installed in Stage 02
+							</div>
+
+							<ul class="callout__list">
+								<li><b>sqlalchemy</b><span>The ORM: models, queries, sessions, and the connection pool.</span></li>
+								<li><b>psycopg</b><span>The PostgreSQL driver that SQLAlchemy talks through.</span></li>
+								<li><b>alembic</b><span>Schema migrations, generated by comparing your models with the database.</span></li>
+							</ul>
+						</aside>
+					</section>
+
+					<!-- BLOCK: numbered step -------------------------------- -->
+					<section class="section reveal" id="step-01">
+						<div class="section__kicker">Step 01</div>
+						<h2>Give every constraint a predictable name</h2>
+						<p>
+							Every model you write from now on will inherit from one base class, and
+							that class carries the registry of tables Alembic compares against the real
+							database. The registry also decides how constraints are named. Set that
+							policy now, while there are no tables: rename a constraint later and the
+							migration that tries to drop it won't know what it's called.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Create a <b>single base class</b> that all future models inherit from, and one table registry that belongs to it.</li>
+								<li>Make constraint names <b>deterministic</b>: the same table and column must always produce the same name for an index, a unique constraint, a check constraint, a foreign key and a primary key. Five patterns, one per constraint type — take them from the SQLAlchemy documentation rather than inventing your own.</li>
+								<li>Choose a check-constraint pattern that <b>forces you to name each check yourself</b>, so no unnamed check can slip into a migration.</li>
+								<li>Keep this file <b>free of settings and connections</b>: importing a model must never require a database or a <code>.env</code> file.</li>
+								<li>Leave it importable on its own — <code>uv run python -c "from app.db.base import Base"</code> must succeed before you move on.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>MetaData</dt>
+									<dd><b>The table registry.</b> It holds every table your models declare and accepts the naming convention, which is why it is created here rather than left to SQLAlchemy's default.</dd>
+								</div>
+								<div>
+									<dt>DeclarativeBase</dt>
+									<dd><b>The modern base class for ORM models.</b> Subclassing it gives you typed models and lets you attach your own <code>metadata</code>, which the 1.x <code>declarative_base()</code> function made awkward.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/db/base.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python"># Deterministic names for indexes and constraints. Without them PostgreSQL
+# invents names, and Alembic can't reliably alter or drop them later.
+NAMING_CONVENTION: dict[str, str] = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
+class Base(DeclarativeBase):
+    """Parent class of every ORM model.
+
+    Its ``metadata`` collects every table declared by a subclass and applies
+    ``NAMING_CONVENTION`` to their constraints, so a unique constraint on
+    ``users.email`` is always named ``uq_users_email``.
+
+    Attributes:
+        metadata: Registry of all mapped tables, with the project's
+            constraint naming convention.
+    """
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/db/base.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>My <code>ck</code> pattern contains <code>%(constraint_name)s</code>, so every check constraint must be named.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>metadata</code> is assigned in the class body, not inside a method.</span></label></li>
+								<li><label><input type="checkbox" /><span>Nothing in this file imports <code>app.core.config</code> or opens a connection.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>uv run ruff check .</code> reports only missing docstrings, nothing else.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-02">
+						<div class="section__kicker">Step 02</div>
+						<h2>A UUID primary key, generated in Python</h2>
+						<p>
+							Every table in this project uses a UUID primary key, and writing that column
+							out in twelve models is twelve chances to write it differently. A mixin —
+							a plain class a model inherits <em>alongside</em> <code>Base</code> — defines
+							the column once.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Offer a <b>reusable <code>id</code> column</b> that any model can inherit without redeclaring it, stored as a native PostgreSQL <code>UUID</code>.</li>
+								<li>Produce <b>a fresh, unguessable value for every row</b> — two rows created in the same run must never share an ID.</li>
+								<li>Make the value available <b>in Python before the INSERT runs</b>, so a service can reference the new ID in the same transaction, for example when writing its audit entry.</li>
+								<li>Stay a <b>plain mixin</b>: it must not become a table of its own, and it must not inherit from <code>Base</code>.</li>
+								<li>Optional: arrange for <code>id</code> to appear as the <b>first column</b> in the generated <code>CREATE TABLE</code>.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>uuid</dt>
+									<dd><b>The standard-library UUID module.</b> <code>uuid.uuid4</code> is the random generator; it is passed to the column as the callable that runs per row.</dd>
+								</div>
+								<div>
+									<dt>Uuid</dt>
+									<dd><b>SQLAlchemy's generic UUID column type.</b> It becomes a native <code>UUID</code> on PostgreSQL and converts values to and from <code>uuid.UUID</code> objects for you.</dd>
+								</div>
+								<div>
+									<dt>Mapped</dt>
+									<dd><b>The annotation that declares an attribute's Python type.</b> <code>Mapped[uuid.UUID]</code> is what tells type checkers — and SQLAlchemy — that <code>patient.id</code> is a UUID, not a string.</dd>
+								</div>
+								<div>
+									<dt>mapped_column</dt>
+									<dd><b>The database side of the same attribute.</b> It carries the column type, <code>primary_key</code>, the default, and ordering options.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/db/base.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">class UUIDPrimaryKeyMixin:
+    """Adds a UUID primary key named ``id``.
+
+    The UUID is generated in Python (``uuid.uuid4``) when the object is
+    flushed, not by the database, so a service can use the new ID in the same
+    transaction. Random UUIDs also keep record IDs unguessable, which supports
+    the rule that out-of-scope records return 404.
+
+    Attributes:
+        id: Primary key, stored as a native PostgreSQL ``UUID``.
+    """
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid.uuid4,
+        sort_order=-10,
+    )</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for the UUID primary key mixin">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>I passed <code>uuid.uuid4</code> — the function — and not <code>uuid.uuid4()</code>, which would give every row the same ID.</span></label></li>
+								<li><label><input type="checkbox" /><span>My mixin does not inherit from <code>Base</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>The annotation is <code>Mapped[uuid.UUID]</code>, matching what the column actually returns.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why the ID is generated in Python rather than by <code>gen_random_uuid()</code> in PostgreSQL.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-03">
+						<div class="section__kicker">Step 03</div>
+						<h2>Timestamps from one clock — the database's</h2>
+						<p>
+							Two columns on every table, and they only stay trustworthy if one clock sets
+							both. An app server whose clock drifts by a few seconds can otherwise
+							produce a row that was updated before it was created.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Record, for every table, <b>when a row was created and when it last changed</b>, as two reusable columns in a second mixin.</li>
+								<li>Store both as <b>timezone-aware UTC instants</b>, so comparing them with <code>datetime.now(UTC)</code> works instead of raising <code>TypeError</code>.</li>
+								<li>Take both values from <b>the database's clock</b>, not the application's — including the value written on every update.</li>
+								<li>Set the creation time <b>once, on insert</b>; refresh the change time on <b>every update made through the ORM</b>.</li>
+								<li>Make sure the Python object <b>already holds the new values after an insert or update</b>, without a follow-up query — otherwise reading <code>updated_at</code> after the session closes fails.</li>
+								<li>Add the mapper setting that does this in a way that <b>can't be mistaken for a column</b>, and that Ruff won't flag as a mutable class attribute.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>datetime</dt>
+									<dd><b>The Python type of both columns.</b> Used only in the annotation, <code>Mapped[datetime]</code>; the values themselves are produced by PostgreSQL.</dd>
+								</div>
+								<div>
+									<dt>DateTime</dt>
+									<dd><b>The column type.</b> With <code>timezone=True</code> it becomes <code>TIMESTAMPTZ</code>; without it you silently get naive timestamps.</dd>
+								</div>
+								<div>
+									<dt>func</dt>
+									<dd><b>A builder for SQL function calls.</b> <code>func.now()</code> is not a Python value — it is SQL that the database evaluates, which is how both columns share one clock.</dd>
+								</div>
+								<div>
+									<dt>ClassVar</dt>
+									<dd><b>Marks an attribute as belonging to the class.</b> Declarative mapping skips <code>ClassVar</code> attributes, so <code>__mapper_args__</code> is not mistaken for a column.</dd>
+								</div>
+								<div>
+									<dt>Any</dt>
+									<dd><b>Allows mapper values of any type.</b> It completes the annotation <code>ClassVar[dict[str, Any]]</code> that satisfies Ruff's <code>RUF012</code>.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/db/base.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">class TimestampMixin:
+    """Adds ``created_at`` and ``updated_at`` timestamps set by the database.
+
+    Both columns are ``TIMESTAMPTZ``, so values are stored as UTC instants
+    and returned as timezone-aware datetimes. A model that defines its own
+    ``__mapper_args__`` replaces this one and must include
+    ``"eager_defaults": True`` itself.
+
+    Attributes:
+        created_at: When the row was inserted, in UTC.
+        updated_at: When the row was last changed through the ORM, in UTC.
+    """
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        sort_order=10,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        sort_order=10,
+    )
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"eager_defaults": True}</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for the timestamp mixin">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Both columns use <code>DateTime(timezone=True)</code>, not a bare <code>DateTime</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>The update value is <code>func.now()</code> — the database's clock — rather than <code>datetime.now</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>Only <code>updated_at</code> has <code>onupdate</code>; <code>created_at</code> keeps its original value forever.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>__mapper_args__</code> is annotated <code>ClassVar[dict[str, Any]]</code> and <code>ruff check</code> is quiet about <code>RUF012</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>I know what <code>eager_defaults</code> adds to the SQL, and why it matters after the session closes.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-04">
+						<div class="section__kicker">Step 04</div>
+						<h2>One engine, one session factory</h2>
+						<p>
+							The engine owns the connection pool for the whole process; the factory
+							stamps every session with the same options. Both belong in a second file,
+							because from here on this module is the only place that knows how to reach
+							the database.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Open <b>exactly one connection pool</b> for the application, built from the URL in your settings — never a literal connection string in the file.</li>
+								<li>Survive a database that goes to sleep: a connection handed out of the pool must be <b>checked before it is used</b>, so a stale one is replaced instead of raising.</li>
+								<li>Keep the pool <b>small</b>, because the app runs a single worker and the hosted database caps connections.</li>
+								<li>Ensure every connection <b>reports timestamps in UTC</b>, whatever the server's own timezone setting is.</li>
+								<li>Produce sessions whose <b>loaded objects stay usable after <code>commit()</code></b>, so a service can commit and still return the object it just saved.</li>
+								<li>Create <b>no tables</b> here: schema changes belong to Alembic, so <code>create_all</code> must not appear anywhere.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>create_engine</dt>
+									<dd><b>Builds the engine and its connection pool.</b> Called once at import; its keyword arguments are where pooling and connection behaviour are configured.</dd>
+								</div>
+								<div>
+									<dt>sessionmaker</dt>
+									<dd><b>A configured factory for sessions.</b> Options set here apply to every session, so no caller can quietly use different ones.</dd>
+								</div>
+								<div>
+									<dt>Session</dt>
+									<dd><b>The unit of work.</b> Holds the identity map and the transaction; services run queries and commit through it.</dd>
+								</div>
+								<div>
+									<dt>get_settings</dt>
+									<dd><b>Your cached settings from Stage 02.</b> Supplies the validated database URL, keeping credentials in the environment rather than in code.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/db/session.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">settings = get_settings()
+
+# pool_pre_ping replaces connections that Neon dropped while its compute was
+# suspended. The pool stays small because the app runs one worker and Neon's
+# free plan limits connections. Forcing the session timezone to UTC makes
+# PostgreSQL return timestamps in UTC, as the API contract requires.
+engine = create_engine(
+    url=settings.database_url,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=5,
+    connect_args={"options": "-c timezone=utc"},
+)
+
+# expire_on_commit=False keeps loaded values after commit(), so a service can
+# commit and then return the object for the router to serialize.
+SessionLocal = sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+)</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for the engine and session factory">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>The URL comes from <code>get_settings()</code>, called once at module level.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>pool_pre_ping</code> is on, and the pool size is small and deliberate.</span></label></li>
+								<li><label><input type="checkbox" /><span>My <code>DATABASE_URL</code> uses <code>127.0.0.1</code>, not <code>localhost</code> — otherwise every connection waits about five seconds on Windows.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>expire_on_commit=False</code> is set on the factory.</span></label></li>
+								<li><label><input type="checkbox" /><span>There is no <code>Base.metadata.create_all(...)</code> anywhere in the project.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-05">
+						<div class="section__kicker">Step 05</div>
+						<h2>One session per request, always closed</h2>
+						<p>
+							FastAPI runs everything before <code>yield</code> when a request starts, and
+							everything after it once the response has been sent. That makes a generator
+							the natural shape for something that must be opened, handed over, and closed
+							again — whatever happened in between.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Give <b>each request its own session</b>, in a shape FastAPI can inject as a dependency.</li>
+								<li><b>Guarantee the session is closed</b> when the request ends — including when the route raises — using exactly one cleanup mechanism, never two stacked on top of each other.</li>
+								<li>Make sure work that was never committed is <b>rolled back</b> rather than left open on the connection.</li>
+								<li><b>Never commit here.</b> Committing is a service's decision: one use case, one commit.</li>
+								<li>Annotate it so a reader can see it <b>yields</b> a session rather than returning one.</li>
+								<li>Prove it: open a session, raise an error inside it, and confirm the error still reaches the caller and the session closed anyway.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>Iterator</dt>
+									<dd><b>The return type of a generator function.</b> <code>Iterator[Session]</code> says "this yields sessions"; <code>Session</code> alone would be a lie that type checkers accept.</dd>
+								</div>
+								<div>
+									<dt>Session</dt>
+									<dd><b>Already imported in this file.</b> Reused here purely for the annotation.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/db/session.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">def get_db() -> Iterator[Session]:
+    """Provide one database session for the duration of a request.
+
+    The ``with`` block closes the session in every case, including when the
+    route raises, and closing rolls back any transaction that wasn't
+    committed, so a failed request never leaves partial changes behind.
+
+    Yields:
+        A new ``Session`` bound to the application engine.
+
+    Example:
+        ``def list_patients(db: Annotated[Session, Depends(get_db)]): ...``
+    """
+    with SessionLocal() as session:
+        yield session</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for the get_db dependency">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>I used <em>either</em> a <code>with</code> block <em>or</em> <code>try</code>/<code>finally</code> — not both, which would close twice.</span></label></li>
+								<li><label><input type="checkbox" /><span>If I used <code>try</code>/<code>finally</code>, the session is created <em>before</em> the <code>try</code>, so <code>finally</code> can't raise <code>UnboundLocalError</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>There is no <code>commit()</code> in this function.</span></label></li>
+								<li><label><input type="checkbox" /><span>The signature says <code>Iterator[Session]</code> and the function is a plain <code>def</code>, not <code>async def</code>.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-06">
+						<div class="section__kicker">Step 06</div>
+						<h2>Point Alembic at your settings and your models</h2>
+						<p>
+							<code>alembic init</code> left you a generic <code>env.py</code> that runs on
+							every migration command. Out of the box it knows neither which database to
+							connect to nor which tables your code declares — and one line of the
+							template will quietly undo your work if you leave it in place.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Make Alembic connect using <b>the same settings the application uses</b>, so the URL lives in one place and <code>alembic.ini</code> keeps its harmless placeholder.</li>
+								<li>Survive a password containing <code>%</code>: the value passes through <code>configparser</code>, which treats that character as special, so it has to be <b>escaped</b>.</li>
+								<li>Give Alembic <b>your models' registry to compare the database against</b>, so autogenerate and <code>alembic check</code> can see tables at all.</li>
+								<li>Leave <b>exactly one</b> assignment to that registry in the file — the template ships one of its own, and the last one wins.</li>
+								<li>Keep the file tidy: imports at the top, and no leftover template comments that describe code you didn't write.</li>
+								<li>Remember that a table only exists in the registry <b>once its module has been imported</b>, so plan where future models get imported.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>get_settings</dt>
+									<dd><b>The application settings.</b> Importing them here is what keeps the database URL — and its password — out of <code>alembic.ini</code> and out of Git.</dd>
+								</div>
+								<div>
+									<dt>Base</dt>
+									<dd><b>Your declarative base from Step 01.</b> Its <code>metadata</code> is the model side of every comparison Alembic makes.</dd>
+								</div>
+								<div>
+									<dt>context</dt>
+									<dd><b>Already in the template.</b> <code>context.config</code> is the object holding the values read from <code>alembic.ini</code>, and it is what you override.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/migrations/env.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python"># Alembic config object, giving access to the values in alembic.ini.
+config = context.config
+
+settings = get_settings()
+# configparser treats "%" as special, so escape it in case the password contains one.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+
+# Tables appear in Base.metadata only after their models module is imported,
+# so every new models module must be imported in this file.
+target_metadata = Base.metadata</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for the Alembic environment">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Searching the file for <code>target_metadata</code> finds exactly one assignment.</span></label></li>
+								<li><label><input type="checkbox" /><span>The URL is escaped with <code>.replace("%", "%%")</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>Both new imports sit at the top: <code>uv run ruff check migrations/env.py --select E402</code> passes.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>alembic.ini</code> still holds the placeholder URL — no real password is about to be committed.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<!-- BLOCK: verification, terminal output ---------------- -->
+					<section class="section reveal" id="verify">
+						<div class="section__kicker">Finish</div>
+						<h2>Check your work</h2>
+						<p>
+							Run both from <code>backend/</code>, with the database container up
+							(<code>docker compose up -d db</code>). The first proves the connection and
+							the UTC setting; the second proves Alembic can reach the database and read
+							your metadata.
+						</p>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								backend/
+							</div>
+							<div class="term__body"><div class="term__cmd">uv run python -c "from app.db.session import engine; from sqlalchemy import text; print(engine.connect().execute(text('show timezone')).scalar())"</div><div class="term__out--ok">UTC</div></div>
+						</div>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								backend/
+							</div>
+							<div class="term__body"><div class="term__cmd">uv run alembic check</div><div class="term__out">INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.</div><div class="term__out--ok">No new upgrade operations detected.</div></div>
+						</div>
+
+						<p style="margin-top: var(--sp-3)">
+							There are no models yet, so <em>"no new upgrade operations"</em> is the
+							correct answer here: the database and <code>Base.metadata</code> agree
+							because both are empty. The first real table arrives in the next stage, and
+							this same command will then tell you when a migration is missing.
+						</p>
+
+						<div class="check">
+							<div class="block-label">Before you commit</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Both commands above printed what this page shows.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>uv run ruff check .</code> and <code>uv run ruff format --check .</code> pass.</span></label></li>
+								<li><label><input type="checkbox" /><span>Every module, class and function I wrote has a docstring, and every import has its one-line comment.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain each line of the three files without looking at this page.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<footer class="foot">
+						<span>Hospital Management System · Milestone 1.1 · Stage 03</span>
+						<span>Written after the stage was built and verified.</span>
+					</footer>
+				</main>
+			</div>
+		</div>
+
+		<script>
+			(function () {
+				"use strict";
+
+				/* Syntax highlighting (no-op if the CDN is unavailable). */
+				if (window.hljs) {
+					document.querySelectorAll("pre code").forEach(function (block) {
+						window.hljs.highlightElement(block);
+					});
+				}
+
+				var root = document.documentElement;
+				var store = {
+					get: function (key) {
+						try {
+							return localStorage.getItem(key);
+						} catch (e) {
+							return null;
+						}
+					},
+					set: function (key, value) {
+						try {
+							localStorage.setItem(key, value);
+						} catch (e) {
+							/* Storage unavailable: the choice lasts for this page view. */
+						}
+					},
+				};
+
+				/* Theme: dark unless the reader has chosen light. */
+				var themeButton = document.getElementById("themeToggle");
+				var moon = themeButton.querySelector(".icon-moon");
+				var sun = themeButton.querySelector(".icon-sun");
+
+				function currentTheme() {
+					return root.dataset.theme === "light" ? "light" : "dark";
+				}
+				function paintThemeButton() {
+					var dark = currentTheme() === "dark";
+					moon.hidden = dark;
+					sun.hidden = !dark;
+					themeButton.setAttribute(
+						"aria-label",
+						dark ? "Switch to light theme" : "Switch to dark theme"
+					);
+				}
+				themeButton.addEventListener("click", function () {
+					var next = currentTheme() === "dark" ? "light" : "dark";
+					root.dataset.theme = next;
+					store.set("hms-tutorial-theme", next);
+					paintThemeButton();
+				});
+				paintThemeButton();
+
+				/* Text size: one multiplier, so every level keeps its
+				   relative size instead of collapsing into one. */
+				var STEPS = [0.9, 1, 1.1, 1.25, 1.4];
+				var typeDown = document.getElementById("typeDown");
+				var typeUp = document.getElementById("typeUp");
+				var stepIndex = STEPS.indexOf(parseFloat(store.get("hms-tutorial-type-scale")));
+				if (stepIndex < 0) stepIndex = STEPS.indexOf(1);
+
+				function applyScale() {
+					var scale = STEPS[stepIndex];
+					root.style.setProperty("--type-scale", String(scale));
+					store.set("hms-tutorial-type-scale", String(scale));
+					typeDown.disabled = stepIndex === 0;
+					typeUp.disabled = stepIndex === STEPS.length - 1;
+					var percent = Math.round(scale * 100) + "%";
+					typeDown.title = "Decrease text size (now " + percent + ")";
+					typeUp.title = "Increase text size (now " + percent + ")";
+				}
+				typeDown.addEventListener("click", function () {
+					if (stepIndex > 0) stepIndex--;
+					applyScale();
+				});
+				typeUp.addEventListener("click", function () {
+					if (stepIndex < STEPS.length - 1) stepIndex++;
+					applyScale();
+				});
+				applyScale();
+
+				/* Reading progress. */
+				var fill = document.getElementById("progressFill");
+				function updateProgress() {
+					var doc = document.documentElement;
+					var max = doc.scrollHeight - doc.clientHeight;
+					fill.style.width = (max > 0 ? (doc.scrollTop / max) * 100 : 0) + "%";
+				}
+				document.addEventListener("scroll", updateProgress, { passive: true });
+				updateProgress();
+
+				/* Sidebar on small screens. */
+				var sidebar = document.getElementById("sidebar");
+				var toggle = document.getElementById("navToggle");
+				var overlay = document.getElementById("overlay");
+				function setNav(open) {
+					sidebar.classList.toggle("is-open", open);
+					overlay.classList.toggle("is-open", open);
+					toggle.setAttribute("aria-expanded", String(open));
+				}
+				toggle.addEventListener("click", function () {
+					setNav(!sidebar.classList.contains("is-open"));
+				});
+				overlay.addEventListener("click", function () {
+					setNav(false);
+				});
+				document.addEventListener("keydown", function (event) {
+					if (event.key === "Escape") setNav(false);
+				});
+
+				/* Scroll-spy: highlight the section being read. */
+				var links = Array.prototype.slice.call(document.querySelectorAll(".nav-link"));
+				var spy = new IntersectionObserver(
+					function (entries) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							links.forEach(function (link) {
+								link.classList.toggle(
+									"is-active",
+									link.getAttribute("href") === "#" + entry.target.id
+								);
+							});
+						});
+					},
+					{ rootMargin: "-12% 0px -72% 0px" }
+				);
+				links.forEach(function (link) {
+					var section = document.querySelector(link.getAttribute("href"));
+					if (section) spy.observe(section);
+				});
+
+				/* Sections fade up once, as they come into view. */
+				var reveals = document.querySelectorAll(".reveal");
+				var revealer = new IntersectionObserver(
+					function (entries, observer) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							entry.target.classList.add("is-in");
+							observer.unobserve(entry.target);
+						});
+					},
+					{ rootMargin: "0px 0px -8% 0px", threshold: 0.05 }
+				);
+				reveals.forEach(function (section) {
+					revealer.observe(section);
+				});
+
+				/* Blurred code: reveal on click, or with the keyboard. */
+				document.querySelectorAll(".code__mask").forEach(function (mask) {
+					mask.addEventListener("click", function () {
+						mask.closest(".code").classList.remove("is-masked");
+					});
+				});
+
+				/* Copy a code panel's contents. */
+				document.querySelectorAll(".code__copy").forEach(function (button) {
+					button.addEventListener("click", function () {
+						var panel = button.closest(".code");
+						var code = panel.querySelector("code");
+						var done = function () {
+							button.textContent = "Copied";
+							button.classList.add("is-done");
+							setTimeout(function () {
+								button.textContent = "Copy";
+								button.classList.remove("is-done");
+							}, 1600);
+						};
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(code.innerText).then(done, function () {});
+						}
+					});
+				});
+			})();
+		</script>
+	</body>
+</html>

@@ -1,0 +1,2132 @@
+<!doctype html>
+<html lang="en" class="no-js">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Errors in one format — HMS Tutorial</title>
+		<meta
+			name="description"
+			content="Stage 04 of the Hospital Management System build: domain exceptions, error codes, and the handlers that give every failure one JSON format."
+		/>
+		<script>
+			/* Applied before first paint, so a stored theme or text size
+			   never flashes the default one first. */
+			document.documentElement.className = "js";
+			try {
+				var savedTheme = localStorage.getItem("hms-tutorial-theme");
+				if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+				var savedScale = localStorage.getItem("hms-tutorial-type-scale");
+				if (savedScale) {
+					document.documentElement.style.setProperty("--type-scale", savedScale);
+				}
+			} catch (e) {
+				/* Private mode or blocked storage: defaults are fine. */
+			}
+		</script>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+			rel="stylesheet"
+		/>
+
+		<!-- Syntax highlighting only; the colour theme below is ours. -->
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+
+		<style>
+			/* ==========================================================
+			   DESIGN TOKENS
+			   Every colour, font, size, space and radius lives here.
+			   Change a value once and the whole page follows.
+			   ========================================================== */
+			:root {
+				/* Dark is the default these pages ship with; the light
+				   palette below is the reader's opt-in. */
+				color-scheme: dark;
+
+				/* --- Colour: canvas (70%) --------------------------- */
+				--bg: #161512;
+
+				/* --- Colour: surfaces (20%) ------------------------- */
+				--surface: #1e1d19;
+				--surface-sunken: #1a1916;
+				--rule: #2e2c27;
+				--rule-strong: #46423a;
+				--shadow-panel: rgba(0, 0, 0, 0.5);
+				--scrim: rgba(0, 0, 0, 0.55);
+
+				/* --- Colour: ink ------------------------------------ */
+				--ink: #ece7dc;
+				--ink-mid: #bab3a6;
+				--ink-soft: #948d81;
+
+				/* --- Colour: accent (10%) --------------------------- */
+				--accent: #6fc3b5;
+				--accent-ink: #14201e; /* text or marks drawn on the accent */
+				--accent-wash: rgba(111, 195, 181, 0.12);
+				--accent-line: rgba(111, 195, 181, 0.42);
+
+				/* --- Colour: code surface --------------------------- */
+				--code-bg: #100f0d;
+				--code-head: #1a1916;
+				--code-rule: #2b2924;
+				--code-ink: #ece7dc;
+				--code-dim: #9a9388;
+
+				/* --- Colour: syntax --------------------------------- */
+				--syn-comment: #928a7c;
+				--syn-keyword: #c8a2c8;
+				--syn-string: #a8c37a;
+				--syn-number: #e0b070;
+				--syn-func: #7fb5c9;
+				--syn-class: #7cc9ba;
+				--syn-meta: #d8a657;
+
+				/* --- Type ------------------------------------------- */
+				--font-display: "Fraunces", Georgia, serif;
+				--font-body: "DM Sans", system-ui, sans-serif;
+				--font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+				/* One multiplier drives every size below, so the reader's
+				   text-size control keeps the hierarchy intact instead of
+				   flattening everything to one size. */
+				--type-scale: 1;
+
+				--size-label: calc(0.6875rem * var(--type-scale)); /* 11px */
+				--size-small: calc(0.8125rem * var(--type-scale)); /* 13px */
+				--size-code: calc(0.8125rem * var(--type-scale)); /* 13px  */
+				--size-task: calc(0.9375rem * var(--type-scale)); /* 15px  */
+				--size-body: calc(1.0625rem * var(--type-scale)); /* 17px  */
+				--size-lede: calc(1.1875rem * var(--type-scale)); /* 19px  */
+				--size-brand: calc(1.05rem * var(--type-scale));
+				--size-h3: calc(clamp(1.1rem, 1.6vw, 1.25rem) * var(--type-scale));
+				--size-h2: calc(clamp(1.55rem, 3vw, 2rem) * var(--type-scale));
+				--size-h1: calc(clamp(2.1rem, 5vw, 3.2rem) * var(--type-scale));
+
+				--leading-body: 1.75;
+				--leading-head: 1.15;
+				--track-label: 0.14em;
+				--measure: 68ch;
+
+				/* --- Space (8px base) ------------------------------- */
+				--sp-1: 0.5rem;
+				--sp-2: 1rem;
+				--sp-3: 1.5rem;
+				--sp-4: 2rem;
+				--sp-6: 3rem;
+				--sp-8: 4rem;
+				--sp-12: 6rem;
+
+				/* --- Shape ------------------------------------------ */
+				--radius-panel: 10px;
+				--radius-control: 6px;
+				--radius-check: 4px;
+				--radius-pill: 999px;
+				--hairline: 1px solid var(--rule);
+				--check-size: calc(1.05rem * var(--type-scale));
+
+				/* --- Motion ----------------------------------------- */
+				--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+				--dur-reveal: 0.55s;
+				--dur-ui: 0.18s;
+
+				/* --- Layout ----------------------------------------- */
+				--sidebar-w: 264px;
+				--content-max: 820px;
+				--gutter: clamp(1.25rem, 4vw, 3.5rem);
+			}
+
+			/* ==========================================================
+			   LIGHT THEME
+			   The same warm family in reverse: ivory canvas, white cards,
+			   and a code panel that stays dark so code still reads as code.
+			   Applied only when the reader picks it from the toggle, which
+			   stores the choice — the operating system's preference is
+			   deliberately not consulted, so every page opens the same way.
+			   Syntax colours are shared by both themes.
+			   ========================================================== */
+			:root[data-theme="light"] {
+				color-scheme: light;
+
+				--bg: #faf8f4;
+				--surface: #ffffff;
+				--surface-sunken: #f6f2ea;
+				--rule: #e6e0d5;
+				--rule-strong: #cfc7b7;
+				--shadow-panel: rgba(0, 0, 0, 0.05);
+				--scrim: rgba(27, 26, 23, 0.35);
+
+				--ink: #1b1a17;
+				--ink-mid: #57534b;
+				--ink-soft: #6f6a60;
+
+				--accent: #0f766e;
+				--accent-ink: #ffffff;
+				--accent-wash: rgba(15, 118, 110, 0.09);
+				--accent-line: rgba(15, 118, 110, 0.35);
+
+				--code-bg: #1b1a17;
+				--code-head: #232220;
+				--code-rule: #302e2a;
+				--code-ink: #ece7dc;
+				--code-dim: #979085;
+			}
+
+			/* ==========================================================
+			   BASE
+			   ========================================================== */
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			html {
+				scroll-behavior: smooth;
+				scroll-padding-top: var(--sp-6);
+			}
+
+			body {
+				background: var(--bg);
+				color: var(--ink);
+				font-family: var(--font-body);
+				font-size: var(--size-body);
+				line-height: var(--leading-body);
+				-webkit-font-smoothing: antialiased;
+				text-rendering: optimizeLegibility;
+				transition: background-color var(--dur-ui) ease,
+					color var(--dur-ui) ease;
+			}
+
+			a {
+				color: var(--accent);
+				text-decoration: none;
+			}
+
+			:focus-visible {
+				outline: 2px solid var(--accent);
+				outline-offset: 3px;
+				border-radius: 2px;
+			}
+
+			.skip-link {
+				position: absolute;
+				left: -9999px;
+				top: var(--sp-1);
+				background: var(--ink);
+				color: var(--bg);
+				padding: var(--sp-1) var(--sp-2);
+				border-radius: var(--radius-control);
+				z-index: 60;
+			}
+			.skip-link:focus {
+				left: var(--sp-1);
+			}
+
+			/* ==========================================================
+			   READING PROGRESS
+			   ========================================================== */
+			.progress {
+				position: fixed;
+				inset: 0 0 auto 0;
+				height: 2px;
+				background: transparent;
+				z-index: 50;
+			}
+			.progress__fill {
+				height: 100%;
+				width: 0;
+				background: var(--accent);
+			}
+
+			/* ==========================================================
+			   SIDEBAR — stage contents
+			   ========================================================== */
+			.sidebar {
+				position: fixed;
+				inset: 0 auto 0 0;
+				width: var(--sidebar-w);
+				padding: var(--sp-6) var(--sp-3);
+				border-right: var(--hairline);
+				background: var(--bg);
+				overflow-y: auto;
+				z-index: 40;
+			}
+
+			.sidebar__brand {
+				font-family: var(--font-display);
+				font-size: var(--size-brand);
+				font-weight: 500;
+				line-height: 1.3;
+			}
+
+			.sidebar__stage {
+				margin-top: 2px;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.nav-group {
+				margin-top: var(--sp-4);
+			}
+
+			.nav-group__label {
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+				padding-bottom: var(--sp-1);
+				margin-bottom: var(--sp-1);
+				border-bottom: var(--hairline);
+			}
+
+			.nav-link {
+				display: block;
+				padding: 0.4rem 0 0.4rem var(--sp-2);
+				margin-left: -1px;
+				border-left: 1px solid transparent;
+				color: var(--ink-mid);
+				font-size: var(--size-small);
+				line-height: 1.45;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.nav-link:hover {
+				color: var(--ink);
+			}
+			.nav-link.is-active {
+				color: var(--accent);
+				border-left-color: var(--accent);
+			}
+			.nav-link__num {
+				font-family: var(--font-mono);
+				font-size: 0.6875rem;
+				color: var(--ink-soft);
+				margin-right: 0.5em;
+			}
+			.nav-link.is-active .nav-link__num {
+				color: var(--accent);
+			}
+
+			/* Mobile disclosure button for the sidebar */
+			.nav-toggle {
+				display: none;
+				position: fixed;
+				top: var(--sp-1);
+				left: var(--sp-1);
+				z-index: 45;
+				gap: 0.5em;
+				align-items: center;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				padding: 0.55rem 0.95rem;
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				color: var(--ink);
+				cursor: pointer;
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.overlay {
+				display: none;
+				position: fixed;
+				inset: 0;
+				background: var(--scrim);
+				z-index: 35;
+			}
+
+			/* ==========================================================
+			   READER CONTROLS — text size and theme
+			   Fixed opposite the mobile Contents button, out of the
+			   reading column at every width.
+			   ========================================================== */
+			.controls {
+				position: fixed;
+				top: var(--sp-1);
+				right: var(--sp-1);
+				z-index: 45;
+				display: flex;
+				align-items: center;
+				gap: 0.15rem;
+				padding: 0.25rem;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.controls button {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 2rem;
+				height: 2rem;
+				border: 0;
+				border-radius: var(--radius-pill);
+				background: transparent;
+				color: var(--ink-mid);
+				font-family: var(--font-body);
+				font-weight: 500;
+				line-height: 1;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease, color var(--dur-ui) ease;
+			}
+			.controls button:hover:not(:disabled) {
+				background: var(--surface-sunken);
+				color: var(--ink);
+			}
+			.controls button:disabled {
+				opacity: 0.35;
+				cursor: default;
+			}
+
+			/* The two text-size buttons carry the same letter at different
+			   sizes, which says what they do without a tooltip. */
+			.controls__type--down {
+				font-size: 0.75rem;
+			}
+			.controls__type--up {
+				font-size: 1.0625rem;
+			}
+
+			.controls__divider {
+				width: 1px;
+				height: 1.1rem;
+				background: var(--rule);
+				margin: 0 0.15rem;
+			}
+
+			/* The theme button shows the theme it switches to; the script
+			   swaps which icon is hidden. */
+			.controls__theme svg {
+				display: block;
+			}
+			.controls__theme svg[hidden] {
+				display: none;
+			}
+
+			/* ==========================================================
+			   PAGE SHELL — one stacked column at every width
+			   ========================================================== */
+			.shell {
+				margin-left: var(--sidebar-w);
+				padding: 0 var(--gutter) var(--sp-12);
+			}
+
+			.column {
+				max-width: var(--content-max);
+				margin: 0 auto;
+			}
+
+			/* ==========================================================
+			   HERO — topic title, stage number, one-line intro
+			   ========================================================== */
+			.hero {
+				padding: var(--sp-12) 0 var(--sp-6);
+				border-bottom: var(--hairline);
+			}
+
+			.hero__eyebrow {
+				display: flex;
+				align-items: center;
+				gap: 0.75em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.stage-badge {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				color: var(--accent);
+				background: var(--accent-wash);
+				border-radius: var(--radius-pill);
+				padding: 0.3em 0.75em;
+			}
+
+			.hero h1 {
+				font-family: var(--font-display);
+				font-size: var(--size-h1);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.02em;
+				margin: var(--sp-3) 0 var(--sp-2);
+				max-width: 20ch;
+			}
+
+			.lede {
+				font-size: var(--size-lede);
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			/* Files this stage touches — one slim row under the intro. */
+			.hero__files {
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				margin-top: var(--sp-3);
+				padding-top: var(--sp-2);
+				border-top: var(--hairline);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--ink-mid);
+			}
+
+			.hero__files span {
+				display: inline-flex;
+				align-items: baseline;
+				gap: 0.5em;
+			}
+
+			.hero__files em {
+				font-family: var(--font-body);
+				font-style: normal;
+				font-size: var(--size-label);
+				letter-spacing: 0.04em;
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   SECTIONS & PROSE
+			   ========================================================== */
+			.section {
+				padding-top: var(--sp-8);
+			}
+
+			.section__kicker {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.section h2 {
+				font-family: var(--font-display);
+				font-size: var(--size-h2);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.015em;
+				margin: var(--sp-1) 0 var(--sp-2);
+			}
+
+			.section h3 {
+				font-family: var(--font-display);
+				font-size: var(--size-h3);
+				font-weight: 500;
+				line-height: 1.3;
+				margin: var(--sp-4) 0 var(--sp-1);
+			}
+
+			.section p {
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			.section p + p {
+				margin-top: var(--sp-2);
+			}
+
+			.section strong {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			:not(pre) > code {
+				font-family: var(--font-mono);
+				font-size: 0.85em;
+				background: var(--surface-sunken);
+				border: var(--hairline);
+				border-radius: 4px;
+				padding: 0.1em 0.35em;
+				color: var(--ink);
+			}
+
+			/* Shared label above task, hint and check blocks. */
+			.block-label {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--accent);
+			}
+
+			/* ==========================================================
+			   BLOCK: task — what the code has to do, not how to type it
+			   ========================================================== */
+			.task {
+				margin-top: var(--sp-4);
+			}
+
+			.task ol {
+				list-style: none;
+				counter-reset: task;
+				margin-top: var(--sp-2);
+				max-width: var(--measure);
+			}
+
+			.task li {
+				position: relative;
+				counter-increment: task;
+				padding: 0.55rem 0 0.55rem 2.5rem;
+				border-top: var(--hairline);
+				font-size: var(--size-task);
+				line-height: 1.65;
+				color: var(--ink-mid);
+			}
+
+			.task li::before {
+				content: counter(task, decimal-leading-zero);
+				position: absolute;
+				left: 0;
+				top: 0.8rem;
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				color: var(--ink-soft);
+			}
+
+			.task li b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: hint — the imports this step needs, folded away
+			   ========================================================== */
+			.hint {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3);
+			}
+
+			.hint summary {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				list-style: none;
+				cursor: pointer;
+			}
+			.hint summary::-webkit-details-marker {
+				display: none;
+			}
+			.hint summary svg {
+				transition: transform var(--dur-ui) ease;
+			}
+			.hint[open] summary svg {
+				transform: rotate(90deg);
+			}
+
+			.import-list {
+				margin-top: var(--sp-2);
+			}
+			.import-list div {
+				display: grid;
+				grid-template-columns: minmax(12ch, 20ch) 1fr;
+				gap: 0.35em var(--sp-2);
+				padding: 0.45rem 0;
+				border-top: var(--hairline);
+				break-inside: avoid;
+			}
+			.import-list dt {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				color: var(--ink);
+			}
+			.import-list dd {
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+			}
+			.import-list dd b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: code panel — path label, copy button, blur-to-reveal
+			   ========================================================== */
+			.code {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.code__head {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: var(--sp-2);
+				padding: 0.6rem 0.75rem 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+			}
+
+			.code__path {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+				min-width: 0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.code__path svg {
+				flex: none;
+				color: var(--syn-class);
+			}
+
+			.code__copy {
+				flex: none;
+				display: inline-flex;
+				align-items: center;
+				gap: 0.45em;
+				background: transparent;
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-control);
+				color: var(--code-dim);
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				text-transform: uppercase;
+				padding: 0.38rem 0.6rem;
+				cursor: pointer;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.code__copy:hover {
+				color: var(--code-ink);
+				border-color: var(--code-dim);
+			}
+			.code__copy.is-done {
+				color: var(--syn-class);
+				border-color: var(--syn-class);
+			}
+
+			.code__body {
+				position: relative;
+			}
+
+			.code pre {
+				margin: 0;
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+			}
+
+			.code code {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.75;
+				color: var(--code-ink);
+				background: none;
+				tab-size: 4;
+			}
+
+			/* Masked state: the code is there, just unreadable until asked for. */
+			.code.is-masked pre {
+				filter: blur(6px);
+				user-select: none;
+			}
+
+			.code__mask {
+				position: absolute;
+				inset: 0;
+				display: grid;
+				place-items: center;
+				gap: 0.5em;
+				background: transparent;
+				border: 0;
+				width: 100%;
+				color: var(--code-dim);
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				cursor: pointer;
+				transition: opacity var(--dur-ui) ease;
+			}
+			.code__mask span {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.5em;
+				background: var(--code-head);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-pill);
+				padding: 0.5rem 1rem;
+			}
+			.code__mask:hover span {
+				color: var(--code-ink);
+			}
+			/* Once revealed the button is gone for good — including from the tab order. */
+			.code:not(.is-masked) .code__mask {
+				opacity: 0;
+				pointer-events: none;
+				visibility: hidden;
+			}
+
+			/* ==========================================================
+			   BLOCK: check list — empty boxes the reader ticks off
+			   ========================================================== */
+			.check {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3) var(--sp-3);
+			}
+
+			.check .block-label {
+				color: var(--ink-soft);
+			}
+
+			.check ul {
+				list-style: none;
+				margin-top: var(--sp-1);
+			}
+
+			.check li {
+				border-top: var(--hairline);
+			}
+			.check li:first-child {
+				border-top: 0;
+			}
+
+			.check label {
+				display: flex;
+				gap: 0.85em;
+				align-items: flex-start;
+				padding: 0.6rem 0;
+				font-size: var(--size-task);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				cursor: pointer;
+				transition: color var(--dur-ui) ease;
+			}
+			.check label:hover {
+				color: var(--ink);
+			}
+
+			.check input {
+				appearance: none;
+				-webkit-appearance: none;
+				flex: none;
+				width: var(--check-size);
+				height: var(--check-size);
+				margin-top: 0.3em;
+				border: 1.5px solid var(--rule-strong);
+				border-radius: var(--radius-check);
+				background: var(--bg);
+				display: grid;
+				place-content: center;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.check input::after {
+				content: "";
+				width: 0.3em;
+				height: 0.55em;
+				margin-top: -0.12em;
+				border: solid transparent;
+				border-width: 0 2px 2px 0;
+				transform: rotate(45deg);
+				transition: border-color var(--dur-ui) ease;
+			}
+			.check label:hover input {
+				border-color: var(--accent);
+			}
+			.check input:checked {
+				background: var(--accent);
+				border-color: var(--accent);
+			}
+			.check input:checked::after {
+				border-color: var(--accent-ink);
+			}
+			.check input:checked ~ span {
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   BLOCK: terminal — command and its output
+			   ========================================================== */
+			.term {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.term__head {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				padding: 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+			}
+			.term__head svg {
+				color: var(--syn-func);
+			}
+
+			.term__body {
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.8;
+				white-space: pre;
+			}
+
+			.term__cmd {
+				color: var(--code-ink);
+			}
+			.term__cmd::before {
+				content: "$";
+				color: var(--syn-class);
+				margin-right: 0.75em;
+			}
+			.term__out {
+				color: var(--code-dim);
+			}
+			.term__out--ok {
+				color: var(--syn-string);
+			}
+
+			/* ==========================================================
+			   BLOCK: callout — packages this stage relies on
+			   ========================================================== */
+			.callout {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-3);
+			}
+
+			.callout__list {
+				list-style: none;
+				margin-top: var(--sp-2);
+			}
+			.callout__list li {
+				display: flex;
+				gap: 0.75em;
+				padding: 0.4rem 0;
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				border-top: var(--hairline);
+			}
+			.callout__list li:first-child {
+				border-top: 0;
+			}
+			.callout__list b {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				font-weight: 500;
+				color: var(--ink);
+				flex: none;
+				min-width: 11ch;
+			}
+
+			/* ==========================================================
+			   FOOTER
+			   ========================================================== */
+			.foot {
+				margin-top: var(--sp-12);
+				padding-top: var(--sp-3);
+				border-top: var(--hairline);
+				font-size: var(--size-small);
+				color: var(--ink-soft);
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				justify-content: space-between;
+			}
+
+			/* ==========================================================
+			   SYNTAX THEME (highlight.js classes, our colours)
+			   ========================================================== */
+			.hljs-comment,
+			.hljs-quote {
+				color: var(--syn-comment);
+				font-style: italic;
+			}
+			.hljs-keyword,
+			.hljs-literal,
+			.hljs-type {
+				color: var(--syn-keyword);
+			}
+			.hljs-string,
+			.hljs-meta .hljs-string {
+				color: var(--syn-string);
+			}
+			.hljs-number {
+				color: var(--syn-number);
+			}
+			.hljs-title,
+			.hljs-title.function_ {
+				color: var(--syn-func);
+			}
+			.hljs-title.class_,
+			.hljs-built_in {
+				color: var(--syn-class);
+			}
+			.hljs-meta,
+			.hljs-decorator {
+				color: var(--syn-meta);
+			}
+			.hljs-params,
+			.hljs-attr,
+			.hljs-variable {
+				color: var(--code-ink);
+			}
+
+			/* ==========================================================
+			   MOTION — one slow fade-up, nothing bouncy
+			   ========================================================== */
+			.js .reveal {
+				opacity: 0;
+				transform: translateY(12px);
+				transition: opacity var(--dur-reveal) var(--ease-out),
+					transform var(--dur-reveal) var(--ease-out);
+			}
+			.js .reveal.is-in {
+				opacity: 1;
+				transform: none;
+			}
+
+			/* ==========================================================
+			   RESPONSIVE
+			   ========================================================== */
+			@media (max-width: 1080px) {
+				.sidebar {
+					transform: translateX(-100%);
+					transition: transform 0.25s var(--ease-out);
+					width: min(320px, 86vw);
+					box-shadow: 0 8px 30px var(--shadow-panel);
+				}
+				.sidebar.is-open {
+					transform: none;
+				}
+				.overlay.is-open {
+					display: block;
+				}
+				.nav-toggle {
+					display: inline-flex;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.hero {
+					padding-top: calc(var(--sp-8) + var(--sp-2));
+				}
+			}
+
+			@media (max-width: 640px) {
+				:root {
+					--size-body: calc(1rem * var(--type-scale));
+					--size-lede: calc(1.0625rem * var(--type-scale));
+					--size-code: calc(0.75rem * var(--type-scale));
+					--sp-8: 3rem;
+					--sp-12: 4rem;
+				}
+				.code pre,
+				.term__body {
+					padding: var(--sp-2);
+				}
+				.callout,
+				.check,
+				.hint {
+					padding: var(--sp-2);
+				}
+				.import-list div {
+					grid-template-columns: 1fr;
+					gap: 0.15em;
+				}
+				.callout__list li {
+					flex-direction: column;
+					gap: 0.15em;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				html {
+					scroll-behavior: auto;
+				}
+				*,
+				*::before,
+				*::after {
+					transition-duration: 0.01ms !important;
+					animation-duration: 0.01ms !important;
+				}
+				.js .reveal {
+					opacity: 1;
+					transform: none;
+				}
+			}
+
+			@media print {
+				.sidebar,
+				.progress,
+				.nav-toggle,
+				.controls,
+				.code__copy,
+				.code__mask {
+					display: none !important;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.code.is-masked pre {
+					filter: none;
+				}
+				.hint[open],
+				.code,
+				.term,
+				.check {
+					break-inside: avoid;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<div class="progress"><div class="progress__fill" id="progressFill"></div></div>
+		<a class="skip-link" href="#main">Skip to content</a>
+
+		<button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="sidebar">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+				<path d="M4 6h16M4 12h16M4 18h16" />
+			</svg>
+			Contents
+		</button>
+
+		<!-- BLOCK: reader controls — text size and theme ---------------- -->
+		<div class="controls" role="group" aria-label="Reading preferences">
+			<button class="controls__type--down" id="typeDown" type="button" aria-label="Decrease text size">A</button>
+			<button class="controls__type--up" id="typeUp" type="button" aria-label="Increase text size">A</button>
+			<span class="controls__divider" aria-hidden="true"></span>
+			<button class="controls__theme" id="themeToggle" type="button" aria-label="Switch to dark theme">
+				<svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+				</svg>
+				<svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+					<circle cx="12" cy="12" r="4" />
+					<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+				</svg>
+			</button>
+		</div>
+
+		<div class="overlay" id="overlay"></div>
+
+		<!-- BLOCK: sidebar contents ------------------------------------ -->
+		<nav class="sidebar" id="sidebar" aria-label="Stage contents">
+			<div class="sidebar__brand">Hospital Management System</div>
+			<div class="sidebar__stage">Milestone 1.1 · Stage 04</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Before you start</div>
+				<a class="nav-link" href="#libraries">What you already have</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Build it</div>
+				<a class="nav-link" href="#step-01"><span class="nav-link__num">01</span>Error codes</a>
+				<a class="nav-link" href="#step-02"><span class="nav-link__num">02</span>A base error</a>
+				<a class="nav-link" href="#step-03"><span class="nav-link__num">03</span>One class per status</a>
+				<a class="nav-link" href="#step-04"><span class="nav-link__num">04</span>One error body</a>
+				<a class="nav-link" href="#step-05"><span class="nav-link__num">05</span>Your errors &amp; bad input</a>
+				<a class="nav-link" href="#step-06"><span class="nav-link__num">06</span>Framework errors &amp; crashes</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Finish</div>
+				<a class="nav-link" href="#verify">Check your work</a>
+			</div>
+		</nav>
+
+		<div class="shell">
+			<div class="column">
+				<!-- BLOCK: page header ---------------------------------- -->
+				<header class="hero">
+					<div class="hero__eyebrow">
+						<span class="stage-badge">Stage 04</span>
+						<span>Milestone 1.1 · Foundation</span>
+					</div>
+					<h1>Errors in one format</h1>
+					<p class="lede">
+						Services raise domain errors, and four handlers turn every failure, planned or not, into one JSON body the client can rely on.
+					</p>
+					<div class="hero__files">
+						<span>app/core/errors.py <em>new</em></span>
+						<span>pyproject.toml <em>edit</em></span>
+					</div>
+				</header>
+
+				<main class="content" id="main">
+					<!-- BLOCK: callout — packages already installed ------ -->
+					<section class="section reveal" id="libraries">
+						<div class="section__kicker">Before you start</div>
+						<h2>What you already have</h2>
+						<p>
+							FastAPI and Starlette came with the project setup. One package is new in this stage: Starlette 1.6's test client now prefers <code>httpx2</code>, and without it every quick test you run prints a deprecation warning.
+						</p>
+
+						<aside class="callout">
+							<div class="block-label">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+									<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+								</svg>
+								Installed so far
+							</div>
+
+							<ul class="callout__list">
+								<li><b>fastapi</b><span>The web framework. This stage uses its <code>JSONResponse</code> and the <code>RequestValidationError</code> it raises for bad input.</span></li>
+								<li><b>starlette</b><span>The toolkit FastAPI is built on, installed with it. Its <code>HTTPException</code> is what an unknown URL or a wrong method raises.</span></li>
+								<li><b>httpx2</b><span>New, dev only: <code>uv add --dev httpx2</code>. The HTTP client behind <code>TestClient</code>, which you use to try each handler.</span></li>
+							</ul>
+						</aside>
+					</section>
+
+					<section class="section reveal" id="step-01">
+						<div class="section__kicker">Step 01</div>
+						<h2>One list of every error code</h2>
+						<p>
+							The frontend decides what to do after a failure by reading a <b>code</b>, such as <code>INSUFFICIENT_STOCK</code>, never by comparing English sentences. That makes the codes a public contract, and a contract typed by hand in twenty places will eventually contain a typo that nobody notices until a screen silently stops reacting.
+						</p>
+						<p>
+							Collect every code in one place, so a misspelled code fails the moment the module loads.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Define every code the API can return in <b>one enum</b>: one per HTTP status you use, plus the specific situations from plan §11 (<code>PASSWORD_CHANGE_REQUIRED</code>, <code>INVALID_STATUS_TRANSITION</code>, <code>APPOINTMENT_SLOT_TAKEN</code>, <code>INSUFFICIENT_STOCK</code>, <code>ACTIVATION_FAILED</code>), and <code>VALIDATION_ERROR</code>, <code>METHOD_NOT_ALLOWED</code> and <code>INTERNAL_ERROR</code>.</li>
+								<li>Make each member <b>usable as a plain string</b>, so it serializes to JSON as <code>"NOT_FOUND"</code> with no conversion.</li>
+								<li>Give every member a value <b>identical to its name</b>.</li>
+								<li>Prove it: <code>json.dumps({"code": ErrorCode.NOT_FOUND})</code> gives <code>{"code": "NOT_FOUND"}</code>.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>StrEnum</dt>
+									<dd><b>An enum whose members are also strings.</b> Each member compares equal to its text and needs no conversion for JSON, which is exactly what a code sent to a client needs.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">class ErrorCode(StrEnum):
+    """Every machine-readable error code the API can return.
+
+    Attributes:
+        INTERNAL_ERROR: An unexpected server error (500).
+        BAD_REQUEST: The request is well formed but can't be processed (400).
+        AUTHENTICATION_FAILED: Missing, invalid, or expired credentials (401).
+        PERMISSION_DENIED: The user's role lacks the required permission (403).
+        NOT_FOUND: The resource doesn't exist or is outside the user's scope (404).
+        CONFLICT: A business rule blocks the action (409).
+        RATE_LIMITED: Too many attempts in a short time (429).
+        VALIDATION_ERROR: The input doesn't match the request schema (422).
+        METHOD_NOT_ALLOWED: The route exists but not for this HTTP method (405).
+        PASSWORD_CHANGE_REQUIRED: A temporary password must be replaced first (403).
+        INVALID_STATUS_TRANSITION: The record's current status forbids the action (409).
+        APPOINTMENT_SLOT_TAKEN: The doctor or patient is already booked then (409).
+        INSUFFICIENT_STOCK: Non-expired stock can't cover the quantity (409).
+        ACTIVATION_FAILED: A portal activation code or MRN didn't match (400).
+    """
+
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    BAD_REQUEST = "BAD_REQUEST"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    NOT_FOUND = "NOT_FOUND"
+    CONFLICT = "CONFLICT"
+    RATE_LIMITED = "RATE_LIMITED"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
+    PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+    INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
+    APPOINTMENT_SLOT_TAKEN = "APPOINTMENT_SLOT_TAKEN"
+    INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK"
+    ACTIVATION_FAILED = "ACTIVATION_FAILED"</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Every value matches its name exactly. The real typo in this project was <code>"ACTIVATION_FAILED."</code>, with a trailing period.</span></label></li>
+								<li><label><input type="checkbox" /><span>The later classes use members such as <code>ErrorCode.NOT_FOUND</code>, not string literals.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why clients should branch on <code>code</code> rather than on <code>message</code>.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-02">
+						<div class="section__kicker">Step 02</div>
+						<h2>A base error that services raise instead of HTTP errors</h2>
+						<p>
+							Services must not know about HTTP: <code>CLAUDE.md</code> forbids <code>HTTPException</code> in them. A service says "this patient doesn't exist" by raising a domain error, and the HTTP layer decides it means 404.
+						</p>
+						<p>
+							The base class sets the default code for its kind of error; one particular error can carry a more specific one. Get the defaults wrong and every error reaches the client with <code>"code": null</code>.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Create a base exception with a <b>class-level status and code</b> (500, <code>INTERNAL_ERROR</code>) that subclasses will override.</li>
+								<li>Accept a <b>required message</b>, plus an optional code and optional details that must be <b>passed by name</b>, so a list can never land in <code>code</code> by position.</li>
+								<li>Keep the <b>class default code</b> unless a code was actually given. Storing <code>None</code> on the instance would hide the class value.</li>
+								<li>Make <code>details</code> <b>always a list</b>, and a new one for each error. A list written as a default value is created once and shared by every error.</li>
+								<li>Let <code>Exception</code> do its own setup, so <code>str(error)</code> gives the message.</li>
+								<li>Prove it: <code>NotFoundError("x").code</code> is the class default, and two errors created without details don't share a list.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — what this step uses
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>Any</dt>
+									<dd><b>The type of values inside <code>details</code>.</b> Details can hold IDs, numbers or names, so the dict values are left open.</dd>
+								</div>
+								<div>
+									<dt>super().__init__</dt>
+									<dd><b>Runs the parent class's setup.</b> A subclass that writes its own <code>__init__</code> replaces the parent's, so <code>Exception</code>'s setup only runs if you call it.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">class AppError(Exception):
+    """Base class for every error a service raises on purpose.
+
+    Attributes:
+        status_code: HTTP status returned for this class of error.
+        code: Machine-readable code. The class default is used unless the
+            caller passes a more specific one.
+        message: Human-readable explanation, safe to show to the user.
+        details: Extra structured information, such as which medicines are
+            short. Always a list, empty when there is nothing to add.
+    """
+
+    status_code: int = 500
+    code: str = ErrorCode.INTERNAL_ERROR
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: list[dict[str, Any]] | None = None,
+    ) -&gt; None:
+        """Create an error with a message and optional code and details."""
+        super().__init__(message)
+        self.message = message
+        if code is not None:
+            self.code = code
+        self.details = details if details is not None else []</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>I assign <code>self.code</code> only inside <code>if code is not None</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>The signature says <code>details=None</code>, and the list is created inside the method, never <code>details=[]</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>code</code> and <code>details</code> come after a bare <code>*</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why, without the <code>if</code>, <code>NotFoundError("x").code</code> would be <code>None</code>.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-03">
+						<div class="section__kicker">Step 03</div>
+						<h2>One class per HTTP status</h2>
+						<p>
+							Each HTTP status gets one subclass; the specific situation goes in <code>code</code>. So a new situation, such as a taken appointment slot, never needs a new class, only a new code on <code>ConflictError</code>.
+						</p>
+						<p>
+							Because exception handlers also match subclasses, one handler registered for the base class will serve all of them, including any you add later.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Add one subclass each for <b>400, 401, 403, 404, 409 and 429</b>, each with its own status and default code.</li>
+								<li>Give them <b>no <code>__init__</code> of their own</b>: they inherit the base class's.</li>
+								<li>Order them by status code, so the file reads like the table in plan §11.</li>
+								<li>Prove it: <code>ConflictError("x", code=ErrorCode.INSUFFICIENT_STOCK)</code> has status 409 and the specific code.</li>
+							</ol>
+						</div>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">class BadRequestError(AppError):
+    """The request is well formed but can't be processed (400)."""
+
+    status_code: int = 400
+    code: str = ErrorCode.BAD_REQUEST
+
+
+class AuthenticationError(AppError):
+    """The caller isn't authenticated (401)."""
+
+    status_code: int = 401
+    code: str = ErrorCode.AUTHENTICATION_FAILED
+
+
+class PermissionDeniedError(AppError):
+    """The caller is authenticated but not allowed to do this (403)."""
+
+    status_code: int = 403
+    code: str = ErrorCode.PERMISSION_DENIED
+
+
+class NotFoundError(AppError):
+    """The resource doesn't exist, or the user may not see it (404)."""
+
+    status_code: int = 404
+    code: str = ErrorCode.NOT_FOUND
+
+
+class ConflictError(AppError):
+    """A business rule blocks the action (409)."""
+
+    status_code: int = 409
+    code: str = ErrorCode.CONFLICT
+
+
+class RateLimitedError(AppError):
+    """Too many attempts in a short time (429)."""
+
+    status_code: int = 429
+    code: str = ErrorCode.RATE_LIMITED</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>No subclass defines <code>__init__</code> (an <code>__init__</code> that only calls the parent adds nothing).</span></label></li>
+								<li><label><input type="checkbox" /><span>Each subclass inherits directly from <code>AppError</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why a handler registered for <code>AppError</code> catches a <code>ConflictError</code>, but one registered for <code>NotFoundError</code> would not.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-04">
+						<div class="section__kicker">Step 04</div>
+						<h2>One place that shapes every error body</h2>
+						<p>
+							Plan §11 fixes the shape of every error: <code>{"error": {"code", "message", "details", "request_id"}}</code>. Four handlers will produce it. If each builds the dictionary itself, the four copies drift apart the first time the format changes.
+						</p>
+						<p>
+							This function also runs while something has already gone wrong, so it must never raise an error of its own. A crash here replaces your tidy JSON with a raw 500.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Build the <b>whole response</b> from a request, a status, a code, a message and optional details.</li>
+								<li>Return <code>details</code> as a <b>list even when none was given</b>, because the frontend loops over it.</li>
+								<li>Read the request ID from the request's state <b>without failing when it isn't there</b>. The middleware that sets it comes in the next stage, so for now it is missing, and the body must show <code>null</code>.</li>
+								<li>Keep the function <b>private to the module</b>: only the handlers call it.</li>
+								<li>Prove it: calling it with a bare Starlette <code>Request({"type": "http"})</code> returns a 404 with <code>"request_id":null</code>.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>Request</dt>
+									<dd><b>The incoming request.</b> Its <code>state</code> is where the middleware will store the request ID.</dd>
+								</div>
+								<div>
+									<dt>JSONResponse</dt>
+									<dd><b>A response with a JSON body and a status code.</b> Its <code>content</code> is a plain dict; FastAPI turns it into JSON.</dd>
+								</div>
+								<div>
+									<dt>getattr</dt>
+									<dd><b>Built-in: reads an attribute with a fallback.</b> <code>getattr(obj, "name", None)</code> returns <code>None</code> instead of raising <code>AttributeError</code>.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">def _error_response(
+    request: Request,
+    status_code: int,
+    code: str,
+    message: str,
+    details: list[dict[str, Any]] | None = None,
+) -&gt; JSONResponse:
+    """Build a response in the standard error format.
+
+    Returns:
+        A JSON response with body
+        ``{"error": {"code", "message", "details", "request_id"}}``.
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+                "details": details if details is not None else [],
+                "request_id": getattr(request.state, "request_id", None),
+            }
+        },
+    )</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>I put the <b>value</b> <code>request.state.request_id</code> in the body, not the <code>request.state</code> container (which isn't JSON-serializable).</span></label></li>
+								<li><label><input type="checkbox" /><span>I read it with <code>getattr(..., None)</code>, not directly, which raises <code>AttributeError</code> when it's missing.</span></label></li>
+								<li><label><input type="checkbox" /><span>Nothing else in the file builds an <code>{"error": ...}</code> dictionary.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-05">
+						<div class="section__kicker">Step 05</div>
+						<h2>Your own errors, and input that fails validation</h2>
+						<p>
+							Two handlers cover the errors that come from your side of the app. The first turns any domain error into its response in one line, because the exception already carries everything needed.
+						</p>
+						<p>
+							The second replaces FastAPI's default 422, which has a real problem: it echoes back the invalid <code>input</code>. For a login form, that is the password, returned in the response body.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Answer <b>any domain error</b> with its own status, code, message and details, through the shared function from step 04.</li>
+								<li>Answer <b>input validation failures</b> with 422, <code>VALIDATION_ERROR</code>, a general message, and <b>one detail per problem</b>.</li>
+								<li>Give each detail a readable <b>field path</b> such as <code>body.email</code>, or <code>body.items.0.quantity</code> for a list position, plus the message and the error type.</li>
+								<li><b>Never copy Pydantic's <code>input</code></b> into the response.</li>
+								<li>Report <b>every</b> problem, not only the first: a body missing both email and password lists two details.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the import this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>RequestValidationError</dt>
+									<dd><b>Raised by FastAPI when a request doesn't match its schema</b>, before your route runs. <code>exc.errors()</code> lists the problems.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python">async def _handle_app_error(request: Request, exc: AppError) -&gt; JSONResponse:
+    """Convert a domain error raised by a service into its HTTP response.
+
+    Returns:
+        The error response with the exception's own status and code.
+    """
+    return _error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+
+
+async def _handle_validation_error(request: Request, exc: RequestValidationError) -&gt; JSONResponse:
+    """Convert a Pydantic input validation failure into a 422 response.
+
+    Returns:
+        A 422 response with code ``VALIDATION_ERROR`` and one detail per
+        problem.
+    """
+    details: list[dict[str, Any]] = []
+
+    for error in exc.errors():
+        loc = error["loc"]
+        details.append(
+            {
+                "field": ".".join(str(part) for part in loc),
+                "message": error["msg"],
+                "type": error["type"],
+            }
+        )
+
+    return _error_response(
+        request,
+        status_code=422,
+        code=ErrorCode.VALIDATION_ERROR,
+        message="The request contains invalid data.",
+        details=details,
+    )</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>My <code>return</code> sits after the loop, not inside it, where it would report only the first error.</span></label></li>
+								<li><label><input type="checkbox" /><span>Each detail has <code>field</code>, <code>message</code> and <code>type</code>, and never <code>input</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>The path uses <code>str(part)</code>, because list positions in <code>loc</code> are integers.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why FastAPI's default 422 would leak a password here.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-06">
+						<div class="section__kicker">Step 06</div>
+						<h2>Framework errors, crashes, and wiring it all up</h2>
+						<p>
+							Two kinds of error never pass through your services. Starlette raises its own <code>HTTPException</code> for an unknown URL, a known URL with the wrong method, and FastAPI's login helper. Anything nobody planned for is a bug, and needs the opposite treatment from everything else: full detail in the log, as little as possible in the response.
+						</p>
+						<p>
+							The exception text of a crash can contain SQL, file paths or patient data, so it must never reach the client (plan §12).
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Map Starlette's statuses to codes, with a <b>fallback that is always an error code</b>: <code>INTERNAL_ERROR</code> for 5xx, <code>BAD_REQUEST</code> otherwise. A status number there breaks the contract.</li>
+								<li><b>Keep the exception's headers</b> on the response: a 405 must say which methods are <code>Allow</code>ed, and a 401 from the login helper carries <code>WWW-Authenticate</code>.</li>
+								<li>Make the message <b>always a string</b>.</li>
+								<li>For unexpected errors, <b>log the full traceback with the request ID</b>, and respond with 500, <code>INTERNAL_ERROR</code> and a fixed message.</li>
+								<li>Provide <b>one public function</b> that attaches all four handlers to an app. <code>main.py</code> will call it.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the imports this step needs
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>HTTPException as StarletteHTTPException</dt>
+									<dd><b>Starlette's HTTP error.</b> Register this one, not FastAPI's: FastAPI's is a subclass, so Starlette's handler catches both, but not the other way round.</dd>
+								</div>
+								<div>
+									<dt>FastAPI</dt>
+									<dd><b>The application type</b>, which <code>register_exception_handlers</code> receives.</dd>
+								</div>
+								<div>
+									<dt>logging</dt>
+									<dd><b>The standard logging module.</b> <code>logger.exception(...)</code> writes a message plus the traceback of the error being handled.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									backend/app/core/errors.py
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-python"># Maps the statuses Starlette and FastAPI's security helpers raise to error codes.
+_STATUS_TO_ERROR_CODE: dict[int, ErrorCode] = {
+    400: ErrorCode.BAD_REQUEST,
+    401: ErrorCode.AUTHENTICATION_FAILED,
+    403: ErrorCode.PERMISSION_DENIED,
+    404: ErrorCode.NOT_FOUND,
+    405: ErrorCode.METHOD_NOT_ALLOWED,
+    409: ErrorCode.CONFLICT,
+    422: ErrorCode.VALIDATION_ERROR,
+    429: ErrorCode.RATE_LIMITED,
+}
+
+
+async def _handle_http_exception(request: Request, exc: StarletteHTTPException) -&gt; JSONResponse:
+    """Convert Starlette's HTTP errors into the standard error format.
+
+    Returns:
+        An error response with the same status and any headers the exception
+        carried.
+    """
+    status_code: int = exc.status_code
+    default_code: ErrorCode = (
+        ErrorCode.INTERNAL_ERROR if status_code &gt;= 500 else ErrorCode.BAD_REQUEST
+    )
+    code: ErrorCode = _STATUS_TO_ERROR_CODE.get(status_code, default_code)
+    message: str = str(exc.detail)
+    headers = exc.headers
+
+    response: JSONResponse = _error_response(request, status_code, code, message)
+
+    if headers:
+        response.headers.update(headers)
+
+    return response
+
+
+async def _handle_unexpected_error(request: Request, exc: Exception) -&gt; JSONResponse:
+    """Log an unplanned exception and return a generic 500 response.
+
+    Returns:
+        A 500 response with code ``INTERNAL_ERROR`` and a generic message.
+    """
+    request_id = getattr(request.state, "request_id", None)
+    logger.exception("Unhandled error (request_id=%s)", request_id)
+
+    return _error_response(
+        request,
+        status_code=500,
+        code=ErrorCode.INTERNAL_ERROR,
+        message="An unexpected error occurred.",
+    )
+
+
+def register_exception_handlers(app: FastAPI) -&gt; None:
+    """Attach all four error handlers to the application."""
+    app.add_exception_handler(AppError, _handle_app_error)
+    app.add_exception_handler(RequestValidationError, _handle_validation_error)
+    app.add_exception_handler(StarletteHTTPException, _handle_http_exception)
+    app.add_exception_handler(Exception, _handle_unexpected_error)</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for backend/app/core/errors.py">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>My fallback is an <code>ErrorCode</code>, not <code>AppError.status_code</code> (the number 500).</span></label></li>
+								<li><label><input type="checkbox" /><span>I return the response <code>_error_response</code> built, not <code>JSONResponse(response)</code>, which wraps it again and crashes.</span></label></li>
+								<li><label><input type="checkbox" /><span>The 500 body never contains <code>str(exc)</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>The log call uses <code>%s</code> and a separate argument, not an f-string (Ruff <code>G004</code>).</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<!-- BLOCK: verification, terminal output ---------------- -->
+					<section class="section reveal" id="verify">
+						<div class="section__kicker">Finish</div>
+						<h2>Check your work</h2>
+						<p>
+							Run both from <code>backend/</code>. The first shows the classes on their own; the second registers the handlers on a throwaway app and sends two requests: one to a route that raises a domain error, and one to a URL that doesn't exist.
+						</p>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								backend/
+							</div>
+							<div class="term__body"><div class="term__cmd">uv run python -c "from app.core.errors import NotFoundError, ConflictError, ErrorCode; e = NotFoundError('Patient not found.'); print(e.status_code, e.code, e.details); c = ConflictError('Not enough stock.', code=ErrorCode.INSUFFICIENT_STOCK); print(c.status_code, c.code)"</div><div class="term__out">404 NOT_FOUND []</div><div class="term__out--ok">409 INSUFFICIENT_STOCK</div></div>
+						</div>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								backend/
+							</div>
+							<div class="term__body"><div class="term__cmd">uv run python -c "from fastapi import FastAPI; from fastapi.testclient import TestClient; from app.core.errors import ConflictError, ErrorCode, register_exception_handlers; app = FastAPI(); register_exception_handlers(app); app.get('/stock')(lambda: (_ for _ in ()).throw(ConflictError('Not enough stock.', code=ErrorCode.INSUFFICIENT_STOCK))); c = TestClient(app); print(c.get('/stock').json()); print(c.get('/nope').json())"</div><div class="term__out--ok">{'error': {'code': 'INSUFFICIENT_STOCK', 'message': 'Not enough stock.', 'details': [], 'request_id': None}}</div><div class="term__out--ok">{'error': {'code': 'NOT_FOUND', 'message': 'Not Found', 'details': [], 'request_id': None}}</div></div>
+						</div>
+
+						<p style="margin-top: var(--sp-3)">
+							Both responses have the same shape, although one came from your service and the other from the framework. <code>request_id</code> is <code>None</code> because the middleware that sets it is the next stage. This does not yet prove the handlers are attached to the real application: that happens in <code>main.py</code>.
+						</p>
+
+						<div class="check">
+							<div class="block-label">Before you commit</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Both commands printed what this page shows.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>uv run ruff check .</code> and <code>uv run ruff format --check .</code> pass.</span></label></li>
+								<li><label><input type="checkbox" /><span>Every module, class and function I wrote has a docstring, and every import has its one-line comment.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain each line of <code>errors.py</code> without looking at this page.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<footer class="foot">
+						<span>Hospital Management System · Milestone 1.1 · Stage 04</span>
+						<span>Written after the stage was built and verified.</span>
+					</footer>
+				</main>
+			</div>
+		</div>
+
+		<script>
+			(function () {
+				"use strict";
+
+				/* Syntax highlighting (no-op if the CDN is unavailable). */
+				if (window.hljs) {
+					document.querySelectorAll("pre code").forEach(function (block) {
+						window.hljs.highlightElement(block);
+					});
+				}
+
+				var root = document.documentElement;
+				var store = {
+					get: function (key) {
+						try {
+							return localStorage.getItem(key);
+						} catch (e) {
+							return null;
+						}
+					},
+					set: function (key, value) {
+						try {
+							localStorage.setItem(key, value);
+						} catch (e) {
+							/* Storage unavailable: the choice lasts for this page view. */
+						}
+					},
+				};
+
+				/* Theme: dark unless the reader has chosen light. */
+				var themeButton = document.getElementById("themeToggle");
+				var moon = themeButton.querySelector(".icon-moon");
+				var sun = themeButton.querySelector(".icon-sun");
+
+				function currentTheme() {
+					return root.dataset.theme === "light" ? "light" : "dark";
+				}
+				function paintThemeButton() {
+					var dark = currentTheme() === "dark";
+					moon.hidden = dark;
+					sun.hidden = !dark;
+					themeButton.setAttribute(
+						"aria-label",
+						dark ? "Switch to light theme" : "Switch to dark theme"
+					);
+				}
+				themeButton.addEventListener("click", function () {
+					var next = currentTheme() === "dark" ? "light" : "dark";
+					root.dataset.theme = next;
+					store.set("hms-tutorial-theme", next);
+					paintThemeButton();
+				});
+				paintThemeButton();
+
+				/* Text size: one multiplier, so every level keeps its
+				   relative size instead of collapsing into one. */
+				var STEPS = [0.9, 1, 1.1, 1.25, 1.4];
+				var typeDown = document.getElementById("typeDown");
+				var typeUp = document.getElementById("typeUp");
+				var stepIndex = STEPS.indexOf(parseFloat(store.get("hms-tutorial-type-scale")));
+				if (stepIndex < 0) stepIndex = STEPS.indexOf(1);
+
+				function applyScale() {
+					var scale = STEPS[stepIndex];
+					root.style.setProperty("--type-scale", String(scale));
+					store.set("hms-tutorial-type-scale", String(scale));
+					typeDown.disabled = stepIndex === 0;
+					typeUp.disabled = stepIndex === STEPS.length - 1;
+					var percent = Math.round(scale * 100) + "%";
+					typeDown.title = "Decrease text size (now " + percent + ")";
+					typeUp.title = "Increase text size (now " + percent + ")";
+				}
+				typeDown.addEventListener("click", function () {
+					if (stepIndex > 0) stepIndex--;
+					applyScale();
+				});
+				typeUp.addEventListener("click", function () {
+					if (stepIndex < STEPS.length - 1) stepIndex++;
+					applyScale();
+				});
+				applyScale();
+
+				/* Reading progress. */
+				var fill = document.getElementById("progressFill");
+				function updateProgress() {
+					var doc = document.documentElement;
+					var max = doc.scrollHeight - doc.clientHeight;
+					fill.style.width = (max > 0 ? (doc.scrollTop / max) * 100 : 0) + "%";
+				}
+				document.addEventListener("scroll", updateProgress, { passive: true });
+				updateProgress();
+
+				/* Sidebar on small screens. */
+				var sidebar = document.getElementById("sidebar");
+				var toggle = document.getElementById("navToggle");
+				var overlay = document.getElementById("overlay");
+				function setNav(open) {
+					sidebar.classList.toggle("is-open", open);
+					overlay.classList.toggle("is-open", open);
+					toggle.setAttribute("aria-expanded", String(open));
+				}
+				toggle.addEventListener("click", function () {
+					setNav(!sidebar.classList.contains("is-open"));
+				});
+				overlay.addEventListener("click", function () {
+					setNav(false);
+				});
+				document.addEventListener("keydown", function (event) {
+					if (event.key === "Escape") setNav(false);
+				});
+
+				/* Scroll-spy: highlight the section being read. */
+				var links = Array.prototype.slice.call(document.querySelectorAll(".nav-link"));
+				var spy = new IntersectionObserver(
+					function (entries) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							links.forEach(function (link) {
+								link.classList.toggle(
+									"is-active",
+									link.getAttribute("href") === "#" + entry.target.id
+								);
+							});
+						});
+					},
+					{ rootMargin: "-12% 0px -72% 0px" }
+				);
+				links.forEach(function (link) {
+					var section = document.querySelector(link.getAttribute("href"));
+					if (section) spy.observe(section);
+				});
+
+				/* Sections fade up once, as they come into view. */
+				var reveals = document.querySelectorAll(".reveal");
+				var revealer = new IntersectionObserver(
+					function (entries, observer) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							entry.target.classList.add("is-in");
+							observer.unobserve(entry.target);
+						});
+					},
+					{ rootMargin: "0px 0px -8% 0px", threshold: 0.05 }
+				);
+				reveals.forEach(function (section) {
+					revealer.observe(section);
+				});
+
+				/* Blurred code: reveal on click, or with the keyboard. */
+				document.querySelectorAll(".code__mask").forEach(function (mask) {
+					mask.addEventListener("click", function () {
+						mask.closest(".code").classList.remove("is-masked");
+					});
+				});
+
+				/* Copy a code panel's contents. */
+				document.querySelectorAll(".code__copy").forEach(function (button) {
+					button.addEventListener("click", function () {
+						var panel = button.closest(".code");
+						var code = panel.querySelector("code");
+						var done = function () {
+							button.textContent = "Copied";
+							button.classList.add("is-done");
+							setTimeout(function () {
+								button.textContent = "Copy";
+								button.classList.remove("is-done");
+							}, 1600);
+						};
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(code.innerText).then(done, function () {});
+						}
+					});
+				});
+			})();
+		</script>
+	</body>
+</html>

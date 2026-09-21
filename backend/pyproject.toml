@@ -47,3 +47,6 @@ force-single-line = true  # one imported name per line
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]  # the project isn't installed as a package, so make `app` importable
+filterwarnings = [
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated:DeprecationWarning:starlette\\.testclient",
+]

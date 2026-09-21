@@ -32,7 +32,7 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=5,
-    connect_args={"options": "-c timezone=utc"},
+    connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
 )
 
 # expire_on_commit=False keeps loaded values after commit(), so a service can

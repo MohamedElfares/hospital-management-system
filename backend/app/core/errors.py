@@ -83,6 +83,7 @@ class ErrorCode(StrEnum):
     APPOINTMENT_SLOT_TAKEN = "APPOINTMENT_SLOT_TAKEN"
     INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK"
     ACTIVATION_FAILED = "ACTIVATION_FAILED"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
 
 class AppError(Exception):
@@ -208,6 +209,19 @@ class RateLimitedError(AppError):
 
     status_code: int = 429
     code: str = ErrorCode.RATE_LIMITED
+
+
+class ServiceUnavailableError(AppError):
+    """A dependency the request needs is temporarily unavailable (503).
+
+    Raised by the readiness check when the database can't be reached, for
+    example while a suspended Neon instance wakes up. It means "try again
+    shortly", which is different from a 500: nothing is broken in the code,
+    so a monitoring system should wait rather than raise an alert about a bug.
+    """
+
+    status_code: int = 503
+    code: str = ErrorCode.SERVICE_UNAVAILABLE
 
 
 def _error_response(

@@ -1,0 +1,2073 @@
+<!doctype html>
+<html lang="en" class="no-js">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>CI and a protected main — HMS Tutorial</title>
+		<meta
+			name="description"
+			content="Stage 08 of the Hospital Management System build: a GitHub Actions workflow, Dependabot, and a ruleset that makes the checks mandatory."
+		/>
+		<script>
+			/* Applied before first paint, so a stored theme or text size
+			   never flashes the default one first. */
+			document.documentElement.className = "js";
+			try {
+				var savedTheme = localStorage.getItem("hms-tutorial-theme");
+				if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+				var savedScale = localStorage.getItem("hms-tutorial-type-scale");
+				if (savedScale) {
+					document.documentElement.style.setProperty("--type-scale", savedScale);
+				}
+			} catch (e) {
+				/* Private mode or blocked storage: defaults are fine. */
+			}
+		</script>
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+			rel="stylesheet"
+		/>
+
+		<!-- Syntax highlighting only; the colour theme below is ours. -->
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+
+		<style>
+			/* ==========================================================
+			   DESIGN TOKENS
+			   Every colour, font, size, space and radius lives here.
+			   Change a value once and the whole page follows.
+			   ========================================================== */
+			:root {
+				/* Dark is the default these pages ship with; the light
+				   palette below is the reader's opt-in. */
+				color-scheme: dark;
+
+				/* --- Colour: canvas (70%) --------------------------- */
+				--bg: #161512;
+
+				/* --- Colour: surfaces (20%) ------------------------- */
+				--surface: #1e1d19;
+				--surface-sunken: #1a1916;
+				--rule: #2e2c27;
+				--rule-strong: #46423a;
+				--shadow-panel: rgba(0, 0, 0, 0.5);
+				--scrim: rgba(0, 0, 0, 0.55);
+
+				/* --- Colour: ink ------------------------------------ */
+				--ink: #ece7dc;
+				--ink-mid: #bab3a6;
+				--ink-soft: #948d81;
+
+				/* --- Colour: accent (10%) --------------------------- */
+				--accent: #6fc3b5;
+				--accent-ink: #14201e; /* text or marks drawn on the accent */
+				--accent-wash: rgba(111, 195, 181, 0.12);
+				--accent-line: rgba(111, 195, 181, 0.42);
+
+				/* --- Colour: code surface --------------------------- */
+				--code-bg: #100f0d;
+				--code-head: #1a1916;
+				--code-rule: #2b2924;
+				--code-ink: #ece7dc;
+				--code-dim: #9a9388;
+
+				/* --- Colour: syntax --------------------------------- */
+				--syn-comment: #928a7c;
+				--syn-keyword: #c8a2c8;
+				--syn-string: #a8c37a;
+				--syn-number: #e0b070;
+				--syn-func: #7fb5c9;
+				--syn-class: #7cc9ba;
+				--syn-meta: #d8a657;
+
+				/* --- Type ------------------------------------------- */
+				--font-display: "Fraunces", Georgia, serif;
+				--font-body: "DM Sans", system-ui, sans-serif;
+				--font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+				/* One multiplier drives every size below, so the reader's
+				   text-size control keeps the hierarchy intact instead of
+				   flattening everything to one size. */
+				--type-scale: 1;
+
+				--size-label: calc(0.6875rem * var(--type-scale)); /* 11px */
+				--size-small: calc(0.8125rem * var(--type-scale)); /* 13px */
+				--size-code: calc(0.8125rem * var(--type-scale)); /* 13px  */
+				--size-task: calc(0.9375rem * var(--type-scale)); /* 15px  */
+				--size-body: calc(1.0625rem * var(--type-scale)); /* 17px  */
+				--size-lede: calc(1.1875rem * var(--type-scale)); /* 19px  */
+				--size-brand: calc(1.05rem * var(--type-scale));
+				--size-h3: calc(clamp(1.1rem, 1.6vw, 1.25rem) * var(--type-scale));
+				--size-h2: calc(clamp(1.55rem, 3vw, 2rem) * var(--type-scale));
+				--size-h1: calc(clamp(2.1rem, 5vw, 3.2rem) * var(--type-scale));
+
+				--leading-body: 1.75;
+				--leading-head: 1.15;
+				--track-label: 0.14em;
+				--measure: 68ch;
+
+				/* --- Space (8px base) ------------------------------- */
+				--sp-1: 0.5rem;
+				--sp-2: 1rem;
+				--sp-3: 1.5rem;
+				--sp-4: 2rem;
+				--sp-6: 3rem;
+				--sp-8: 4rem;
+				--sp-12: 6rem;
+
+				/* --- Shape ------------------------------------------ */
+				--radius-panel: 10px;
+				--radius-control: 6px;
+				--radius-check: 4px;
+				--radius-pill: 999px;
+				--hairline: 1px solid var(--rule);
+				--check-size: calc(1.05rem * var(--type-scale));
+
+				/* --- Motion ----------------------------------------- */
+				--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+				--dur-reveal: 0.55s;
+				--dur-ui: 0.18s;
+
+				/* --- Layout ----------------------------------------- */
+				--sidebar-w: 264px;
+				--content-max: 820px;
+				--gutter: clamp(1.25rem, 4vw, 3.5rem);
+			}
+
+			/* ==========================================================
+			   LIGHT THEME
+			   The same warm family in reverse: ivory canvas, white cards,
+			   and a code panel that stays dark so code still reads as code.
+			   Applied only when the reader picks it from the toggle, which
+			   stores the choice — the operating system's preference is
+			   deliberately not consulted, so every page opens the same way.
+			   Syntax colours are shared by both themes.
+			   ========================================================== */
+			:root[data-theme="light"] {
+				color-scheme: light;
+
+				--bg: #faf8f4;
+				--surface: #ffffff;
+				--surface-sunken: #f6f2ea;
+				--rule: #e6e0d5;
+				--rule-strong: #cfc7b7;
+				--shadow-panel: rgba(0, 0, 0, 0.05);
+				--scrim: rgba(27, 26, 23, 0.35);
+
+				--ink: #1b1a17;
+				--ink-mid: #57534b;
+				--ink-soft: #6f6a60;
+
+				--accent: #0f766e;
+				--accent-ink: #ffffff;
+				--accent-wash: rgba(15, 118, 110, 0.09);
+				--accent-line: rgba(15, 118, 110, 0.35);
+
+				--code-bg: #1b1a17;
+				--code-head: #232220;
+				--code-rule: #302e2a;
+				--code-ink: #ece7dc;
+				--code-dim: #979085;
+			}
+
+			/* ==========================================================
+			   BASE
+			   ========================================================== */
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			html {
+				scroll-behavior: smooth;
+				scroll-padding-top: var(--sp-6);
+			}
+
+			body {
+				background: var(--bg);
+				color: var(--ink);
+				font-family: var(--font-body);
+				font-size: var(--size-body);
+				line-height: var(--leading-body);
+				-webkit-font-smoothing: antialiased;
+				text-rendering: optimizeLegibility;
+				transition: background-color var(--dur-ui) ease,
+					color var(--dur-ui) ease;
+			}
+
+			a {
+				color: var(--accent);
+				text-decoration: none;
+			}
+
+			:focus-visible {
+				outline: 2px solid var(--accent);
+				outline-offset: 3px;
+				border-radius: 2px;
+			}
+
+			.skip-link {
+				position: absolute;
+				left: -9999px;
+				top: var(--sp-1);
+				background: var(--ink);
+				color: var(--bg);
+				padding: var(--sp-1) var(--sp-2);
+				border-radius: var(--radius-control);
+				z-index: 60;
+			}
+			.skip-link:focus {
+				left: var(--sp-1);
+			}
+
+			/* ==========================================================
+			   READING PROGRESS
+			   ========================================================== */
+			.progress {
+				position: fixed;
+				inset: 0 0 auto 0;
+				height: 2px;
+				background: transparent;
+				z-index: 50;
+			}
+			.progress__fill {
+				height: 100%;
+				width: 0;
+				background: var(--accent);
+			}
+
+			/* ==========================================================
+			   SIDEBAR — stage contents
+			   ========================================================== */
+			.sidebar {
+				position: fixed;
+				inset: 0 auto 0 0;
+				width: var(--sidebar-w);
+				padding: var(--sp-6) var(--sp-3);
+				border-right: var(--hairline);
+				background: var(--bg);
+				overflow-y: auto;
+				z-index: 40;
+			}
+
+			.sidebar__brand {
+				font-family: var(--font-display);
+				font-size: var(--size-brand);
+				font-weight: 500;
+				line-height: 1.3;
+			}
+
+			.sidebar__stage {
+				margin-top: 2px;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.nav-group {
+				margin-top: var(--sp-4);
+			}
+
+			.nav-group__label {
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+				padding-bottom: var(--sp-1);
+				margin-bottom: var(--sp-1);
+				border-bottom: var(--hairline);
+			}
+
+			.nav-link {
+				display: block;
+				padding: 0.4rem 0 0.4rem var(--sp-2);
+				margin-left: -1px;
+				border-left: 1px solid transparent;
+				color: var(--ink-mid);
+				font-size: var(--size-small);
+				line-height: 1.45;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.nav-link:hover {
+				color: var(--ink);
+			}
+			.nav-link.is-active {
+				color: var(--accent);
+				border-left-color: var(--accent);
+			}
+			.nav-link__num {
+				font-family: var(--font-mono);
+				font-size: 0.6875rem;
+				color: var(--ink-soft);
+				margin-right: 0.5em;
+			}
+			.nav-link.is-active .nav-link__num {
+				color: var(--accent);
+			}
+
+			/* Mobile disclosure button for the sidebar */
+			.nav-toggle {
+				display: none;
+				position: fixed;
+				top: var(--sp-1);
+				left: var(--sp-1);
+				z-index: 45;
+				gap: 0.5em;
+				align-items: center;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				padding: 0.55rem 0.95rem;
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				color: var(--ink);
+				cursor: pointer;
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.overlay {
+				display: none;
+				position: fixed;
+				inset: 0;
+				background: var(--scrim);
+				z-index: 35;
+			}
+
+			/* ==========================================================
+			   READER CONTROLS — text size and theme
+			   Fixed opposite the mobile Contents button, out of the
+			   reading column at every width.
+			   ========================================================== */
+			.controls {
+				position: fixed;
+				top: var(--sp-1);
+				right: var(--sp-1);
+				z-index: 45;
+				display: flex;
+				align-items: center;
+				gap: 0.15rem;
+				padding: 0.25rem;
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-pill);
+				box-shadow: 0 1px 3px var(--shadow-panel);
+			}
+
+			.controls button {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 2rem;
+				height: 2rem;
+				border: 0;
+				border-radius: var(--radius-pill);
+				background: transparent;
+				color: var(--ink-mid);
+				font-family: var(--font-body);
+				font-weight: 500;
+				line-height: 1;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease, color var(--dur-ui) ease;
+			}
+			.controls button:hover:not(:disabled) {
+				background: var(--surface-sunken);
+				color: var(--ink);
+			}
+			.controls button:disabled {
+				opacity: 0.35;
+				cursor: default;
+			}
+
+			/* The two text-size buttons carry the same letter at different
+			   sizes, which says what they do without a tooltip. */
+			.controls__type--down {
+				font-size: 0.75rem;
+			}
+			.controls__type--up {
+				font-size: 1.0625rem;
+			}
+
+			.controls__divider {
+				width: 1px;
+				height: 1.1rem;
+				background: var(--rule);
+				margin: 0 0.15rem;
+			}
+
+			/* The theme button shows the theme it switches to; the script
+			   swaps which icon is hidden. */
+			.controls__theme svg {
+				display: block;
+			}
+			.controls__theme svg[hidden] {
+				display: none;
+			}
+
+			/* ==========================================================
+			   PAGE SHELL — one stacked column at every width
+			   ========================================================== */
+			.shell {
+				margin-left: var(--sidebar-w);
+				padding: 0 var(--gutter) var(--sp-12);
+			}
+
+			.column {
+				max-width: var(--content-max);
+				margin: 0 auto;
+			}
+
+			/* ==========================================================
+			   HERO — topic title, stage number, one-line intro
+			   ========================================================== */
+			.hero {
+				padding: var(--sp-12) 0 var(--sp-6);
+				border-bottom: var(--hairline);
+			}
+
+			.hero__eyebrow {
+				display: flex;
+				align-items: center;
+				gap: 0.75em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.stage-badge {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				color: var(--accent);
+				background: var(--accent-wash);
+				border-radius: var(--radius-pill);
+				padding: 0.3em 0.75em;
+			}
+
+			.hero h1 {
+				font-family: var(--font-display);
+				font-size: var(--size-h1);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.02em;
+				margin: var(--sp-3) 0 var(--sp-2);
+				max-width: 20ch;
+			}
+
+			.lede {
+				font-size: var(--size-lede);
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			/* Files this stage touches — one slim row under the intro. */
+			.hero__files {
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				margin-top: var(--sp-3);
+				padding-top: var(--sp-2);
+				border-top: var(--hairline);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--ink-mid);
+			}
+
+			.hero__files span {
+				display: inline-flex;
+				align-items: baseline;
+				gap: 0.5em;
+			}
+
+			.hero__files em {
+				font-family: var(--font-body);
+				font-style: normal;
+				font-size: var(--size-label);
+				letter-spacing: 0.04em;
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   SECTIONS & PROSE
+			   ========================================================== */
+			.section {
+				padding-top: var(--sp-8);
+			}
+
+			.section__kicker {
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--ink-soft);
+			}
+
+			.section h2 {
+				font-family: var(--font-display);
+				font-size: var(--size-h2);
+				font-weight: 400;
+				line-height: var(--leading-head);
+				letter-spacing: -0.015em;
+				margin: var(--sp-1) 0 var(--sp-2);
+			}
+
+			.section h3 {
+				font-family: var(--font-display);
+				font-size: var(--size-h3);
+				font-weight: 500;
+				line-height: 1.3;
+				margin: var(--sp-4) 0 var(--sp-1);
+			}
+
+			.section p {
+				color: var(--ink-mid);
+				max-width: var(--measure);
+			}
+
+			.section p + p {
+				margin-top: var(--sp-2);
+			}
+
+			.section strong {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			:not(pre) > code {
+				font-family: var(--font-mono);
+				font-size: 0.85em;
+				background: var(--surface-sunken);
+				border: var(--hairline);
+				border-radius: 4px;
+				padding: 0.1em 0.35em;
+				color: var(--ink);
+			}
+
+			/* Shared label above task, hint and check blocks. */
+			.block-label {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-size: var(--size-label);
+				letter-spacing: var(--track-label);
+				text-transform: uppercase;
+				color: var(--accent);
+			}
+
+			/* ==========================================================
+			   BLOCK: task — what the code has to do, not how to type it
+			   ========================================================== */
+			.task {
+				margin-top: var(--sp-4);
+			}
+
+			.task ol {
+				list-style: none;
+				counter-reset: task;
+				margin-top: var(--sp-2);
+				max-width: var(--measure);
+			}
+
+			.task li {
+				position: relative;
+				counter-increment: task;
+				padding: 0.55rem 0 0.55rem 2.5rem;
+				border-top: var(--hairline);
+				font-size: var(--size-task);
+				line-height: 1.65;
+				color: var(--ink-mid);
+			}
+
+			.task li::before {
+				content: counter(task, decimal-leading-zero);
+				position: absolute;
+				left: 0;
+				top: 0.8rem;
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				color: var(--ink-soft);
+			}
+
+			.task li b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: hint — the imports this step needs, folded away
+			   ========================================================== */
+			.hint {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3);
+			}
+
+			.hint summary {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				list-style: none;
+				cursor: pointer;
+			}
+			.hint summary::-webkit-details-marker {
+				display: none;
+			}
+			.hint summary svg {
+				transition: transform var(--dur-ui) ease;
+			}
+			.hint[open] summary svg {
+				transform: rotate(90deg);
+			}
+
+			.import-list {
+				margin-top: var(--sp-2);
+			}
+			.import-list div {
+				display: grid;
+				grid-template-columns: minmax(12ch, 20ch) 1fr;
+				gap: 0.35em var(--sp-2);
+				padding: 0.45rem 0;
+				border-top: var(--hairline);
+				break-inside: avoid;
+			}
+			.import-list dt {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				color: var(--ink);
+			}
+			.import-list dd {
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+			}
+			.import-list dd b {
+				color: var(--ink);
+				font-weight: 500;
+			}
+
+			/* ==========================================================
+			   BLOCK: code panel — path label, copy button, blur-to-reveal
+			   ========================================================== */
+			.code {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.code__head {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: var(--sp-2);
+				padding: 0.6rem 0.75rem 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+			}
+
+			.code__path {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+				min-width: 0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.code__path svg {
+				flex: none;
+				color: var(--syn-class);
+			}
+
+			.code__copy {
+				flex: none;
+				display: inline-flex;
+				align-items: center;
+				gap: 0.45em;
+				background: transparent;
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-control);
+				color: var(--code-dim);
+				font-family: var(--font-mono);
+				font-size: var(--size-label);
+				letter-spacing: 0.06em;
+				text-transform: uppercase;
+				padding: 0.38rem 0.6rem;
+				cursor: pointer;
+				transition: color var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.code__copy:hover {
+				color: var(--code-ink);
+				border-color: var(--code-dim);
+			}
+			.code__copy.is-done {
+				color: var(--syn-class);
+				border-color: var(--syn-class);
+			}
+
+			.code__body {
+				position: relative;
+			}
+
+			.code pre {
+				margin: 0;
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+			}
+
+			.code code {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.75;
+				color: var(--code-ink);
+				background: none;
+				tab-size: 4;
+			}
+
+			/* Masked state: the code is there, just unreadable until asked for. */
+			.code.is-masked pre {
+				filter: blur(6px);
+				user-select: none;
+			}
+
+			.code__mask {
+				position: absolute;
+				inset: 0;
+				display: grid;
+				place-items: center;
+				gap: 0.5em;
+				background: transparent;
+				border: 0;
+				width: 100%;
+				color: var(--code-dim);
+				font-family: var(--font-body);
+				font-size: var(--size-small);
+				cursor: pointer;
+				transition: opacity var(--dur-ui) ease;
+			}
+			.code__mask span {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.5em;
+				background: var(--code-head);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-pill);
+				padding: 0.5rem 1rem;
+			}
+			.code__mask:hover span {
+				color: var(--code-ink);
+			}
+			/* Once revealed the button is gone for good — including from the tab order. */
+			.code:not(.is-masked) .code__mask {
+				opacity: 0;
+				pointer-events: none;
+				visibility: hidden;
+			}
+
+			/* ==========================================================
+			   BLOCK: check list — empty boxes the reader ticks off
+			   ========================================================== */
+			.check {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-2) var(--sp-3) var(--sp-3);
+			}
+
+			.check .block-label {
+				color: var(--ink-soft);
+			}
+
+			.check ul {
+				list-style: none;
+				margin-top: var(--sp-1);
+			}
+
+			.check li {
+				border-top: var(--hairline);
+			}
+			.check li:first-child {
+				border-top: 0;
+			}
+
+			.check label {
+				display: flex;
+				gap: 0.85em;
+				align-items: flex-start;
+				padding: 0.6rem 0;
+				font-size: var(--size-task);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				cursor: pointer;
+				transition: color var(--dur-ui) ease;
+			}
+			.check label:hover {
+				color: var(--ink);
+			}
+
+			.check input {
+				appearance: none;
+				-webkit-appearance: none;
+				flex: none;
+				width: var(--check-size);
+				height: var(--check-size);
+				margin-top: 0.3em;
+				border: 1.5px solid var(--rule-strong);
+				border-radius: var(--radius-check);
+				background: var(--bg);
+				display: grid;
+				place-content: center;
+				cursor: pointer;
+				transition: background var(--dur-ui) ease,
+					border-color var(--dur-ui) ease;
+			}
+			.check input::after {
+				content: "";
+				width: 0.3em;
+				height: 0.55em;
+				margin-top: -0.12em;
+				border: solid transparent;
+				border-width: 0 2px 2px 0;
+				transform: rotate(45deg);
+				transition: border-color var(--dur-ui) ease;
+			}
+			.check label:hover input {
+				border-color: var(--accent);
+			}
+			.check input:checked {
+				background: var(--accent);
+				border-color: var(--accent);
+			}
+			.check input:checked::after {
+				border-color: var(--accent-ink);
+			}
+			.check input:checked ~ span {
+				color: var(--ink-soft);
+			}
+
+			/* ==========================================================
+			   BLOCK: terminal — command and its output
+			   ========================================================== */
+			.term {
+				margin-top: var(--sp-3);
+				background: var(--code-bg);
+				border: 1px solid var(--code-rule);
+				border-radius: var(--radius-panel);
+				overflow: hidden;
+			}
+
+			.term__head {
+				display: flex;
+				align-items: center;
+				gap: 0.5em;
+				padding: 0.6rem 1rem;
+				background: var(--code-head);
+				border-bottom: 1px solid var(--code-rule);
+				font-family: var(--font-mono);
+				font-size: var(--size-small);
+				color: var(--code-dim);
+			}
+			.term__head svg {
+				color: var(--syn-func);
+			}
+
+			.term__body {
+				padding: var(--sp-2) var(--sp-3);
+				overflow-x: auto;
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				line-height: 1.8;
+				white-space: pre;
+			}
+
+			.term__cmd {
+				color: var(--code-ink);
+			}
+			.term__cmd::before {
+				content: "$";
+				color: var(--syn-class);
+				margin-right: 0.75em;
+			}
+			.term__out {
+				color: var(--code-dim);
+			}
+			.term__out--ok {
+				color: var(--syn-string);
+			}
+
+			/* ==========================================================
+			   BLOCK: callout — packages this stage relies on
+			   ========================================================== */
+			.callout {
+				margin-top: var(--sp-3);
+				background: var(--surface);
+				border: var(--hairline);
+				border-left: 2px solid var(--accent-line);
+				border-radius: var(--radius-panel);
+				padding: var(--sp-3);
+			}
+
+			.callout__list {
+				list-style: none;
+				margin-top: var(--sp-2);
+			}
+			.callout__list li {
+				display: flex;
+				gap: 0.75em;
+				padding: 0.4rem 0;
+				font-size: var(--size-small);
+				line-height: 1.6;
+				color: var(--ink-mid);
+				border-top: var(--hairline);
+			}
+			.callout__list li:first-child {
+				border-top: 0;
+			}
+			.callout__list b {
+				font-family: var(--font-mono);
+				font-size: var(--size-code);
+				font-weight: 500;
+				color: var(--ink);
+				flex: none;
+				min-width: 11ch;
+			}
+
+			/* ==========================================================
+			   FOOTER
+			   ========================================================== */
+			.foot {
+				margin-top: var(--sp-12);
+				padding-top: var(--sp-3);
+				border-top: var(--hairline);
+				font-size: var(--size-small);
+				color: var(--ink-soft);
+				display: flex;
+				flex-wrap: wrap;
+				gap: var(--sp-1) var(--sp-3);
+				justify-content: space-between;
+			}
+
+			/* ==========================================================
+			   SYNTAX THEME (highlight.js classes, our colours)
+			   ========================================================== */
+			.hljs-comment,
+			.hljs-quote {
+				color: var(--syn-comment);
+				font-style: italic;
+			}
+			.hljs-keyword,
+			.hljs-literal,
+			.hljs-type {
+				color: var(--syn-keyword);
+			}
+			.hljs-string,
+			.hljs-meta .hljs-string {
+				color: var(--syn-string);
+			}
+			.hljs-number {
+				color: var(--syn-number);
+			}
+			.hljs-title,
+			.hljs-title.function_ {
+				color: var(--syn-func);
+			}
+			.hljs-title.class_,
+			.hljs-built_in {
+				color: var(--syn-class);
+			}
+			.hljs-meta,
+			.hljs-decorator {
+				color: var(--syn-meta);
+			}
+			.hljs-params,
+			.hljs-attr,
+			.hljs-variable {
+				color: var(--code-ink);
+			}
+
+			/* ==========================================================
+			   MOTION — one slow fade-up, nothing bouncy
+			   ========================================================== */
+			.js .reveal {
+				opacity: 0;
+				transform: translateY(12px);
+				transition: opacity var(--dur-reveal) var(--ease-out),
+					transform var(--dur-reveal) var(--ease-out);
+			}
+			.js .reveal.is-in {
+				opacity: 1;
+				transform: none;
+			}
+
+			/* ==========================================================
+			   RESPONSIVE
+			   ========================================================== */
+			@media (max-width: 1080px) {
+				.sidebar {
+					transform: translateX(-100%);
+					transition: transform 0.25s var(--ease-out);
+					width: min(320px, 86vw);
+					box-shadow: 0 8px 30px var(--shadow-panel);
+				}
+				.sidebar.is-open {
+					transform: none;
+				}
+				.overlay.is-open {
+					display: block;
+				}
+				.nav-toggle {
+					display: inline-flex;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.hero {
+					padding-top: calc(var(--sp-8) + var(--sp-2));
+				}
+			}
+
+			@media (max-width: 640px) {
+				:root {
+					--size-body: calc(1rem * var(--type-scale));
+					--size-lede: calc(1.0625rem * var(--type-scale));
+					--size-code: calc(0.75rem * var(--type-scale));
+					--sp-8: 3rem;
+					--sp-12: 4rem;
+				}
+				.code pre,
+				.term__body {
+					padding: var(--sp-2);
+				}
+				.callout,
+				.check,
+				.hint {
+					padding: var(--sp-2);
+				}
+				.import-list div {
+					grid-template-columns: 1fr;
+					gap: 0.15em;
+				}
+				.callout__list li {
+					flex-direction: column;
+					gap: 0.15em;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				html {
+					scroll-behavior: auto;
+				}
+				*,
+				*::before,
+				*::after {
+					transition-duration: 0.01ms !important;
+					animation-duration: 0.01ms !important;
+				}
+				.js .reveal {
+					opacity: 1;
+					transform: none;
+				}
+			}
+
+			@media print {
+				.sidebar,
+				.progress,
+				.nav-toggle,
+				.controls,
+				.code__copy,
+				.code__mask {
+					display: none !important;
+				}
+				.shell {
+					margin-left: 0;
+				}
+				.code.is-masked pre {
+					filter: none;
+				}
+				.hint[open],
+				.code,
+				.term,
+				.check {
+					break-inside: avoid;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<div class="progress"><div class="progress__fill" id="progressFill"></div></div>
+		<a class="skip-link" href="#main">Skip to content</a>
+
+		<button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="sidebar">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+				<path d="M4 6h16M4 12h16M4 18h16" />
+			</svg>
+			Contents
+		</button>
+
+		<!-- BLOCK: reader controls — text size and theme ---------------- -->
+		<div class="controls" role="group" aria-label="Reading preferences">
+			<button class="controls__type--down" id="typeDown" type="button" aria-label="Decrease text size">A</button>
+			<button class="controls__type--up" id="typeUp" type="button" aria-label="Increase text size">A</button>
+			<span class="controls__divider" aria-hidden="true"></span>
+			<button class="controls__theme" id="themeToggle" type="button" aria-label="Switch to dark theme">
+				<svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+				</svg>
+				<svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+					<circle cx="12" cy="12" r="4" />
+					<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+				</svg>
+			</button>
+		</div>
+
+		<div class="overlay" id="overlay"></div>
+
+		<!-- BLOCK: sidebar contents ------------------------------------ -->
+		<nav class="sidebar" id="sidebar" aria-label="Stage contents">
+			<div class="sidebar__brand">Hospital Management System</div>
+			<div class="sidebar__stage">Milestone 1.1 · Stage 08</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Before you start</div>
+				<a class="nav-link" href="#libraries">What you already have</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Build it</div>
+				<a class="nav-link" href="#step-01"><span class="nav-link__num">01</span>The workflow skeleton</a>
+				<a class="nav-link" href="#step-02"><span class="nav-link__num">02</span>A database for the job</a>
+				<a class="nav-link" href="#step-03"><span class="nav-link__num">03</span>The steps in order</a>
+				<a class="nav-link" href="#step-04"><span class="nav-link__num">04</span>Dependabot</a>
+				<a class="nav-link" href="#step-05"><span class="nav-link__num">05</span>Protecting main</a>
+				<a class="nav-link" href="#step-06"><span class="nav-link__num">06</span>Issues &amp; the board</a>
+			</div>
+
+			<div class="nav-group">
+				<div class="nav-group__label">Finish</div>
+				<a class="nav-link" href="#verify">Check your work</a>
+			</div>
+		</nav>
+
+		<div class="shell">
+			<div class="column">
+				<!-- BLOCK: page header ---------------------------------- -->
+				<header class="hero">
+					<div class="hero__eyebrow">
+						<span class="stage-badge">Stage 08</span>
+						<span>Milestone 1.1 · Foundation</span>
+					</div>
+					<h1>CI and a protected main</h1>
+					<p class="lede">
+						The checks you already run, made unavoidable: one workflow, dependency updates
+						that arrive as pull requests, and a branch that refuses anything unverified.
+					</p>
+					<div class="hero__files">
+						<span>.github/workflows/ci.yml <em>new</em></span>
+						<span>.github/dependabot.yml <em>new</em></span>
+					</div>
+				</header>
+
+				<main class="content" id="main">
+					<!-- BLOCK: callout — packages already installed ------ -->
+					<section class="section reveal" id="libraries">
+						<div class="section__kicker">Before you start</div>
+						<h2>What you already have</h2>
+						<p>
+							Nothing to install. GitHub Actions runs on GitHub's machines and is free for public repositories, and the checks the workflow runs are the ones already in the project: Ruff, Alembic and pytest.
+						</p>
+
+						<aside class="callout">
+							<div class="block-label">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+									<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+								</svg>
+								Available already
+							</div>
+
+							<ul class="callout__list">
+								<li><b>GitHub Actions</b><span>Runs a workflow on GitHub's runners whenever something happens in the repository — here, a pull request or a push to <code>main</code>.</span></li>
+								<li><b>Dependabot</b><span>Built into GitHub. Reads one config file and opens pull requests when a dependency, action or image has a newer version.</span></li>
+								<li><b>Rulesets</b><span>Repository settings that decide what <code>main</code> accepts: which checks must pass, and whether a pull request is required at all.</span></li>
+								<li><b>gh</b><span>The GitHub CLI, for reading run logs and configuring the repository without leaving the terminal.</span></li>
+							</ul>
+						</aside>
+					</section>
+
+					<section class="section reveal" id="step-01">
+						<div class="section__kicker">Step 01</div>
+						<h2>A workflow that runs exactly what you run</h2>
+						<p>
+							The point of CI is not to add new checks, it is to make the existing ones unavoidable. Everything in this workflow — Ruff, the migrations, pytest — is a command already run by hand; the value is that a machine runs them on every change, on a clean Linux box, without anyone remembering to.
+						</p>
+						<p>
+							Start with when it runs and what it is allowed to do. A token with more permission than a job needs is a standing risk, and a job with no time limit can occupy a runner for six hours before anyone notices.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Run on <b>every pull request</b> and on <b>pushes to <code>main</code></b>, so nothing reaches the default branch unchecked — and add a <b>manual trigger</b>, the only way to start a run without a pull request.</li>
+								<li>Give the job's token <b>read access only</b>: it checks out code and runs tests; it writes nothing.</li>
+								<li><b>Cancel a superseded run</b>: a second push to the same branch makes the first run pointless.</li>
+								<li>Pin the <b>runner image</b> rather than <code>ubuntu-latest</code>, so an image change cannot alter a build without a commit.</li>
+								<li>Give the job a <b>time limit</b> measured in minutes, not hours.</li>
+								<li>Name the job deliberately — that name becomes the status check the branch protection will require.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the keys this step uses
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>on:</dt>
+									<dd><b>The triggers.</b> <code>pull_request</code> runs the workflow from the branch being proposed; <code>push</code> with a branch filter runs it after a merge.</dd>
+								</div>
+								<div>
+									<dt>concurrency:</dt>
+									<dd><b>Groups runs.</b> Runs sharing a group cancel each other when <code>cancel-in-progress</code> is set — one group per branch reference.</dd>
+								</div>
+								<div>
+									<dt>permissions:</dt>
+									<dd><b>Scopes the automatic token.</b> Setting it at the top applies to every job in the file.</dd>
+								</div>
+								<div>
+									<dt>timeout-minutes:</dt>
+									<dd><b>An upper bound per job.</b> GitHub's default is 360 minutes.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									.github/workflows/ci.yml
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-yaml">name: CI
+
+# Runs on every pull request and on pushes to main, so a branch is never
+# merged without the same checks the developer runs locally.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Lets the workflow be started by hand from the Actions tab, which is the
+  # only way to run it without opening a pull request.
+  workflow_dispatch:
+
+# A new push to a branch cancels the run still in progress for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    # This name is the status check the ruleset on main requires, so renaming
+    # the job means updating the ruleset in the same change.
+    name: backend
+    runs-on: ubuntu-24.04
+    # A hung step (a database that never becomes healthy, a stuck download)
+    # fails in minutes instead of occupying a runner for six hours.
+    timeout-minutes: 15</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for .github/workflows/ci.yml">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>My triggers cover pull requests <em>and</em> pushes to the default branch — a workflow that only runs on pull requests leaves the merge itself unverified.</span></label></li>
+								<li><label><input type="checkbox" /><span><code>permissions</code> is <code>contents: read</code>; nothing in this job needs to write.</span></label></li>
+								<li><label><input type="checkbox" /><span>The job name is the one I intend to require in branch protection.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why the runner image is pinned rather than <code>latest</code>.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-02">
+						<div class="section__kicker">Step 02</div>
+						<h2>A real database, not a substitute for one</h2>
+						<p>
+							The test suite talks to PostgreSQL, and plan §13 is explicit that it must keep doing so: partial unique indexes, row locks and sequences behave differently or not at all elsewhere. A runner can start containers alongside the job, so CI gets the same PostgreSQL 17 as the Compose file.
+						</p>
+						<p>
+							A container that is running is not the same as a database that is ready. Without a health check the first migration can arrive before PostgreSQL is accepting connections, and the job fails for a reason that has nothing to do with the change.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Start <b>the same PostgreSQL version</b> the project develops against, with the same user, password and database name as <code>docker-compose.yml</code>.</li>
+								<li>Make the job <b>wait until the database answers</b>, rather than assuming a started container is a usable one.</li>
+								<li>Give the job the <b>settings the application validates at startup</b>: both database URLs, a JWT key, the environment and the log level.</li>
+								<li>Keep them as <b>plain configuration, not repository secrets</b> — and be able to say why that is safe here.</li>
+								<li>Run every step <b>from the backend folder</b> instead of prefixing each command with a <code>cd</code>.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the keys this step uses
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>services:</dt>
+									<dd><b>Containers started next to the job.</b> They are reachable on <code>127.0.0.1</code> at the ports the job maps.</dd>
+								</div>
+								<div>
+									<dt>options: --health-cmd</dt>
+									<dd><b>The readiness probe.</b> The job does not start its steps until the container reports healthy.</dd>
+								</div>
+								<div>
+									<dt>env:</dt>
+									<dd><b>Environment variables for every step in the job.</b> The application reads these exactly as it reads <code>.env</code> locally.</dd>
+								</div>
+								<div>
+									<dt>defaults.run.working-directory</dt>
+									<dd><b>Where <code>run:</code> steps execute.</b> Set once per job instead of repeated in each step.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									.github/workflows/ci.yml
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-yaml">    # PostgreSQL 17 for the integration tests, matching docker-compose.yml.
+    # The health check keeps the job waiting until the database accepts
+    # connections, so the first migration can't run too early.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: hms
+          POSTGRES_PASSWORD: hms
+          POSTGRES_DB: hms
+        ports:
+          - 5432:5432
+        options: &gt;-
+          --health-cmd "pg_isready -U hms -d hms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Configuration for the run, not secrets: the database is a throwaway
+    # container and the JWT key signs nothing that outlives the job. Real
+    # values live in the Render dashboard.
+    env:
+      DATABASE_URL: postgresql+psycopg://hms:hms@127.0.0.1:5432/hms
+      TEST_DATABASE_URL: postgresql+psycopg://hms:hms@127.0.0.1:5432/hms_test
+      JWT_SECRET_KEY: ci-only-not-a-real-secret-0123456789abcdef
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+
+    defaults:
+      run:
+        working-directory: backend</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for .github/workflows/ci.yml">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>The database version matches <code>docker-compose.yml</code>; CI testing a different engine than I develop against would be worse than no CI.</span></label></li>
+								<li><label><input type="checkbox" /><span>There is a health check, and I can say what breaks without one.</span></label></li>
+								<li><label><input type="checkbox" /><span>No value here is a real secret: the database dies with the job, and the JWT key signs nothing that outlives it.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why these are not GitHub Actions secrets.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-03">
+						<div class="section__kicker">Step 03</div>
+						<h2>Steps ordered so the cheapest failure comes first</h2>
+						<p>
+							Order matters for feedback speed. Linting takes a second and formatting takes less; tests take longer and need a database. Putting the fast checks first means an obvious mistake fails in seconds instead of after the whole suite.
+						</p>
+						<p>
+							Two steps here are less obvious. The test suite needs its own database, and the service container only creates the one it was told about. And <code>alembic check</code> earns its place by failing when the models and the migrations disagree — the forgotten-migration bug, caught before it reaches anyone.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Install dependencies from the <b>lockfile</b>, failing if the lockfile and the project file disagree — a dependency must never enter CI without being committed.</li>
+								<li><b>Cache</b> the dependency downloads, keyed on the lockfile.</li>
+								<li>Run <b>lint and formatting</b> before anything that needs a database.</li>
+								<li><b>Create the test database</b> the suite expects; the service container only creates one.</li>
+								<li><b>Apply the migrations</b>, then check that none are missing.</li>
+								<li>Run the tests with a <b>coverage floor</b>, so coverage cannot quietly fall below the number the plan sets (§13: 80%).</li>
+								<li>Pin each action to an <b>exact version</b> where the action publishes no floating major tag.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — what each step uses
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>actions/checkout</dt>
+									<dd><b>Fetches the repository</b> into the runner's workspace.</dd>
+								</div>
+								<div>
+									<dt>astral-sh/setup-uv</dt>
+									<dd><b>Installs uv and caches downloads.</b> <code>cache-dependency-glob</code> tells it which file invalidates the cache.</dd>
+								</div>
+								<div>
+									<dt>uv sync --locked</dt>
+									<dd><b>Installs exactly the lockfile.</b> It fails rather than silently resolving something new.</dd>
+								</div>
+								<div>
+									<dt>psql</dt>
+									<dd><b>Already on the runner image.</b> Used once, to create the database the tests connect to.</dd>
+								</div>
+								<div>
+									<dt>--cov-fail-under</dt>
+									<dd><b>Turns coverage into a gate</b> instead of a number nobody reads.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									.github/workflows/ci.yml
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-yaml">    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Installs uv and caches the dependency downloads between runs. The
+      # version is exact because this action publishes no floating major tag;
+      # Dependabot raises a pull request when a newer one is released.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      # --locked fails if uv.lock and pyproject.toml disagree, so a
+      # dependency can never be added without committing the lockfile.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      # The test suite needs its own database; the service container only
+      # creates the one named in POSTGRES_DB.
+      - name: Create the test database
+        run: PGPASSWORD=hms psql -h 127.0.0.1 -U hms -d hms -c 'CREATE DATABASE hms_test'
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      # Fails when the models and the migrations disagree, which catches a
+      # migration someone forgot to generate.
+      - name: Check for missing migrations
+        run: uv run alembic check
+
+      - name: Run tests
+        run: uv run pytest --cov=app --cov-fail-under=80</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for .github/workflows/ci.yml">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span><code>uv sync --locked</code>, not <code>uv sync</code> — otherwise CI can install something the lockfile does not describe.</span></label></li>
+								<li><label><input type="checkbox" /><span>Cheap checks run before expensive ones.</span></label></li>
+								<li><label><input type="checkbox" /><span>The coverage floor matches the plan, and CI fails when it is not met.</span></label></li>
+								<li><label><input type="checkbox" /><span>Any action without a floating major tag is pinned exactly, and I know which of mine are.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-04">
+						<div class="section__kicker">Step 04</div>
+						<h2>Dependency updates that arrive as pull requests</h2>
+						<p>
+							Pinned versions stop being an advantage the moment they are forgotten: the lockfile that made builds reproducible in March is the one shipping a year-old security fix in September. Dependabot turns every update into a pull request that must pass the same CI as your own work.
+						</p>
+						<p>
+							The trap is volume. Ungrouped, a weekly check on four ecosystems produces a stream of single-package pull requests, and the reasonable response is to ignore them all. Grouping makes one review cover a whole ecosystem.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Watch <b>each ecosystem where a version is pinned</b>: the backend lockfile, the workflow's actions, the Compose images, and the pre-commit hooks.</li>
+								<li>Point each entry at the <b>folder that holds that ecosystem's manifest</b> — the backend lives in a subfolder, the rest at the root.</li>
+								<li><b>Group</b> updates so one pull request covers an ecosystem rather than one package.</li>
+								<li>Cap how many pull requests can be open at once.</li>
+								<li>Prefix the commits so Dependabot's history matches the project's <b>Conventional Commits</b> convention.</li>
+								<li>Check the ecosystem names against the current documentation rather than guessing — Docker images in a Compose file are <b>not</b> the same ecosystem as a Dockerfile.</li>
+							</ol>
+						</div>
+
+						<details class="hint">
+							<summary>
+								<span class="block-label">
+									<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="m9 18 6-6-6-6" />
+									</svg>
+									Hint — the keys this step uses
+								</span>
+							</summary>
+							<dl class="import-list">
+								<div>
+									<dt>package-ecosystem</dt>
+									<dd><b>Which manifest to read.</b> <code>uv</code>, <code>github-actions</code>, <code>docker-compose</code> and <code>pre-commit</code> are separate ecosystems, each with its own file format.</dd>
+								</div>
+								<div>
+									<dt>directory</dt>
+									<dd><b>Where that manifest lives</b>, relative to the repository root.</dd>
+								</div>
+								<div>
+									<dt>groups</dt>
+									<dd><b>Combines updates into one pull request.</b> A group can select by pattern, by dependency type, or by update type.</dd>
+								</div>
+							</dl>
+						</details>
+
+						<div class="code is-masked">
+							<div class="code__head">
+								<span class="code__path">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+										<path d="M14 2v6h6" />
+									</svg>
+									.github/dependabot.yml
+								</span>
+								<button class="code__copy" type="button">Copy</button>
+							</div>
+							<div class="code__body">
+								<pre><code class="language-yaml">version: 2
+
+# Weekly update pull requests, grouped so one review covers a whole
+# ecosystem instead of arriving one pull request per package.
+updates:
+  # Backend dependencies, from backend/pyproject.toml and uv.lock.
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The actions used by the CI workflow.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Base images in docker-compose.yml. Dockerfiles are a separate ecosystem
+  # ("docker"), added in Milestone 1.2 when the production image exists.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(docker)"
+
+  # Hook versions pinned in .pre-commit-config.yaml, so the local checks and
+  # CI don't drift apart from the tools they run.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"</code></pre>
+								<button class="code__mask" type="button" aria-label="Reveal the code for .github/dependabot.yml">
+									<span>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+											<circle cx="12" cy="12" r="3" />
+										</svg>
+										Write yours first — click to compare
+									</span>
+								</button>
+							</div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Every place a version is pinned has an entry, including the pre-commit hooks.</span></label></li>
+								<li><label><input type="checkbox" /><span>The Compose file is covered by <code>docker-compose</code>, not <code>docker</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>Updates are grouped, so a week produces reviews rather than noise.</span></label></li>
+								<li><label><input type="checkbox" /><span>I know that this file only takes effect once it is on the <b>default branch</b>.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-05">
+						<div class="section__kicker">Step 05</div>
+						<h2>A rule that makes the check mandatory</h2>
+						<p>
+							A green check nobody is required to wait for is a suggestion. The rule that turns CI into a gate lives in the repository, not in the workflow: a ruleset on the default branch, requiring a pull request whose named check has passed.
+						</p>
+						<p>
+							One detail decides whether this works: the required check is identified by the <b>job's name</b>. Rename the job and the branch quietly starts requiring a check that no longer exists, which blocks every merge until the ruleset is updated.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Require a <b>pull request</b> before anything reaches the default branch — with zero approvals if you work alone, since you cannot approve your own.</li>
+								<li>Require the <b>CI job's status check</b>, by the exact name the job reports.</li>
+								<li>Allow <b>one merge method</b>, so history stays consistent; this project squashes.</li>
+								<li>Block <b>force pushes</b> and <b>deletion</b> of the default branch.</li>
+								<li>Decide deliberately whether anyone may <b>bypass</b> the rules — and know that with no bypass, a broken CI means nothing merges until it is fixed.</li>
+								<li>Verify it from the command line afterwards, rather than trusting the form you just filled in.</li>
+							</ol>
+						</div>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								repository root
+							</div>
+							<div class="term__body"><div class="term__cmd">gh api repos/OWNER/REPO/rulesets/RULESET_ID --jq '{name, enforcement, rules: [.rules[].type], required_checks: [.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context]}'</div><div class="term__out--ok">{"enforcement":"active","name":"Protect main","required_checks":["backend"],"rules":["pull_request","deletion","non_fast_forward","required_status_checks"]}</div></div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>The required check name matches the job name character for character.</span></label></li>
+								<li><label><input type="checkbox" /><span>The rule is <code>active</code>, not <code>evaluate</code> — evaluate only reports what it would have blocked.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can still merge my own pull requests (zero approvals), and I know what happens if a commit is not attributed to my account.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain what this protects against that a workflow alone cannot.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<section class="section reveal" id="step-06">
+						<div class="section__kicker">Step 06</div>
+						<h2>Issues, milestones, and a board that moves itself</h2>
+						<p>
+							The plan asks for one issue per task and a board with five columns (§14). Done by hand, a board decays within a week: cards sit in the wrong column because moving them is one more thing to remember after merging.
+						</p>
+						<p>
+							GitHub can do the moving. The project's built-in workflows react to events — an issue closing, a pull request merging — so the board reflects the repository instead of a memory of it. Linking issues to the pull request that closes them is the other half: written correctly, merging closes all of them at once.
+						</p>
+
+						<div class="task">
+							<div class="block-label">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+								</svg>
+								What your code has to do
+							</div>
+							<ol>
+								<li>Create a <b>milestone per plan milestone</b>, and one <b>issue per task</b>, each assigned to its milestone.</li>
+								<li>Create a board with the <b>five columns</b> the plan names, replacing the default three.</li>
+								<li>Enable the built-in workflows so cards move on their own when an issue closes or a pull request merges.</li>
+								<li>Link the issues from the pull request using the <b>closing keyword before every number</b> — a comma-separated list closes only what the keywords cover.</li>
+								<li>Verify the links are real before merging, rather than after.</li>
+							</ol>
+						</div>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								repository root
+							</div>
+							<div class="term__body"><div class="term__cmd">gh project item-list 1 --owner OWNER --format json --jq '.items[] | "#\(.content.number) [\(.status)] \(.content.title)"'</div><div class="term__out">#2 [Done] FND-1: Repository, tooling and Docker Compose</div><div class="term__out">#5 [Done] FND-4: Domain errors and one error format</div><div class="term__out">#8 [Done] FND-7: Test infrastructure and first tests</div><div class="term__out--ok">#9 [Done] FND-8: CI, Dependabot and branch protection</div></div>
+						</div>
+
+						<div class="check">
+							<div class="block-label">Check yours against it</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>Every issue is linked with its own keyword: <code>Closes #2, closes #3, …</code>.</span></label></li>
+								<li><label><input type="checkbox" /><span>I checked the links were recognised <em>before</em> merging, not after.</span></label></li>
+								<li><label><input type="checkbox" /><span>The board's workflows are enabled, so I am not the one dragging cards.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain why a merged pull request closed several issues at once.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<!-- BLOCK: verification, terminal output ---------------- -->
+					<section class="section reveal" id="verify">
+						<div class="section__kicker">Finish</div>
+						<h2>Check your work</h2>
+						<p>
+							CI only proves itself by running. Open the pull request, let the workflow run, and read the result from the terminal — the same output the Actions tab shows, without leaving the shell.
+						</p>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								repository root
+							</div>
+							<div class="term__body"><div class="term__cmd">gh run list --workflow ci.yml --limit 3</div><div class="term__out">d567d98  pull_request  success  chore(docker): Bump postgres from 17 to 18</div><div class="term__out">7452d03  push  success  feat(platform): add the Milestone 1.1 founda</div><div class="term__out--ok">af8f9df  pull_request  success  feat(platform): add the Milestone 1.1 founda</div></div>
+						</div>
+
+						<p>
+							The middle line is the one that matters most: a run triggered by the <b>push to <code>main</code></b>, after the merge. A workflow that only runs on pull requests never verifies the merge result itself.
+						</p>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								repository root
+							</div>
+							<div class="term__body"><div class="term__cmd">gh run view RUN_ID</div><div class="term__out">backend: success</div><div class="term__out">  6. Lint — success</div><div class="term__out">  7. Check formatting — success</div><div class="term__out">  8. Create the test database — success</div><div class="term__out">  9. Apply migrations — success</div><div class="term__out">  10. Check for missing migrations — success</div><div class="term__out--ok">  11. Run tests — success</div></div>
+						</div>
+
+						<p>
+							And the lines inside those steps, which should be the same output produced locally:
+						</p>
+
+						<div class="term">
+							<div class="term__head">
+								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="m4 17 6-6-6-6M12 19h8" />
+								</svg>
+								backend/
+							</div>
+							<div class="term__body"><div class="term__cmd">gh run view RUN_ID --log</div><div class="term__out">Lint	All checks passed!</div><div class="term__out">Check formatting	18 files already formatted</div><div class="term__out">Create the test database	CREATE DATABASE</div><div class="term__out">Check for missing migrations	No new upgrade operations detected.</div><div class="term__out">Run tests	TOTAL                    242     38    84%</div><div class="term__out--ok">Run tests	============================== 20 passed in 0.81s ==============================</div></div>
+						</div>
+
+						<p style="margin-top: var(--sp-3)">
+							A green run proves the checks pass on a clean machine — not that the checks are the right ones. Coverage is a floor, not a goal, and a suite that never tests permissions cannot be made to by a workflow. What CI does guarantee is that nobody, including you on a tired evening, merges a branch where these particular things are broken.
+						</p>
+
+						<div class="check">
+							<div class="block-label">Before you commit</div>
+							<ul>
+								<li><label><input type="checkbox" /><span>A run triggered by a pull request passed, and so did one triggered by the push to the default branch.</span></label></li>
+								<li><label><input type="checkbox" /><span>Pushing directly to the default branch is refused.</span></label></li>
+								<li><label><input type="checkbox" /><span>A pull request with a failing check cannot be merged.</span></label></li>
+								<li><label><input type="checkbox" /><span>Dependabot's config validates (it appears as its own check on pull requests).</span></label></li>
+								<li><label><input type="checkbox" /><span>The workflow file and the Dependabot file are on the default branch — until then, neither is really in effect.</span></label></li>
+								<li><label><input type="checkbox" /><span>I can explain every step in the workflow, and why it runs where it does.</span></label></li>
+							</ul>
+						</div>
+					</section>
+
+					<footer class="foot">
+						<span>Hospital Management System · Milestone 1.1 · Stage 08</span>
+						<span>Written after the stage was built and verified.</span>
+					</footer>
+				</main>
+			</div>
+		</div>
+
+		<script>
+			(function () {
+				"use strict";
+
+				/* Syntax highlighting (no-op if the CDN is unavailable). */
+				if (window.hljs) {
+					document.querySelectorAll("pre code").forEach(function (block) {
+						window.hljs.highlightElement(block);
+					});
+				}
+
+				var root = document.documentElement;
+				var store = {
+					get: function (key) {
+						try {
+							return localStorage.getItem(key);
+						} catch (e) {
+							return null;
+						}
+					},
+					set: function (key, value) {
+						try {
+							localStorage.setItem(key, value);
+						} catch (e) {
+							/* Storage unavailable: the choice lasts for this page view. */
+						}
+					},
+				};
+
+				/* Theme: dark unless the reader has chosen light. */
+				var themeButton = document.getElementById("themeToggle");
+				var moon = themeButton.querySelector(".icon-moon");
+				var sun = themeButton.querySelector(".icon-sun");
+
+				function currentTheme() {
+					return root.dataset.theme === "light" ? "light" : "dark";
+				}
+				function paintThemeButton() {
+					var dark = currentTheme() === "dark";
+					moon.hidden = dark;
+					sun.hidden = !dark;
+					themeButton.setAttribute(
+						"aria-label",
+						dark ? "Switch to light theme" : "Switch to dark theme"
+					);
+				}
+				themeButton.addEventListener("click", function () {
+					var next = currentTheme() === "dark" ? "light" : "dark";
+					root.dataset.theme = next;
+					store.set("hms-tutorial-theme", next);
+					paintThemeButton();
+				});
+				paintThemeButton();
+
+				/* Text size: one multiplier, so every level keeps its
+				   relative size instead of collapsing into one. */
+				var STEPS = [0.9, 1, 1.1, 1.25, 1.4];
+				var typeDown = document.getElementById("typeDown");
+				var typeUp = document.getElementById("typeUp");
+				var stepIndex = STEPS.indexOf(parseFloat(store.get("hms-tutorial-type-scale")));
+				if (stepIndex < 0) stepIndex = STEPS.indexOf(1);
+
+				function applyScale() {
+					var scale = STEPS[stepIndex];
+					root.style.setProperty("--type-scale", String(scale));
+					store.set("hms-tutorial-type-scale", String(scale));
+					typeDown.disabled = stepIndex === 0;
+					typeUp.disabled = stepIndex === STEPS.length - 1;
+					var percent = Math.round(scale * 100) + "%";
+					typeDown.title = "Decrease text size (now " + percent + ")";
+					typeUp.title = "Increase text size (now " + percent + ")";
+				}
+				typeDown.addEventListener("click", function () {
+					if (stepIndex > 0) stepIndex--;
+					applyScale();
+				});
+				typeUp.addEventListener("click", function () {
+					if (stepIndex < STEPS.length - 1) stepIndex++;
+					applyScale();
+				});
+				applyScale();
+
+				/* Reading progress. */
+				var fill = document.getElementById("progressFill");
+				function updateProgress() {
+					var doc = document.documentElement;
+					var max = doc.scrollHeight - doc.clientHeight;
+					fill.style.width = (max > 0 ? (doc.scrollTop / max) * 100 : 0) + "%";
+				}
+				document.addEventListener("scroll", updateProgress, { passive: true });
+				updateProgress();
+
+				/* Sidebar on small screens. */
+				var sidebar = document.getElementById("sidebar");
+				var toggle = document.getElementById("navToggle");
+				var overlay = document.getElementById("overlay");
+				function setNav(open) {
+					sidebar.classList.toggle("is-open", open);
+					overlay.classList.toggle("is-open", open);
+					toggle.setAttribute("aria-expanded", String(open));
+				}
+				toggle.addEventListener("click", function () {
+					setNav(!sidebar.classList.contains("is-open"));
+				});
+				overlay.addEventListener("click", function () {
+					setNav(false);
+				});
+				document.addEventListener("keydown", function (event) {
+					if (event.key === "Escape") setNav(false);
+				});
+
+				/* Scroll-spy: highlight the section being read. */
+				var links = Array.prototype.slice.call(document.querySelectorAll(".nav-link"));
+				var spy = new IntersectionObserver(
+					function (entries) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							links.forEach(function (link) {
+								link.classList.toggle(
+									"is-active",
+									link.getAttribute("href") === "#" + entry.target.id
+								);
+							});
+						});
+					},
+					{ rootMargin: "-12% 0px -72% 0px" }
+				);
+				links.forEach(function (link) {
+					var section = document.querySelector(link.getAttribute("href"));
+					if (section) spy.observe(section);
+				});
+
+				/* Sections fade up once, as they come into view. */
+				var reveals = document.querySelectorAll(".reveal");
+				var revealer = new IntersectionObserver(
+					function (entries, observer) {
+						entries.forEach(function (entry) {
+							if (!entry.isIntersecting) return;
+							entry.target.classList.add("is-in");
+							observer.unobserve(entry.target);
+						});
+					},
+					{ rootMargin: "0px 0px -8% 0px", threshold: 0.05 }
+				);
+				reveals.forEach(function (section) {
+					revealer.observe(section);
+				});
+
+				/* Blurred code: reveal on click, or with the keyboard. */
+				document.querySelectorAll(".code__mask").forEach(function (mask) {
+					mask.addEventListener("click", function () {
+						mask.closest(".code").classList.remove("is-masked");
+					});
+				});
+
+				/* Copy a code panel's contents. */
+				document.querySelectorAll(".code__copy").forEach(function (button) {
+					button.addEventListener("click", function () {
+						var panel = button.closest(".code");
+						var code = panel.querySelector("code");
+						var done = function () {
+							button.textContent = "Copied";
+							button.classList.add("is-done");
+							setTimeout(function () {
+								button.textContent = "Copy";
+								button.classList.remove("is-done");
+							}, 1600);
+						};
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(code.innerText).then(done, function () {});
+						}
+					});
+				});
+			})();
+		</script>
+	</body>
+</html>

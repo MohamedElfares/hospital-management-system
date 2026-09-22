@@ -28,11 +28,22 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  # Base images in the Compose file, and in the Dockerfile from Milestone 1.2.
-  - package-ecosystem: docker
+  # Base images in docker-compose.yml. Dockerfiles are a separate ecosystem
+  # ("docker"), added in Milestone 1.2 when the production image exists.
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
       day: monday
     commit-message:
       prefix: "chore(docker)"
+
+  # Hook versions pinned in .pre-commit-config.yaml, so the local checks and
+  # CI don't drift apart from the tools they run.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"

@@ -6,6 +6,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Lets the workflow be started by hand from the Actions tab, which is the
+  # only way to run it without opening a pull request.
+  workflow_dispatch:
 
 # A new push to a branch cancels the run still in progress for it.
 concurrency:
@@ -17,8 +20,13 @@ permissions:
 
 jobs:
   backend:
+    # This name is the status check the ruleset on main requires, so renaming
+    # the job means updating the ruleset in the same change.
     name: backend
     runs-on: ubuntu-24.04
+    # A hung step (a database that never becomes healthy, a stuck download)
+    # fails in minutes instead of occupying a runner for six hours.
+    timeout-minutes: 15
 
     # PostgreSQL 17 for the integration tests, matching docker-compose.yml.
     # The health check keeps the job waiting until the database accepts

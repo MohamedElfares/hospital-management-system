@@ -7,8 +7,20 @@ overrides can never affect another; the engine is built once per run,
 because it is expensive and holds no per-test state.
 """
 
+# Environment of the migration subprocess, copied and overridden.
+import os
+
+# Runs "alembic upgrade head" as its own process.
+import subprocess
+
+# Path to the interpreter running the tests, so the subprocess uses the same one.
+import sys
+
 # Return type of a fixture that yields a value and then cleans up.
 from collections.abc import Iterator
+
+# Locates the backend folder, so Alembic runs where alembic.ini lives.
+from pathlib import Path
 
 # Test framework: the fixture decorator and the failure helper.
 import pytest
@@ -24,6 +36,9 @@ from sqlalchemy import Engine
 
 # Builds that engine from the test database URL.
 from sqlalchemy import create_engine
+
+# Unit of work the tests share with the application's dependency.
+from sqlalchemy.orm import Session
 
 # Supplies the test database URL.
 from app.core.config import get_settings
@@ -93,3 +108,70 @@ def test_engine() -> Iterator[Engine]:
     yield engine
 
     engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def apply_migrations() -> None:
+    """Bring the test database's schema up to date, once per test run.
+
+    Tests run against the schema Alembic produces, not one built from the
+    models, so a migration that drifts from the models is caught here rather
+    than in production, where ``entrypoint.sh`` runs the same command. It
+    runs in a subprocess with ``DATABASE_URL`` pointing at the test
+    database, because ``migrations/env.py`` reads that setting: an in-process
+    call would migrate the development database instead.
+    """
+    settings = get_settings()
+    database_url = settings.test_database_url
+
+    if database_url is None:
+        pytest.fail("TEST_DATABASE_URL is not set", pytrace=False)
+
+    environment = os.environ | {"DATABASE_URL": database_url}
+    backend_dir = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=backend_dir,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        pytest.fail(
+            f"Alembic migration failed:\n{result.stderr}",
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def db_session(test_engine: Engine, apply_migrations: None) -> Iterator[Session]:
+    """Provide a database session whose work is undone after the test.
+
+    The fixture opens its own connection and starts a transaction on it, so
+    everything the test writes lives inside that transaction and disappears
+    when it is rolled back. ``join_transaction_mode="create_savepoint"``
+    turns a service's ``commit()`` into the release of a savepoint instead
+    of a real commit, so application code can commit normally and the outer
+    rollback still erases it. Each test therefore starts from the same
+    state, whatever the previous one wrote, without deleting rows by hand.
+
+    Args:
+        test_engine: Engine for the test database, shared by the run.
+        apply_migrations: Not used directly; naming it makes the schema
+            exist before the first session is opened.
+
+    Yields:
+        A session bound to the test's transaction.
+    """
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+
+    yield session
+
+    session.close()
+    transaction.rollback()
+    connection.close()

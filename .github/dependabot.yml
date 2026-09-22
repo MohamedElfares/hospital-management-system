@@ -1,0 +1,38 @@
+version: 2
+
+# Weekly update pull requests, grouped so one review covers a whole
+# ecosystem instead of arriving one pull request per package.
+updates:
+  # Backend dependencies, from backend/pyproject.toml and uv.lock.
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The actions used by the CI workflow.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Base images in the Compose file, and in the Dockerfile from Milestone 1.2.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(docker)"

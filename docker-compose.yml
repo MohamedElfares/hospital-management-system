@@ -1,0 +1,26 @@
+# Local development services. Start the database with: docker compose up -d db
+# The credentials are development-only defaults; override them with shell
+# variables if needed. Production uses Neon, never this file.
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hms}
+      POSTGRES_DB: ${POSTGRES_DB:-hms}
+    ports:
+      # Bound to localhost only, so the dev database isn't exposed on the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Lets other services (and CI) wait until PostgreSQL accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

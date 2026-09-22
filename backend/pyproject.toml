@@ -1,0 +1,52 @@
+[project]
+name = "hms-backend"
+version = "0.1.0"
+description = "Hospital Management System API"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.20.0",
+    "fastapi[standard]>=0.141.1",
+    "psycopg[binary]>=3.3.5",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2.0.54",
+    "tzdata>=2026.4",
+]
+
+[dependency-groups]
+dev = [
+    "faker>=40.39.0",
+    "httpx2>=2.13.0",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = [
+    "D",     # docstrings
+    "I",     # import sorting
+    "G004",  # no f-strings in logging calls; pass values as arguments instead
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+force-single-line = true  # one imported name per line
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/**" = ["D"]
+"tests/**" = ["D100", "D104"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]  # the project isn't installed as a package, so make `app` importable
+filterwarnings = [
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated:DeprecationWarning:starlette\\.testclient",
+]

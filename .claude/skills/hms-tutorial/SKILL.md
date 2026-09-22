@@ -45,7 +45,14 @@ nudge; the stage is finished either way.
 | `tutorial/stage-NN-<slug>.html` | Where finished tutorials go, at the repository root, numbered in build order. `tutorial/README.md` explains the folder to a reader. |
 | `DESIGN.md` (this skill) | Tokens, palette, type scale, component anatomy. Read it before touching any CSS. |
 | `CONTENT.md` (this skill) | How to write the prose, tasks, hints and checks. Read it before writing the copy. |
+| `scripts/page_builder.py` (this skill) | Helpers that render the blocks and assemble a page around the template. `chunk` copies code out of a repository file so a panel cannot drift. |
 | `scripts/check_tutorial.py` (this skill) | Validator. Run it before showing a page to the user. |
+
+Build a page with `scripts/page_builder.py` rather than editing HTML by hand: a short script
+calls `libraries`, `step` (or `section` when a step shows a terminal block), `verify_section`
+and `page`, and its module docstring carries a worked example. Panels come from
+`chunk("backend/app/…", start, end)`, which reads the committed file, so a panel can only
+quote what the repository actually contains.
 
 Copy the template, then replace the content inside `<main>` and the sidebar. Leave `<style>`
 and `<script>` alone unless the user asks for a design or behaviour change — that is what

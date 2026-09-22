@@ -53,11 +53,13 @@ jobs:
         working-directory: backend
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
-      # Installs uv and caches the dependency downloads between runs.
+      # Installs uv and caches the dependency downloads between runs. The
+      # version is exact because this action publishes no floating major tag;
+      # Dependabot raises a pull request when a newer one is released.
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock

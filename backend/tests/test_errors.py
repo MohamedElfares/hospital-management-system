@@ -3,7 +3,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 
-def test_unknown_path_returns_the_standard_404(client: TestClient):
+def test_unknown_path_returns_the_standard_404(client: TestClient) -> None:
     """An unknown URL is answered in the project's error format.
 
     Starlette raises this 404 itself, so a passing test proves the handlers
@@ -17,7 +17,7 @@ def test_unknown_path_returns_the_standard_404(client: TestClient):
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_wrong_method_returns_405_with_an_allow_header(client: TestClient):
+def test_wrong_method_returns_405_with_an_allow_header(client: TestClient) -> None:
     """A known path called with the wrong method returns 405 and ``Allow``.
 
     The HTTP standard requires a 405 to name the methods that are allowed,
@@ -31,7 +31,7 @@ def test_wrong_method_returns_405_with_an_allow_header(client: TestClient):
     assert response.headers["allow"] == "GET"
 
 
-def test_response_carries_a_generated_request_id(client: TestClient):
+def test_response_carries_a_generated_request_id(client: TestClient) -> None:
     """Every response carries an ``X-Request-ID`` header, generated if needed.
 
     The client sent no ID here, so the middleware created one. Parsing it
@@ -42,7 +42,7 @@ def test_response_carries_a_generated_request_id(client: TestClient):
     assert uuid.UUID(response.headers["x-request-id"])
 
 
-def test_client_request_id_is_echoed_back(client: TestClient):
+def test_client_request_id_is_echoed_back(client: TestClient) -> None:
     """An ID the client sends is reused, so one ID spans both systems.
 
     This is what lets a request be followed from the caller's logs into

@@ -1,13 +1,14 @@
+from sqlalchemy import Engine
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-def test_engine_points_at_the_test_database(test_engine):
+def test_engine_points_at_the_test_database(test_engine: Engine) -> None:
     """The suite connects to the test database, never the development one."""
     assert test_engine.url.database == "hms_test"
 
 
-def test_a_row_written_in_one_test_is_not_visible_in_the_next(db_session: Session):
+def test_a_row_written_in_one_test_is_not_visible_in_the_next(db_session: Session) -> None:
     """Work done through the session, including a commit, is visible in the test.
 
     The commit is the point: application code commits once per use case, and
@@ -23,7 +24,7 @@ def test_a_row_written_in_one_test_is_not_visible_in_the_next(db_session: Sessio
     assert rows == 1
 
 
-def test_a_previous_test_left_no_table_behind(db_session: Session):
+def test_a_previous_test_left_no_table_behind(db_session: Session) -> None:
     """The table created and committed by the previous test no longer exists.
 
     PostgreSQL rolls back schema changes as well as rows, so the rollback in

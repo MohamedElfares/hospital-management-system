@@ -35,7 +35,7 @@ from app.core.logging import _resolve_request_id
         ),
     ],
 )
-def test_reuses_a_valid_uuid_in_lowercase(header_value: str, expected: str):
+def test_reuses_a_valid_uuid_in_lowercase(header_value: str, expected: str) -> None:
     """Every spelling of a valid UUID comes back in one normalized form.
 
     Uppercase, braces, missing dashes and a ``urn:uuid:`` prefix are all
@@ -59,7 +59,7 @@ def test_reuses_a_valid_uuid_in_lowercase(header_value: str, expected: str):
         "not-a-uuid",
     ],
 )
-def test_generates_an_id_when_clients_sends_fake_uuid_value(header_value: str | None):
+def test_generates_an_id_when_clients_sends_fake_uuid_value(header_value: str | None) -> None:
     """Anything that is not a valid UUID is replaced by a freshly generated one.
 
     Covers a missing header, an empty value, one containing a line break, an

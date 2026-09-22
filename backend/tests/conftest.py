@@ -3,8 +3,13 @@
 pytest loads this file automatically, so tests use the fixtures below by
 naming them as parameters and never import anything from here. The
 application fixtures are built per test, so one test's dependency
-overrides can never affect another; the engine is built once per run,
-because it is expensive and holds no per-test state.
+overrides can never affect another; the engine and the migrations are done
+once per run, because they are expensive and hold no per-test state.
+
+Everything a test does through ``client`` or ``db_session`` happens inside
+one transaction against the database named by ``TEST_DATABASE_URL``, and
+that transaction is rolled back when the test ends. Tests therefore leave
+nothing behind, and never touch the development database.
 """
 
 # Environment of the migration subprocess, copied and overridden.
@@ -43,6 +48,9 @@ from sqlalchemy.orm import Session
 # Supplies the test database URL.
 from app.core.config import get_settings
 
+# The dependency the client fixture replaces with the test's session.
+from app.db.session import get_db
+
 # The application factory under test.
 from app.main import create_app
 
@@ -61,20 +69,27 @@ def app() -> FastAPI:
 
 
 @pytest.fixture
-def client(app: FastAPI) -> TestClient:
-    """Provide an HTTP client bound to this test's application.
+def client(app: FastAPI, db_session: Session) -> TestClient:
+    """Provide an HTTP client whose requests run in the test's transaction.
 
     The client sends requests through the whole stack, including the
     middleware and the exception handlers, without opening a network port.
-    It depends on ``app``, so a test that asks for both gets a client bound
-    to the same application instance it can override dependencies on.
+    ``get_db`` is replaced by the test's own session, so a request writes
+    into the same transaction the test can query afterwards, and everything
+    is rolled back when the test ends. The override returns that session
+    without closing it, because the fixture owns its lifecycle.
+
+    A test that also asks for ``app`` gets the same instance this client is
+    bound to, so it can override further dependencies itself.
 
     Args:
         app: The application built for this test.
+        db_session: Session bound to the test's transaction.
 
     Returns:
-        A client whose requests reach that application.
+        A client whose requests reach that application and that session.
     """
+    app.dependency_overrides[get_db] = lambda: db_session
     return TestClient(app)
 
 

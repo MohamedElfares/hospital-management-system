@@ -89,6 +89,11 @@ tables and rules, deployed as a single container (plan §9).
 Cross-cutting infrastructure lives in `app/core/` (settings, errors, logging) and
 `app/db/` (base model, session), and neither imports from the business modules.
 
+The decisions behind this are recorded as ADRs in [`docs/adr/`](docs/adr/):
+[0001 — a modular monolith instead of microservices](docs/adr/0001-modular-monolith.md)
+and
+[0002 — synchronous SQLAlchemy instead of async](docs/adr/0002-synchronous-sqlalchemy.md).
+
 Three rules shape most of the design:
 
 - **Deny by default.** Every route is Public, Authenticated, or protected by a permission,

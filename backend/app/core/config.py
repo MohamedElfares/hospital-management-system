@@ -56,6 +56,10 @@ class Settings(BaseSettings):
             responses and whether the refresh cookie is marked ``Secure``.
         database_url: SQLAlchemy URL for PostgreSQL through psycopg 3. It
             contains the database password, so it must never be logged.
+        test_database_url: SQLAlchemy URL for the database the test suite
+            uses. Unset outside development and CI; the test setup fails
+            loudly when it is missing, so tests can never run against the
+            development database by accident.
         jwt_secret_key: Key used to sign HS256 access tokens. At least 32
             characters, and different in every environment.
         access_token_expire_minutes: Lifetime of an access token in minutes.
@@ -78,6 +82,7 @@ class Settings(BaseSettings):
 
     environment: Literal["local", "test", "production"] = "local"
     database_url: str
+    test_database_url: str | None = None
     jwt_secret_key: SecretStr
     access_token_expire_minutes: Annotated[int, Field(gt=0)] = 15
     refresh_token_expire_days: Annotated[int, Field(gt=0)] = 7
@@ -86,19 +91,21 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     demo_mode: bool = False
 
-    @field_validator("database_url")
+    @field_validator("database_url", "test_database_url")
     @classmethod
-    def _check_database_url(cls, value: str) -> str:
+    def _check_database_url(cls, value: str | None) -> str | None:
         """Require the PostgreSQL psycopg 3 driver in the database URL.
 
         The whole design depends on PostgreSQL features (partial unique
         indexes, row locks, sequences), and the app uses psycopg 3, so any
         other dialect or driver is a configuration mistake. Neon's
         ``postgresql://`` connection strings must be rewritten to this
-        prefix before they are used.
+        prefix before they are used. ``TEST_DATABASE_URL`` is optional, so
+        ``None`` is accepted and left for the test setup to reject.
 
         Args:
-            value: The raw ``DATABASE_URL`` value.
+            value: The raw ``DATABASE_URL`` or ``TEST_DATABASE_URL`` value,
+                or ``None`` when no test database is configured.
 
         Returns:
             The unchanged URL.
@@ -108,6 +115,8 @@ class Settings(BaseSettings):
                 ``postgresql+psycopg://``. The message never includes the URL,
                 because it contains the password.
         """
+        if value is None:
+            return value
         if not value.startswith("postgresql+psycopg://"):
             raise ValueError("DATABASE_URL must start with postgresql+psycopg://")
         return value

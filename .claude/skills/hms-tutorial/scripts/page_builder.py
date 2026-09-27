@@ -55,11 +55,19 @@ Then validate the result before showing it to anyone::
 Rules this file exists to keep: code panels are copied, never retyped;
 terminal blocks hold output that a command actually produced; and the
 template's ``<style>`` and ``<script>`` are never touched, so every page in
-the series looks the same.
+the series looks the same. ``page`` also records the commit the panels quote
+(``HEAD`` unless told otherwise), so the validator can still check a page
+after later stages have changed the files it quotes.
 """
 
 # Escapes code and command output so it survives inside HTML.
 import html
+
+# Recognizes docstring openings and def/class headers, and edits the template's head.
+import re
+
+# Asks git for the commit the page quotes.
+import subprocess
 
 # Locates the repository, the template and the output folder.
 from pathlib import Path
@@ -76,12 +84,90 @@ TEMPLATE = TEMPLATE_PATH.read_text(encoding="utf-8")
 HEAD = TEMPLATE[: TEMPLATE.index("\t\t<!-- BLOCK: sidebar contents")]
 TAIL = TEMPLATE[TEMPLATE.index("\t\t\t\t</main>") :]
 
+# The two spellings of a triple quote, which open and close multi-line strings.
+TRIPLE_QUOTES = ('"""', "'''")
+
+# A line that starts a string statement: an optional r or u prefix, then a
+# triple quote. Whether that string is a docstring depends on where it is.
+DOCSTRING_OPEN = re.compile(r"^[rRuU]?(\"\"\"|''')")
+
+# The end of a def or class header: a colon, optionally followed by a comment.
+HEADER_END = re.compile(r":\s*(#.*)?$")
+
+# Docstring sections a condensed panel keeps, because they describe the code.
+KEPT_SECTIONS = ("Attributes:", "Returns:", "Raises:", "Yields:")
+
+# The head's record of the commit the panels quote, whatever commit it names.
+SOURCE_COMMIT_TAG = re.compile(r'\t*<meta name="hms-source-commit" content="[0-9a-f]*" />\n')
+
 SVG_TASK = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t<path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />\n\t\t\t\t\t\t\t\t</svg>'
 SVG_HINT = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t\t<path d="m9 18 6-6-6-6" />\n\t\t\t\t\t\t\t\t\t</svg>'
 SVG_FILE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t\t<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />\n\t\t\t\t\t\t\t\t\t\t<path d="M14 2v6h6" />\n\t\t\t\t\t\t\t\t\t</svg>'
 SVG_EYE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t\t\t<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />\n\t\t\t\t\t\t\t\t\t\t\t<circle cx="12" cy="12" r="3" />\n\t\t\t\t\t\t\t\t\t\t</svg>'
 SVG_BOOK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />\n\t\t\t\t\t\t\t\t\t<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />\n\t\t\t\t\t\t\t\t</svg>'
 SVG_TERM = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">\n\t\t\t\t\t\t\t\t\t<path d="m4 17 6-6-6-6M12 19h8" />\n\t\t\t\t\t\t\t\t</svg>'
+
+
+def _unclosed_quote(line: str) -> str | None:
+    """Return the triple quote a line leaves open, or None when it leaves none.
+
+    A line holding an odd number of one kind of triple quote either opens a
+    string that continues on the next line or closes one that began earlier;
+    the caller knows which from its own state. A triple quote written inside
+    an ordinary one-line string is counted too, which backend code never does.
+
+    Args:
+        line: One line of Python source.
+
+    Returns:
+        The triple quote that appears an odd number of times, or None.
+    """
+    for quote in TRIPLE_QUOTES:
+        if line.count(quote) % 2 == 1:
+            return quote
+    return None
+
+
+def _condense_block(block: list[str], quote: str) -> list[str]:
+    """Reduce one multi-line docstring to its summary and its kept sections.
+
+    The sections in ``KEPT_SECTIONS`` stay because they describe the code; any
+    other section, such as ``Args`` or ``Example``, ends what is kept. A line
+    is a section heading when it sits at the docstring's own indentation and
+    ends with a colon.
+
+    Args:
+        block: The docstring's lines, from the line that opens it to the line
+            that closes it.
+        quote: The triple quote the docstring uses.
+
+    Returns:
+        The summary, the kept sections and a closing line; or the summary with
+        the closing quote added, when no section is kept.
+    """
+    indent = block[0][: len(block[0]) - len(block[0].lstrip())]
+    summary, body = block[0], block[1:-1]
+    kept: list[str] = []
+    keeping = False
+    for entry in body:
+        header = entry.strip()
+        if header in KEPT_SECTIONS:
+            keeping = True
+            kept += ["", entry]
+            continue
+        if (
+            header.endswith(":")
+            and entry.startswith(indent)
+            and not entry.startswith(indent + " ")
+        ):
+            keeping = False
+        if keeping:
+            if header == "" and kept and kept[-1] == "":
+                continue
+            kept.append(entry)
+    while kept and kept[-1].strip() == "":
+        kept.pop()
+    return [summary, *kept, indent + quote] if kept else [summary + quote]
 
 
 def condense_docstrings(code: str) -> str:
@@ -91,6 +177,14 @@ def condense_docstrings(code: str) -> str:
     plus ``Attributes``, ``Returns``, ``Raises`` or ``Yields``; the validator
     ignores docstrings for exactly this reason. Code itself is never touched.
 
+    A string counts as a docstring only where Python treats it as one: the
+    first statement after a ``def`` or ``class`` header, or at the very start
+    of the excerpt. Every other triple-quoted string, such as SQL passed to
+    ``text()``, is copied line for line. That matters because such a string
+    often ends on a line that starts with three quotes, which a check of each
+    line on its own would take for the start of a docstring, cutting the rest
+    of the panel away.
+
     Args:
         code: Python source taken from a repository file.
 
@@ -99,45 +193,53 @@ def condense_docstrings(code: str) -> str:
     """
     lines = code.split("\n")
     out: list[str] = []
+    # True at the start of the excerpt and right after a def or class header:
+    # the two places where Python makes a string statement the docstring.
+    expecting_docstring = True
+    in_header = False
+    open_quote: str | None = None
     index = 0
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
-        if stripped.startswith('"""') and stripped.count('"""') == 1:
-            indent = line[: len(line) - len(line.lstrip())]
-            block = [line]
-            index += 1
-            while index < len(lines):
-                block.append(lines[index])
-                if '"""' in lines[index]:
-                    break
-                index += 1
-            summary, body = block[0], block[1:-1]
-            kept: list[str] = []
-            keeping = False
-            for entry in body:
-                header = entry.strip()
-                if header in ("Attributes:", "Returns:", "Raises:", "Yields:"):
-                    keeping = True
-                    kept += ["", entry]
-                    continue
-                if (
-                    header.endswith(":")
-                    and entry.startswith(indent)
-                    and not entry.startswith(indent + " ")
-                ):
-                    keeping = False
-                if keeping:
-                    if header == "" and kept and kept[-1] == "":
-                        continue
-                    kept.append(entry)
-            while kept and kept[-1].strip() == "":
-                kept.pop()
-            out += [summary, *kept, indent + '"""'] if kept else [summary + '"""']
-            index += 1
-            continue
-        out.append(line)
         index += 1
+
+        # Inside an ordinary multi-line string: copy it up to its closing quote.
+        if open_quote:
+            out.append(line)
+            if line.count(open_quote) % 2 == 1:
+                open_quote = None
+            continue
+
+        # Blank lines and comments change nothing about the lines that follow.
+        if not stripped or stripped.startswith("#"):
+            out.append(line)
+            continue
+
+        opening = DOCSTRING_OPEN.match(stripped)
+        if opening and expecting_docstring:
+            expecting_docstring = False
+            quote = opening.group(1)
+            block = [line]
+            if stripped.count(quote) == 1:
+                while index < len(lines):
+                    block.append(lines[index])
+                    index += 1
+                    if quote in block[-1]:
+                        break
+                out += _condense_block(block, quote)
+            else:
+                out += block
+            continue
+
+        if in_header or stripped.startswith(("def ", "async def ", "class ")):
+            # A header may span several lines; the docstring follows its colon.
+            in_header = not HEADER_END.search(stripped)
+            expecting_docstring = not in_header
+        else:
+            expecting_docstring = False
+        open_quote = _unclosed_quote(line)
+        out.append(line)
     return "\n".join(out)
 
 
@@ -437,6 +539,27 @@ def verify_section(blocks: str, check_items: list[str]) -> str:
     )
 
 
+def current_commit() -> str:
+    """Return the full hash of the commit the repository has checked out.
+
+    Pages are built after their stage is committed, so ``HEAD`` holds exactly
+    the code the panels quote, and ``page`` records it for the validator.
+
+    Returns:
+        The 40-character commit hash.
+
+    Raises:
+        subprocess.CalledProcessError: If git can't read the repository.
+    """
+    done = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.strip()
+
+
 def page(
     stage: str,
     title: str,
@@ -448,12 +571,18 @@ def page(
     body: str,
     verify: str,
     milestone: str = "Milestone 1.1 · Foundation",
+    source_commit: str | None = None,
 ) -> str:
     """Assemble a whole page around the template's shell.
 
     The stage number has to agree in the title, the badge, the sidebar and
     the footer; passing it once keeps them in step, and the validator checks
     the result.
+
+    The page also records the commit its panels quote, in
+    ``<meta name="hms-source-commit">``. Later stages go on to change files
+    that earlier pages quote; with the commit recorded, the validator compares
+    each page with the code as it was when the page was written.
 
     Args:
         stage: Two digits, such as ``"09"``.
@@ -466,12 +595,12 @@ def page(
         body: The callout and the steps.
         verify: The closing section, from ``verify_section``.
         milestone: Eyebrow text next to the stage badge.
+        source_commit: The commit the panels quote. Defaults to ``HEAD``,
+            which is right when the page is built after its stage is committed.
 
     Returns:
         The complete page.
     """
-    import re
-
     head = re.sub(
         r"<title>.*?</title>", f"<title>{title} — HMS Tutorial</title>", HEAD, count=1
     )
@@ -481,6 +610,11 @@ def page(
         head,
         count=1,
     )
+    head = SOURCE_COMMIT_TAG.sub("", head)
+    commit = source_commit or current_commit()
+    record = f'\t\t<meta name="hms-source-commit" content="{commit}" />\n'
+    end = head.index("/>\n", head.index('name="description"')) + len("/>\n")
+    head = head[:end] + record + head[end:]
 
     links = "".join(
         f'\t\t\t\t<a class="nav-link" href="#step-{index + 1:02d}">'

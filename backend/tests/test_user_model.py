@@ -1,5 +1,6 @@
 from typing import Any
 
+import psycopg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -91,7 +92,9 @@ def test_two_users_cannot_share_an_email(db_session: Session) -> None:
     with pytest.raises(IntegrityError) as exc_info:
         db_session.flush()
 
-    assert exc_info.value.orig.diag.constraint_name == "uq_users_email"
+    orig = exc_info.value.orig
+    assert isinstance(orig, psycopg.errors.UniqueViolation)
+    assert orig.diag.constraint_name == "uq_users_email"
 
 
 def test_an_email_with_capitals_is_rejected(db_session: Session) -> None:
@@ -107,7 +110,9 @@ def test_an_email_with_capitals_is_rejected(db_session: Session) -> None:
     with pytest.raises(IntegrityError) as exc_info:
         db_session.flush()
 
-    assert exc_info.value.orig.diag.constraint_name == "ck_users_email_lowercase"
+    orig = exc_info.value.orig
+    assert isinstance(orig, psycopg.errors.CheckViolation)
+    assert orig.diag.constraint_name == "ck_users_email_lowercase"
 
 
 def test_a_case_only_duplicate_email_is_rejected(db_session: Session) -> None:
@@ -127,7 +132,9 @@ def test_a_case_only_duplicate_email_is_rejected(db_session: Session) -> None:
     with pytest.raises(IntegrityError) as exc_info:
         db_session.flush()
 
-    assert exc_info.value.orig.diag.constraint_name == "ck_users_email_lowercase"
+    orig = exc_info.value.orig
+    assert isinstance(orig, psycopg.errors.CheckViolation)
+    assert orig.diag.constraint_name == "ck_users_email_lowercase"
 
 
 def test_an_unknown_role_is_rejected_before_sql(db_session: Session) -> None:
@@ -168,7 +175,9 @@ def test_the_database_rejects_an_unknown_role(db_session: Session) -> None:
             },
         )
 
-    assert exc_info.value.orig.diag.constraint_name == "ck_users_role"
+    orig = exc_info.value.orig
+    assert isinstance(orig, psycopg.errors.CheckViolation)
+    assert orig.diag.constraint_name == "ck_users_role"
 
 
 @pytest.mark.parametrize("column", ["email", "password_hash", "full_name", "role"])
@@ -184,7 +193,9 @@ def test_required_columns_cannot_be_null(db_session: Session, column: str) -> No
     with pytest.raises(IntegrityError) as exc_info:
         db_session.flush()
 
-    assert exc_info.value.orig.diag.column_name == column
+    orig = exc_info.value.orig
+    assert isinstance(orig, psycopg.errors.NotNullViolation)
+    assert orig.diag.column_name == column
 
 
 def test_the_role_reads_back_as_a_role_member(db_session: Session) -> None:

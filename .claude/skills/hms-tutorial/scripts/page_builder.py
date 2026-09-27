@@ -35,7 +35,7 @@ Writing a page means one short script that calls ``libraries``, ``step``
     )
     pb.write_page(
         slug="stage-09-example",
-        html=pb.page(
+        html_text=pb.page(
             stage="09",
             title="Example stage",
             description="Stage 09 of the Hospital Management System build: an example.",

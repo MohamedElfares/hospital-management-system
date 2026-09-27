@@ -9,6 +9,12 @@ It reports errors (things that are wrong) and warnings (things worth a look),
 and exits non-zero when there is at least one error, so it can be wired into a
 command chain later.
 
+A page teaches the code as it was when its stage was finished, and later
+stages go on to change some of the same files. A page therefore records the
+commit it quotes, in ``<meta name="hms-source-commit">``, and its panels are
+compared with the files at that commit, not with today's. A page without the
+tag is compared with the working tree.
+
 Usage:
     python check_tutorial.py tutorial/stage-03-database-layer.html
     python check_tutorial.py <page.html> --repo-root .
@@ -19,6 +25,9 @@ import argparse
 
 # Regular expressions for pulling token blocks, panels and ids out of the page.
 import re
+
+# Runs git to read a quoted file as it was at the page's commit.
+import subprocess
 
 # Exit code, so a failed check can stop a chain of commands.
 import sys
@@ -52,6 +61,19 @@ CONTRAST_PAIRS = [
 
 # WCAG AA for body text. Anything below this is an error, not a preference.
 MIN_CONTRAST = 4.5
+
+# The two spellings of a triple quote, which open and close multi-line strings.
+TRIPLE_QUOTES = ('"""', "'''")
+
+# A line that starts a string statement: an optional r or u prefix, then a
+# triple quote. Kept in step with page_builder.py, which condenses docstrings.
+DOCSTRING_OPEN = re.compile(r"^[rRuU]?(\"\"\"|''')")
+
+# The end of a def or class header: a colon, optionally followed by a comment.
+HEADER_END = re.compile(r":\s*(#.*)?$")
+
+# The page's record of the commit its code panels were copied from.
+SOURCE_COMMIT = re.compile(r'<meta\s+name="hms-source-commit"\s+content="([0-9a-f]{7,40})"')
 
 
 class Report:
@@ -172,34 +194,87 @@ def parse_block(source: str, pattern: str) -> dict[str, str]:
     return dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", match.group(1)))
 
 
+def unclosed_quote(line: str) -> str | None:
+    """Return the triple quote a line leaves open, or None when it leaves none.
+
+    A line holding an odd number of one kind of triple quote either opens a
+    string that continues on the next line or closes one that began earlier;
+    the caller knows which from its own state.
+
+    Args:
+        line: One line of Python source.
+
+    Returns:
+        The triple quote that appears an odd number of times, or None.
+    """
+    for quote in TRIPLE_QUOTES:
+        if line.count(quote) % 2 == 1:
+            return quote
+    return None
+
+
 def strip_docstrings(code: str) -> list[str]:
-    """Drop triple-quoted blocks so only executable lines are compared.
+    """Drop docstrings so the rest of the code is compared line for line.
 
     Tutorial panels may condense a long docstring for space, which is allowed;
-    the code around it is not. Removing docstrings from both sides lets the
-    comparison be strict about the part that matters.
+    nothing else may change. Removing docstrings from both sides lets the
+    comparison be strict about the part that matters. A string counts as a
+    docstring only where Python treats it as one: the first statement after
+    a ``def`` or ``class`` header, or at the start of the text. Every other
+    triple-quoted string, such as SQL passed to ``text()``, stays in the
+    comparison, so a panel can't alter it unnoticed.
 
     Args:
         code: Python source.
 
     Returns:
-        Non-blank lines outside any triple-quoted string.
+        Non-blank lines outside any docstring, without trailing spaces.
     """
     lines: list[str] = []
-    inside = False
+    # True at the start of the text and right after a def or class header:
+    # the two places where Python makes a string statement the docstring.
+    expecting_docstring = True
+    in_header = False
+    docstring_quote: str | None = None
+    open_quote: str | None = None
     for raw in code.split("\n"):
         line = raw.rstrip()
-        markers = line.count('"""')
-        if not inside:
-            if markers == 1:
-                inside = True
-                continue
-            if markers >= 2:
-                continue
-            if line.strip():
+        stripped = line.strip()
+
+        if docstring_quote:
+            if docstring_quote in line:
+                docstring_quote = None
+            continue
+
+        # Inside an ordinary multi-line string: its lines are compared too.
+        if open_quote:
+            if line.count(open_quote) % 2 == 1:
+                open_quote = None
+            if stripped:
                 lines.append(line)
-        elif markers >= 1:
-            inside = False
+            continue
+
+        # Blank lines and comments change nothing about the lines that follow.
+        if not stripped or stripped.startswith("#"):
+            if stripped:
+                lines.append(line)
+            continue
+
+        opening = DOCSTRING_OPEN.match(stripped)
+        if opening and expecting_docstring:
+            expecting_docstring = False
+            if stripped.count(opening.group(1)) == 1:
+                docstring_quote = opening.group(1)
+            continue
+
+        if in_header or stripped.startswith(("def ", "async def ", "class ")):
+            # A header may span several lines; the docstring follows its colon.
+            in_header = not HEADER_END.search(stripped)
+            expecting_docstring = not in_header
+        else:
+            expecting_docstring = False
+        open_quote = unclosed_quote(line)
+        lines.append(line)
     return lines
 
 
@@ -347,8 +422,44 @@ def check_navigation(source: str, report: Report) -> None:
         report.note(f"{len(links)} sidebar links all resolve to sections")
 
 
+def read_quoted_file(repo_root: Path, relative_path: str, commit: str | None) -> str | None:
+    """Return a quoted file's text, as it was at the page's commit if it records one.
+
+    A later stage may change a file that an earlier page quotes, so a page
+    that records its commit is compared with the file at that commit, read
+    with ``git show``. A page without one is compared with the working tree.
+
+    Args:
+        repo_root: The repository root.
+        relative_path: The quoted file's path from the repository root, as the
+            panel labels it.
+        commit: The commit the page records, or None.
+
+    Returns:
+        The file's text with LF line endings, or None when the file doesn't
+        exist at that commit or in the working tree.
+    """
+    if commit is None:
+        path = repo_root / relative_path
+        return path.read_text(encoding="utf-8").replace("\r\n", "\n") if path.exists() else None
+    # A missing file is an answer, not a failure: the return code says which.
+    shown = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"{commit}:{relative_path}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    return shown.stdout.replace("\r\n", "\n") if shown.returncode == 0 else None
+
+
 def check_panels(source: str, repo_root: Path, report: Report) -> None:
     """Check code panels: masking, labels, and fidelity to the repo files.
+
+    When the page records the commit it quotes, every panel is compared with
+    the file at that commit, and the commit has to exist in this clone. Pages
+    from Milestone 1.1 quote commits of pull request #10's branch, which a
+    fresh clone doesn't fetch; the error says how to get them.
 
     Args:
         source: The whole page.
@@ -361,6 +472,25 @@ def check_panels(source: str, repo_root: Path, report: Report) -> None:
     if not blocks:
         report.warn("panels: no code panels found")
         return
+
+    recorded = SOURCE_COMMIT.search(source)
+    commit = recorded.group(1) if recorded else None
+    if commit:
+        present = subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True,
+            check=False,
+        )
+        if present.returncode != 0:
+            report.error(
+                f"panels: the page quotes commit {commit[:9]}, which this clone doesn't have. "
+                "Fetch the branch that contains it first; for Milestone 1.1 pages: "
+                "git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10"
+            )
+            return
+    else:
+        report.warn("panels: the page records no source commit, so it is checked against the "
+                    "working tree and will fail once a later stage edits a file it quotes")
 
     checked = 0
     for mods, body in blocks:
@@ -380,15 +510,15 @@ def check_panels(source: str, repo_root: Path, report: Report) -> None:
             continue
         language = code_match.group(1)
 
-        source_file = repo_root / label
-        if not source_file.exists():
-            report.warn(f"panels: {label} does not exist under {repo_root}")
+        actual = read_quoted_file(repo_root, label, commit)
+        if actual is None:
+            where = f"commit {commit[:9]}" if commit else f"{repo_root}"
+            report.warn(f"panels: {label} does not exist at {where}")
             continue
 
         shown = code_match.group(2).split("</code>")[0]
         for entity, char in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"')):
             shown = shown.replace(entity, char)
-        actual = source_file.read_text(encoding="utf-8").replace("\r\n", "\n")
 
         # Docstrings may be condensed in a panel, so they are dropped from both
         # sides before comparing. Other languages are compared line for line.
@@ -406,7 +536,8 @@ def check_panels(source: str, repo_root: Path, report: Report) -> None:
             checked += 1
 
     if checked:
-        report.note(f"{checked} code panel(s) match the repo files they quote")
+        at = f" at commit {commit[:9]}" if commit else ""
+        report.note(f"{checked} code panel(s) match the repo files they quote{at}")
     if panels:
         report.note(f"{len(panels)} panel(s) are followed by a check list")
 

@@ -29,3 +29,20 @@ validator that checks a finished page before it is committed:
 ```bash
 python .claude/skills/hms-tutorial/scripts/check_tutorial.py tutorial/stage-NN-slug.html
 ```
+
+## Why an early page can differ from today's code
+
+Each page teaches the code as it was when its stage was finished, and later stages change
+some of the same files: Stage 06, for example, adds a connection timeout to the session
+module that Stage 03 introduced. An early page therefore shows the earlier version on
+purpose, so each change is taught in the stage that makes it.
+
+To keep those pages verifiable, every page records the commit it was written from in
+`<meta name="hms-source-commit">`, and the validator compares its code panels with that
+commit rather than with today's files. Pages 01–07 quote commits from the Milestone 1.1
+branch (pull request #10), which a fresh clone doesn't include; fetch them once before
+validating those pages:
+
+```bash
+git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10
+```

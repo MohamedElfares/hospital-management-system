@@ -89,7 +89,14 @@ into two pages.
   in `.code__path` and a working copy button.
 - **Code is verbatim** from the repo file named in the path. Long docstrings may be condensed
   to their summary paragraph plus `Attributes`/`Returns`, since the page is an excerpt — but
-  never edit the code itself to make it read better.
+  never edit the code itself to make it read better. Only real docstrings are condensed;
+  other triple-quoted strings, such as SQL passed to `text()`, are copied line for line.
+- **The page records the commit it quotes** in `<meta name="hms-source-commit">`, which
+  `page()` adds (`HEAD` by default, which is right when the stage is already committed). A
+  page teaches the code as it was at its stage, and later stages change some of the same
+  files; so when a page no longer matches today's code, **never update its panels to the
+  new code** — that would teach a change before the stage that introduces it. The recorded
+  commit is what keeps an old page verifiable.
 - **Terminal blocks** use `.term__cmd` for the command (the `$` is added by CSS — don't type
   it) and `.term__out` / `.term__out--ok` for output.
 - **Close with a "Before you commit" check list** covering the commands, linting, docstrings,
@@ -115,7 +122,16 @@ python .claude/skills/hms-tutorial/scripts/check_tutorial.py tutorial/stage-NN-s
 It checks balanced markup, that every `var(--token)` is defined, light/dark parity, contrast
 ratios in both themes, sidebar↔section id agreement, that code panels are masked and labelled,
 that every check box is inside a label, that the stage number is consistent — and, most
-importantly, that each code panel matches the repo file it claims to quote.
+importantly, that each code panel matches the repo file it claims to quote, read with
+`git show` at the commit the page records.
+
+Pages 01–07 quote commits from the branch of pull request #10, which Milestone 1.1 was
+squash-merged from, so a fresh clone doesn't have them. Fetch them once before validating
+those pages:
+
+```bash
+git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10
+```
 
 Fix what it reports, then tell the user what was checked. Open the page in a browser if you
 can; the validator sees structure, not layout.

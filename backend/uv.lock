@@ -594,6 +594,7 @@ dependencies = [
     { name = "pwdlib", extra = ["argon2"] },
     { name = "pydantic-settings" },
     { name = "sqlalchemy" },
+    { name = "typer" },
     { name = "tzdata" },
 ]
 
@@ -615,6 +616,7 @@ requires-dist = [
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.3.1" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "sqlalchemy", specifier = ">=2.0.54" },
+    { name = "typer", specifier = ">=0.27.2" },
     { name = "tzdata", specifier = ">=2026.4" },
 ]
 

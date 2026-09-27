@@ -12,14 +12,15 @@ The full specification — scope, rules, endpoints and decisions — is in
 
 ## Status
 
-**Phase 1, Milestone 1.1 (Foundation).** The application runs, serves its health checks
-and has tests, but it has no users, roles or clinical data yet: those arrive in the
-milestones below.
+**Phase 1, Milestone 1.2 (Identity and access), in progress.** The application runs,
+serves its health checks, and has a `users` table with hashed passwords and a
+`create-admin` command. Login, permissions and staff administration come next in this
+milestone; clinical data arrives in the milestones below.
 
 | Milestone | What it adds | State |
 |---|---|---|
 | 1.1 Foundation | Settings, database layer, error format, request IDs, health checks, tests, CI | **Done** |
-| 1.2 Identity and access | Users, login with cookie refresh, permissions, staff administration, first deployment | Next |
+| 1.2 Identity and access | Users, login with cookie refresh, permissions, staff administration, first deployment | **In progress** |
 | 1.3 Organization, audit, patients | Departments, branches, staff profiles, audit log, patients | Planned |
 | 1.4 Scheduling | Appointments, slots, check-in | Planned |
 | 1.5 Clinical and prescriptions | Vitals, visits, prescriptions | Planned |
@@ -50,6 +51,13 @@ Behind those three:
   duration — so a failure a user reports can be found in the logs.
 - **A database layer** that gives every future table a UUID primary key and timezone-aware
   UTC timestamps, with Alembic wired to the models.
+- **User accounts.** A `users` table whose rules hold even for writes that skip the
+  application: emails are unique and stored lowercase, and roles are limited to the eight
+  defined roles. Passwords are stored only as Argon2id hashes.
+- **The first Admin.** `python -m app.cli create-admin` creates the first account on an
+  empty database. The password is typed twice at a hidden prompt, never passed as an
+  argument, and must be 12 to 128 characters. The command refuses when an active Admin
+  already exists.
 
 ## The workflow this is being built toward
 
@@ -137,12 +145,18 @@ cd backend
 cp .env.example .env
 uv run python -c "import secrets; print(secrets.token_hex(32))"   # paste into JWT_SECRET_KEY
 
-# 4. Install dependencies and run the API
+# 4. Install dependencies and create the tables
 uv sync
+uv run alembic upgrade head
+
+# 5. Create the first Admin (asks for the password twice, hidden)
+uv run python -m app.cli create-admin --email admin@hospital.test --full-name "Ada Admin"
+
+# 6. Run the API
 uv run fastapi dev app/main.py
 ```
 
-Then open <http://localhost:8000/docs>.
+Then open <http://localhost:8000/docs>. Sign-in arrives later in Milestone 1.2.
 
 `.env.example` lists every setting with a safe development value. Only `JWT_SECRET_KEY`
 has to be replaced; the database URLs match the Compose file.
@@ -151,7 +165,7 @@ has to be replaced; the database URLs match the Compose file.
 
 ```bash
 cd backend
-uv run pytest                 # 20 tests
+uv run pytest                 # 79 tests
 uv run pytest --cov=app       # with coverage; CI requires at least 80%
 ```
 
@@ -175,9 +189,11 @@ uv run alembic check          # fail if the models and migrations disagree
 backend/
 ├── app/
 │   ├── main.py            # create_app(): logging, error handlers, middleware, routers
+│   ├── cli.py             # maintenance commands: create-admin
 │   ├── api/health.py      # liveness and readiness checks
-│   ├── core/              # config.py, errors.py, logging.py
-│   └── db/                # base.py (declarative base and mixins), session.py
+│   ├── core/              # config, errors, logging, permissions (roles), security (hashing)
+│   ├── db/                # base.py (declarative base and mixins), session.py
+│   └── modules/users/     # models, schemas, repository, service
 ├── migrations/            # Alembic
 └── tests/                 # pytest suite and its fixtures
 docs/PROJECT_PLAN.md       # the specification this follows
@@ -199,8 +215,9 @@ docker-compose.yml         # PostgreSQL 17 for development
 
 ## Known limitations
 
-- **No authentication yet.** Roles, permissions and the audit log arrive in Milestones 1.2
-  and 1.3, so the endpoints that exist today are deliberately public.
+- **No sign-in yet.** Accounts exist, but login, permissions and the audit log arrive
+  later in Milestone 1.2 and in 1.3, so the endpoints that exist today are deliberately
+  public.
 - **Not deployed.** The Docker image and the first Render deployment come with Milestone
   1.2, together with a live demo link and demo accounts.
 - **No frontend.** Phase 2 adds the React application; until then the API documentation at
@@ -213,7 +230,7 @@ This is a learning project, and the split is deliberate.
 
 | Written by | Parts |
 |---|---|
-| **[@MohamedElfares](https://github.com/MohamedElfares)** | All backend code and tests: settings, the database layer and migrations, the error format, the request-ID middleware, the health checks, the application factory, and the tests in `backend/tests/` |
+| **[@MohamedElfares](https://github.com/MohamedElfares)** | All backend code and tests: settings, the database layer and migrations, the error format, the request-ID middleware, the health checks, the application factory, the users model, schema, repository and service, password hashing, the `create-admin` command, and the tests in `backend/tests/` |
 | **Claude Code** | CI/CD and Docker configuration, the documentation (docstrings, import comments, this README, the tutorial pages), code review, and the fixes applied on request during those reviews |
 
 Every backend change was written by hand and reviewed against the plan; the rules that

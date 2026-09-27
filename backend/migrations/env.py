@@ -18,6 +18,9 @@ from sqlalchemy import engine_from_config
 # Connection pool classes; NullPool opens one connection for the command.
 from sqlalchemy import pool
 
+# Registers the users table in Base.metadata so autogenerate can see it.
+import app.modules.users.models  # noqa: F401
+
 # Cached application settings; supplies the database URL.
 from app.core.config import get_settings
 
@@ -75,6 +78,9 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # Fail within seconds when the database is unreachable, like the app's
+        # engine, instead of waiting for the operating system's TCP timeout.
+        connect_args={"connect_timeout": 5},
     )
 
     with connectable.connect() as connection:

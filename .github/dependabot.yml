@@ -44,8 +44,9 @@ updates:
       - dependency-name: "postgres"
         update-types: ["version-update:semver-major"]
 
-  # Hook versions pinned in .pre-commit-config.yaml, so the local checks and
-  # CI don't drift apart from the tools they run.
+  # The hygiene hooks pinned in .pre-commit-config.yaml. Ruff isn't one of
+  # them: its hooks run the version in backend/uv.lock, which the uv entry
+  # above updates, so the hook and CI always use the same Ruff.
   - package-ecosystem: pre-commit
     directory: /
     schedule:

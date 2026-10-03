@@ -4,6 +4,8 @@
 
 services:
   db:
+    # Keep in step with the postgres service in .github/workflows/ci.yml, so
+    # the tests run on the same major version as development.
     image: postgres:17
     restart: unless-stopped
     environment:

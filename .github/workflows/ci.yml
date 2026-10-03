@@ -28,7 +28,8 @@ jobs:
     # fails in minutes instead of occupying a runner for six hours.
     timeout-minutes: 15
 
-    # PostgreSQL 17 for the integration tests, matching docker-compose.yml.
+    # PostgreSQL 17 for the integration tests. Change it together with
+    # docker-compose.yml: Dependabot updates that file, never this service image.
     # The health check keeps the job waiting until the database accepts
     # connections, so the first migration can't run too early.
     services:

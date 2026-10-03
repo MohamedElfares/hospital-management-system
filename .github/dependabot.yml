@@ -37,6 +37,12 @@ updates:
       day: monday
     commit-message:
       prefix: "chore(docker)"
+    ignore:
+      # A PostgreSQL major upgrade is a decision, not a routine update: it must
+      # match production (Neon) and change the CI service image in ci.yml in
+      # the same pull request, which Dependabot can't do. Decided in IAM-6 (#19).
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
 
   # Hook versions pinned in .pre-commit-config.yaml, so the local checks and
   # CI don't drift apart from the tools they run.

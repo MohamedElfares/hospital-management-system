@@ -44,5 +44,5 @@ branch (pull request #10), which a fresh clone doesn't include; fetch them once 
 validating those pages:
 
 ```bash
-git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10
+git fetch origin refs/pull/10/head:refs/pull/10/head
 ```

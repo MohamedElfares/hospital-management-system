@@ -485,7 +485,7 @@ def check_panels(source: str, repo_root: Path, report: Report) -> None:
             report.error(
                 f"panels: the page quotes commit {commit[:9]}, which this clone doesn't have. "
                 "Fetch the branch that contains it first; for Milestone 1.1 pages: "
-                "git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10"
+                "git fetch origin refs/pull/10/head:refs/pull/10/head"
             )
             return
     else:

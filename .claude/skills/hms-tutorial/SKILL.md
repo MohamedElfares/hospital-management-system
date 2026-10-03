@@ -130,7 +130,7 @@ squash-merged from, so a fresh clone doesn't have them. Fetch them once before v
 those pages:
 
 ```bash
-git fetch origin refs/pull/10/head:refs/remotes/origin/pull/10
+git fetch origin refs/pull/10/head:refs/pull/10/head
 ```
 
 Fix what it reports, then tell the user what was checked. Open the page in a browser if you

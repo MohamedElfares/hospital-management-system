@@ -18,6 +18,9 @@ from sqlalchemy import engine_from_config
 # Connection pool classes; NullPool opens one connection for the command.
 from sqlalchemy import pool
 
+# Registers the refresh_tokens table in Base.metadata so autogenerate can see it.
+import app.modules.auth.models
+
 # Registers the users table in Base.metadata so autogenerate can see it.
 import app.modules.users.models  # noqa: F401
 

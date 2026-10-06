@@ -1,3 +1,4 @@
+import re
 import secrets
 import uuid
 from datetime import UTC
@@ -8,12 +9,16 @@ from typing import Any
 import jwt
 import pytest
 
+from app.core import security
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.security import _DUMMY_HASH
+from app.core.security import check_password
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
+from app.core.security import generate_refresh_token
 from app.core.security import hash_password
+from app.core.security import hash_refresh_token
 from app.core.security import verify_password
 
 # Written out rather than imported from app.core.security, so a change to the
@@ -340,3 +345,105 @@ def test_a_malformed_access_token_is_rejected(token: str) -> None:
         decode_access_token(token)
 
     assert exc_info.value.message == "Invalid or expired token."
+
+
+def test_two_refresh_tokens_are_never_the_same() -> None:
+    """A hundred generated refresh tokens are all different.
+
+    With 256 random bits a repeat never happens, so a duplicate would mean
+    the generator had become predictable, such as a counter or a clock.
+    """
+    tokens = set()
+    for _ in range(100):
+        tokens.add(generate_refresh_token())
+
+    assert len(tokens) == 100
+
+
+def test_a_refresh_token_is_url_safe_and_long_enough() -> None:
+    """A refresh token has at least 43 characters, all safe in a cookie.
+
+    Forty-three is the base64 length of 32 random bytes. Only letters,
+    digits, ``-``, and ``_`` may appear, so the cookie needs no escaping.
+    """
+    token = generate_refresh_token()
+
+    assert len(token) >= 43
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", token)
+
+
+def test_a_refresh_token_hash_is_64_hex_characters() -> None:
+    """A refresh token's hash has the shape of the ``token_hash`` column.
+
+    Sixty-four lowercase hex characters fit ``String(64)``, and the raw
+    token, with its mixed case, could never match, so the function can't
+    be returning the token itself.
+    """
+    token = generate_refresh_token()
+    assert re.fullmatch(r"[0-9a-f]{64}", hash_refresh_token(token))
+
+
+def test_a_refresh_token_hash_is_plain_sha256() -> None:
+    """Hashing ``"abc"`` gives the published SHA-256 test vector.
+
+    This pins the exact algorithm and shows the hash is the same every
+    time. Adding a salt or switching algorithms would make stored tokens
+    unfindable and sign everyone out, and this test would fail first.
+    """
+    value = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+    assert hash_refresh_token("abc") == value
+
+
+def test_different_refresh_tokens_get_different_hashes() -> None:
+    """A hundred different refresh tokens give a hundred different hashes.
+
+    Each refresh must find exactly one row, so two tokens may never share
+    a hash.
+    """
+    hash_tokens = set()
+
+    for _ in range(100):
+        hash_tokens.add(hash_refresh_token(generate_refresh_token()))
+
+    assert len(hash_tokens) == 100
+
+
+def test_check_password_accepts_the_right_password() -> None:
+    """With an existing user, the right password is accepted."""
+    assert check_password(PASSWORD, hash_password(PASSWORD)) is True
+
+
+def test_check_password_rejects_a_wrong_password() -> None:
+    """With an existing user, a password that doesn't match their hash is rejected."""
+    assert check_password(PASSWORD, hash_password(PASSWORD + "abc")) is False
+
+
+def test_check_password_without_a_user_returns_false() -> None:
+    """With no matching user, the check always fails."""
+    assert check_password(PASSWORD, None) is False
+
+
+def test_check_password_without_a_user_still_checks_the_dummy_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no matching user, the password is still verified against the dummy hash.
+
+    The slow Argon2 check runs exactly once, against ``_DUMMY_HASH``, so an
+    unknown email takes as long as a wrong password. A spy records the
+    calls: measuring time would be too unreliable for a test. The previous
+    test checks the answer; this one checks the cost, so removing the dummy
+    check would fail here even though the answer stays False.
+    """
+    calls: list[str] = []
+    real_verify = verify_password
+
+    def spy(password: str, password_hash: str) -> bool:
+        """Record the hash being checked, then run the real verification."""
+        calls.append(password_hash)
+        return real_verify(password, password_hash)
+
+    monkeypatch.setattr(security, "verify_password", spy)
+
+    assert check_password(PASSWORD, None) is False
+    assert calls == [_DUMMY_HASH]

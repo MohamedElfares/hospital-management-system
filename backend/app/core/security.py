@@ -1,4 +1,4 @@
-"""Password hashing and access tokens.
+"""Password hashing, access tokens, and the refresh token cookie.
 
 Passwords are never stored. Each one is hashed with Argon2id through pwdlib:
 a slow, memory-hard function with a random salt per password, so a leaked
@@ -11,14 +11,22 @@ the user and expires after ``ACCESS_TOKEN_EXPIRE_MINUTES``. The token proves
 only who the caller is. Whether that user still exists, is active, and may
 do what they ask is checked against the database on every request.
 
+A refresh token, a random value that lasts ``REFRESH_TOKEN_EXPIRE_DAYS``,
+gets the client a new access token without signing in again. It travels
+only in an ``HttpOnly`` cookie, and the database keeps only its SHA-256
+hash, so the token can be revoked and a leaked table can't be used.
+
 The rest of the backend calls the functions here and never imports pwdlib
 or PyJWT, so the algorithms or their settings can change in this one file.
 """
 
+# Standard-library hashing; SHA-256 of refresh tokens for storage and lookup.
+import hashlib
+
 # Standard-library logging; records unsupported hashes without their contents.
 import logging
 
-# Cryptographically secure random values; the unguessable input of _DUMMY_HASH.
+# Cryptographically secure random values; refresh tokens and the dummy password.
 import secrets
 
 # UUID type of user IDs; the token's subject is parsed back into one.
@@ -38,6 +46,9 @@ from typing import Any
 
 # PyJWT; signs, verifies, and decodes the access tokens.
 import jwt
+
+# FastAPI's HTTP response; set_refresh_cookie adds the Set-Cookie header to it.
+from fastapi import Response
 
 # pwdlib's hasher; recommended() gives Argon2id with safe default settings.
 from pwdlib import PasswordHash
@@ -60,6 +71,11 @@ _password_hash = PasswordHash.recommended()
 # decision, not a per-environment value, and decoding accepts only this one,
 # so a token that names another algorithm (including "none") is rejected.
 _JWT_ALGORITHM = "HS256"
+
+# Public because sign-in sets this cookie, refresh reads it, and sign-out
+# clears it: one constant means a typo fails loudly instead of creating a
+# cookie that the other endpoints never find.
+REFRESH_COOKIE_NAME = "refresh_token"
 
 
 def hash_password(password: str) -> str:
@@ -189,3 +205,97 @@ def decode_access_token(token: str) -> uuid.UUID:
         # PyJWT's exception is left out of the chain rather than attached
         # to the error as its cause.
         raise AuthenticationError("Invalid or expired token.") from None
+
+
+def generate_refresh_token() -> str:
+    """Create a new random refresh token.
+
+    The token is 32 bytes from the operating system's secure random source,
+    256 bits that can't be guessed or derived from earlier tokens. It is
+    encoded with URL-safe base64, so it fits in a cookie without escaping.
+    It means nothing by itself: it is valid only while a stored row with its
+    hash says so.
+
+    Returns:
+        The raw token, about 43 characters long. It is sent to the client
+        once, in the cookie, and never stored or logged.
+    """
+    return secrets.token_urlsafe(32)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Hash a refresh token for storage in ``refresh_tokens.token_hash``.
+
+    SHA-256 is fast and unsalted on purpose, unlike password hashing. The
+    token is 256 random bits, so a fast hash can't be brute-forced, and
+    without a salt the same token always gives the same hash, which is what
+    lets a refresh find its row with an indexed lookup. Changing the
+    algorithm would make every stored token unfindable and sign every user
+    out.
+
+    Args:
+        token: The raw token from the client's cookie.
+
+    Returns:
+        The hash as 64 lowercase hexadecimal characters.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def check_password(password: str, password_hash: str | None) -> bool:
+    """Check a sign-in password, taking the same time whether or not the user exists.
+
+    When no user matched the email, the caller passes None. The password is
+    then verified against ``_DUMMY_HASH`` so the slow Argon2 work still
+    happens, and response times can't reveal which emails have accounts.
+    The result of that check is ignored and False is returned explicitly,
+    so a missing user can never sign in, whatever the dummy hash is.
+
+    Args:
+        password: The password the user submitted.
+        password_hash: The stored hash of the matching user, or None if no
+            user has that email.
+
+    Returns:
+        True only if a user exists and the password matches their hash.
+    """
+    if password_hash is None:
+        verify_password(password, _DUMMY_HASH)
+        return False
+
+    return verify_password(password, password_hash)
+
+
+def set_refresh_cookie(response: Response, token: str) -> None:
+    """Send the refresh token to the browser in its protected cookie.
+
+    Each cookie setting closes off one way to steal or misuse the token:
+
+    - ``HttpOnly``: page scripts can't read it, so an XSS bug can't copy it.
+    - ``SameSite=Strict``: the browser never sends it with requests started
+      by another site, which blocks CSRF.
+    - ``Path=/api/v1/auth``: it is sent only to the auth endpoints, not with
+      every API call.
+    - ``Secure`` in production: it is sent only over HTTPS. It is off
+      elsewhere because local development uses plain HTTP, where a secure
+      cookie would never be sent.
+    - ``Max-Age``: the browser drops it when the token expires,
+      ``REFRESH_TOKEN_EXPIRE_DAYS`` after sign-in.
+
+    Args:
+        response: The response that will carry the ``Set-Cookie`` header.
+        token: The raw refresh token. It goes only into this cookie, never
+            into a response body or a log.
+    """
+    settings = get_settings()
+    max_age = settings.refresh_token_expire_days * 24 * 60 * 60
+
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="strict",
+        path="/api/v1/auth",
+        secure=settings.is_production,
+        max_age=max_age,
+    )

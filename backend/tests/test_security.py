@@ -8,6 +8,7 @@ from typing import Any
 
 import jwt
 import pytest
+from fastapi import Response
 
 from app.core import security
 from app.core.config import get_settings
@@ -447,3 +448,23 @@ def test_check_password_without_a_user_still_checks_the_dummy_hash(
 
     assert check_password(PASSWORD, None) is False
     assert calls == [_DUMMY_HASH]
+
+
+def test_the_refresh_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In production, the refresh cookie carries the ``Secure`` flag.
+
+    ``Secure`` stops the browser from sending the cookie over plain HTTP,
+    where anyone on the network could read it. Tests run outside
+    production, so the API tests only ever see the cookie without
+    ``Secure``; this test covers the branch that protects real users. Here
+    ``get_settings`` is replaced where ``set_refresh_cookie`` looks it up,
+    with a copy of the real settings whose environment is production. The
+    cached settings themselves are untouched, so no other test is affected.
+    """
+    production = get_settings().model_copy(update={"environment": "production"})
+    monkeypatch.setattr(security, "get_settings", lambda: production)
+
+    response = Response()
+    security.set_refresh_cookie(response, "token")
+
+    assert "secure" in response.headers["set-cookie"].lower()

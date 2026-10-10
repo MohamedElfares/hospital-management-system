@@ -14,6 +14,9 @@ from fastapi import FastAPI
 # Health check routes, kept outside /api/v1 so monitoring never follows the API's versioning.
 from app.api.health import router as health_router
 
+# Every module's routes, under the /api/v1 prefix.
+from app.api.router import api_router
+
 # Cached settings; supplies the log level here, and more as the app grows.
 from app.core.config import get_settings
 
@@ -42,7 +45,7 @@ def create_app() -> FastAPI:
     Returns:
         An application with logging configured, the error handlers
         registered, the request-context middleware installed, and the health
-        routes included.
+        and ``/api/v1`` routes included.
 
     Example:
         ``client = TestClient(create_app())``
@@ -54,6 +57,7 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.middleware("http")(request_context_middleware)
     app.include_router(health_router)
+    app.include_router(api_router)
 
     return app
 

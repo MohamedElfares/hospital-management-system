@@ -153,7 +153,11 @@ def _condense_block(block: list[str], quote: str) -> list[str]:
         header = entry.strip()
         if header in KEPT_SECTIONS:
             keeping = True
-            kept += ["", entry]
+            # One blank line before each kept section; the previous kept
+            # section may already end with the blank line that followed it.
+            if not kept or kept[-1] != "":
+                kept.append("")
+            kept.append(entry)
             continue
         if (
             header.endswith(":")

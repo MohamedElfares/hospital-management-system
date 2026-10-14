@@ -1,12 +1,13 @@
-"""HTTP routes for signing in.
+"""HTTP routes for signing in and for the signed-in user.
 
-The router handles HTTP only: it reads the form, calls one service function,
-and turns the result into a response body and a cookie. Every rule about
-who may sign in lives in the service, and failures come back as domain
-errors that the exception handlers turn into the standard error body.
+The router handles HTTP only: it reads the request, calls one service
+function or dependency, and turns the result into a response. Every rule
+about who may sign in, and who counts as signed in, lives in the service,
+and failures come back as domain errors that the exception handlers turn
+into the standard error body.
 
-All routes here are Public: signing in is how a caller becomes
-authenticated, so no token can be required yet.
+Signing in is Public, since it is how a caller becomes authenticated. The
+current-user route is Authenticated: it needs a valid access token.
 """
 
 # Attaches a dependency to a parameter's type.
@@ -27,6 +28,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 # Type of the database session passed to the service.
 from sqlalchemy.orm import Session
 
+# The signed-in user, loaded from the bearer token before the route runs.
+from app.api.deps import CurrentUser
+
 # Writes the refresh token into its HttpOnly cookie with every security flag.
 from app.core.security import set_refresh_cookie
 
@@ -38,6 +42,12 @@ from app.modules.auth import service
 
 # Body of a successful sign-in: the access token and its type.
 from app.modules.auth.schemas import TokenResponse
+
+# The users table's ORM model; what the current-user route returns.
+from app.modules.users.models import User
+
+# The public fields of a user; filters what the current-user route sends.
+from app.modules.users.schemas import UserRead
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -79,3 +89,38 @@ def login(
     set_refresh_cookie(response, result.refresh_token)
 
     return TokenResponse(access_token=result.access_token)
+
+
+@router.get(
+    "/me",
+    summary="Get the signed-in user",
+    response_model=UserRead,
+    responses={
+        401: {
+            "description": (
+                "Missing, invalid, or expired access token, or the account is deactivated."
+            )
+        }
+    },
+)
+def me(user: CurrentUser) -> User:
+    """Return the signed-in user's account. Authenticated.
+
+    The web app calls this after every page load to learn who is signed in
+    and whether a password change is due. It keeps working while
+    ``must_change_password`` is set, so the app can show the
+    change-password screen. The route returns the ORM user, and
+    ``response_model`` sends only the ``UserRead`` fields.
+
+    Args:
+        user: The active user the bearer token belongs to.
+
+    Returns:
+        The user, sent as ``UserRead``.
+
+    Raises:
+        AuthenticationError: From the dependency, before this runs, if the
+            token is missing, invalid, or expired, or the account is
+            deactivated. The handler turns it into a 401.
+    """
+    return user

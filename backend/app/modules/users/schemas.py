@@ -1,11 +1,17 @@
-"""Input schemas for creating user accounts.
+"""Schemas for user accounts: input for creating them and output for showing them.
 
-A schema checks and cleans input before any business rule runs. The same
-schema serves every way a user is created, the ``create-admin`` command now
-and the staff administration API later (IAM-5), so the email, name, and
+An input schema checks and cleans data before any business rule runs. The
+same schema serves every way a user is created, the ``create-admin`` command
+now and the staff administration API later (IAM-5), so the email, name, and
 password rules are written once. Invalid input raises Pydantic's
 ``ValidationError``, which the API turns into a 422 response.
+
+The output schema decides which fields of a user ever leave the API, so the
+password hash and internal flags can't be sent by accident.
 """
+
+# The UUID type of user ids; the type of UserRead.id.
+import uuid
 
 # Attaches validation rules and extra processing to a type annotation.
 from typing import Annotated
@@ -15,6 +21,9 @@ from pydantic import AfterValidator
 
 # Base class for Pydantic models that validate their fields on creation.
 from pydantic import BaseModel
+
+# Model settings; lets UserRead read its fields from an ORM object's attributes.
+from pydantic import ConfigDict
 
 # String type that must be a valid email address; checked by email-validator.
 from pydantic import EmailStr
@@ -67,3 +76,32 @@ class UserCreate(BaseModel):
     ]
     password: SecretStr = Field(min_length=12, max_length=128)
     role: Role
+
+
+class UserRead(BaseModel):
+    """A user account as the API shows it.
+
+    Used as a route's ``response_model``: FastAPI copies only these fields
+    into the response, so a route can return the ORM ``User`` and the
+    password hash still never leaves the server. ``from_attributes`` lets
+    Pydantic read the values from the object's attributes instead of a
+    dict. ``is_active`` and ``is_demo`` are left out: a caller who can reach
+    the current-user endpoint is always active, and nothing needs the demo
+    flag yet. The staff administration endpoints will reuse this schema.
+
+    Attributes:
+        id: The account's id.
+        email: Sign-in email, stored lowercase.
+        full_name: Display name.
+        role: The account's role; the web app chooses its menus from it.
+        must_change_password: True while a temporary password must be
+            replaced; the web app shows the change-password screen.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: Role
+    must_change_password: bool

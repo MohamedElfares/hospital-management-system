@@ -8,6 +8,9 @@ domain errors from ``app.core.errors``, never HTTP errors, so the API and
 the ``create-admin`` command can each report them in their own way.
 """
 
+# The UUID type of user ids; annotates the id passed to the lookup.
+import uuid
+
 # Raised on flush when a database constraint rejects the row.
 from sqlalchemy.exc import IntegrityError
 
@@ -148,3 +151,26 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     normalized = email.strip().lower()
 
     return repository.get_by_email(session, normalized)
+
+
+def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
+    """Find a user by id.
+
+    This is how other modules load an account they already have an id
+    for: auth uses it to find the user an access token names, since only
+    this module may use the users repository. A UUID has no case or
+    spacing to normalize, so the id is passed through unchanged.
+
+    Inactive users are returned too. Deciding what deactivation means is
+    the caller's job: auth rejects them, while staff administration must
+    still find a deactivated account to show or reactivate it. Nothing is
+    written, so nothing is committed.
+
+    Args:
+        session: The open database session.
+        user_id: The id of the user to load.
+
+    Returns:
+        The matching user, active or not, or None if no user has that id.
+    """
+    return repository.get_by_id(session, user_id)

@@ -6,6 +6,9 @@ commits once per use case. Other modules must go through the users service,
 never through this module.
 """
 
+# The UUID type of user ids; annotates the primary key being looked up.
+import uuid
+
 # Builds an EXISTS subquery; asks whether a matching row exists without loading it.
 from sqlalchemy import exists
 
@@ -39,6 +42,25 @@ def get_by_email(session: Session, email: str) -> User | None:
     """
     query = select(User).where(User.email == email)
     return session.scalar(query)
+
+
+def get_by_id(session: Session, user_id: uuid.UUID) -> User | None:
+    """Find the user with a given primary key.
+
+    ``Session.get`` is the primary-key lookup: it first checks the
+    session's identity map, the objects this session has already loaded,
+    and queries the database only when the user isn't there. Within one
+    request that saves a query when the user was loaded earlier. Inactive
+    users are returned too; filtering is the caller's decision.
+
+    Args:
+        session: The open database session.
+        user_id: The primary key to look up.
+
+    Returns:
+        The matching user, or None if no account has this id.
+    """
+    return session.get(User, user_id)
 
 
 def active_admin_exists(session: Session) -> bool:

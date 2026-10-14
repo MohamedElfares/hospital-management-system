@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from factories import make_user
 from factories import make_user_create
@@ -13,6 +15,7 @@ from app.modules.users.models import User
 from app.modules.users.service import create_first_admin
 from app.modules.users.service import create_user
 from app.modules.users.service import get_user_by_email
+from app.modules.users.service import get_user_by_id
 
 EMAIL = "test@example.com"
 PASSWORD = "Password@1331"
@@ -249,3 +252,58 @@ def test_get_user_by_email_returns_inactive_users_too(db_session: Session) -> No
     result = get_user_by_email(db_session, user.email)
 
     assert result is user
+
+
+def test_get_user_by_id_finds_an_existing_user(db_session: Session) -> None:
+    """A saved user is found by id through the service, not the decoy beside it.
+
+    The decoy is added first so a lookup that ignored the id would return
+    it, and the session is emptied so the result comes from the database.
+    """
+    decoy_user = make_user(email="other@example.com")
+    user = make_user()
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    result = get_user_by_id(db_session, user.id)
+
+    assert result is not None
+    assert result.id == user.id
+
+
+def test_get_user_by_id_returns_none_for_an_unknown_id(db_session: Session) -> None:
+    """An id that no user has returns None, even with users in the table."""
+    user = make_user()
+    decoy_user = make_user(email="other@example.com")
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    assert get_user_by_id(db_session, uuid.uuid4()) is None
+
+
+def test_get_user_by_id_returns_inactive_users_too(db_session: Session) -> None:
+    """A deactivated user is still found by id, with the flag read as stored.
+
+    The service leaves deactivation to its callers: auth rejects inactive
+    users, but staff administration must still find them to reactivate
+    them. The ``is_active`` check proves the inactive row itself came back.
+    """
+    decoy_user = make_user(email="other@example.com")
+    user = make_user(is_active=False)
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    result = get_user_by_id(db_session, user.id)
+
+    assert result is not None
+    assert result.id == user.id
+    assert result.is_active is False

@@ -1,4 +1,4 @@
-"""Business rules for signing in.
+"""Business rules for signing in and for recognising a signed-in user.
 
 The service decides whether a sign-in succeeds and, if it does, issues the
 session: a short-lived access token for the response body and a refresh
@@ -7,9 +7,14 @@ user's sign-in time are committed together or not at all. It raises domain
 errors from ``app.core.errors``, never HTTP errors, and returns plain data
 that the router turns into a response and a cookie.
 
+On every later request, it turns the access token back into the user who
+sent it, reading the account from the database so a deactivation takes
+effect at once rather than when the token expires.
+
 Every failed sign-in looks the same from outside: the same error, the same
 message, and roughly the same time, so the API never reveals which emails
-have accounts or which accounts are deactivated.
+have accounts or which accounts are deactivated. A rejected access token
+works the same way: one error and one message for every reason.
 """
 
 # Immutable record type for the tokens a sign-in returns.
@@ -39,6 +44,9 @@ from app.core.security import check_password
 # Signs the access token returned in the response body.
 from app.core.security import create_access_token
 
+# Checks an access token's signature and expiry and returns the user id it carries.
+from app.core.security import decode_access_token
+
 # Creates the random refresh token sent in the cookie.
 from app.core.security import generate_refresh_token
 
@@ -51,11 +59,22 @@ from app.modules.auth import repository
 # The refresh_tokens table's ORM model.
 from app.modules.auth.models import RefreshToken
 
+# The users table's ORM model; the type of the signed-in user.
+from app.modules.users.models import User
+
 # Users service lookup; other modules may not use the users repository.
 from app.modules.users.service import get_user_by_email
 
+# Users service lookup by id; loads the account an access token names.
+from app.modules.users.service import get_user_by_id
+
 # One message for every failure, so no reply hints at which check failed.
 _INVALID_CREDENTIALS = "Incorrect email or password."
+
+# Same text decode_access_token uses, so a missing or deactivated account
+# looks exactly like an expired token. Tests pin both to one literal, so
+# the two copies can't drift apart unnoticed.
+_INVALID_TOKEN = "Invalid or expired token."
 
 
 @dataclass(frozen=True)
@@ -143,3 +162,51 @@ def login(session: Session, email: str, password: str) -> LoginResult:
         access_token=create_access_token(user.id),
         refresh_token=raw_token,
     )
+
+
+def get_authenticated_user(session: Session, access_token: str) -> User:
+    """Return the active user an access token belongs to.
+
+    Three checks run in order. The token is decoded first, which needs no
+    database, so a forged, expired, or garbage token is rejected before it
+    costs a query. Then the user it names is loaded. Finally, the account
+    must exist and be active.
+
+    The database is read on every call even though the token is signed,
+    because a signature only proves who the user was when the token was
+    issued. An access token stays valid for its whole lifetime, so without
+    this read a deactivated user could keep working until it expired; with
+    it, deactivation applies to their very next request. A missing account
+    is possible too, for example after a development database is reset
+    while a browser still holds a token.
+
+    Every failure raises the same error with the same message, so a token
+    holder can't tell a deactivated or missing account from an expired
+    token. No timing parity is needed, unlike sign-in: reaching the
+    database check requires a token the server signed, which an attacker
+    can't produce. Nothing is written, so nothing is committed.
+
+    This function deliberately ignores ``must_change_password``: the
+    current-user endpoint must keep working while a password change is
+    pending, so that gate is applied separately, on the routes it covers.
+
+    Args:
+        session: The open database session. Only read, never committed.
+        access_token: The token from the ``Authorization: Bearer`` header,
+            possibly empty or malformed.
+
+    Returns:
+        The user the token names, who exists and is active.
+
+    Raises:
+        AuthenticationError: If the token is invalid or expired, names no
+            existing user, or names a deactivated user. The message is the
+            same in every case.
+    """
+    user_id = decode_access_token(access_token)
+    user = get_user_by_id(session, user_id)
+
+    if user is None or not user.is_active:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    return user

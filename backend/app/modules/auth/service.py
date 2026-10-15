@@ -1,4 +1,4 @@
-"""Business rules for signing in and for recognising a signed-in user.
+"""Business rules for signing in and for recognizing a signed-in user.
 
 The service decides whether a sign-in succeeds and, if it does, issues the
 session: a short-lived access token for the response body and a refresh
@@ -78,13 +78,14 @@ _INVALID_TOKEN = "Invalid or expired token."
 
 
 @dataclass(frozen=True)
-class LoginResult:
-    """The tokens issued by a successful sign-in.
+class IssuedTokens:
+    """The tokens issued by a sign-in or a refresh.
 
-    This is internal data passed from the service to the router, not a
-    response schema: the router puts the access token in the body and the
-    refresh token in the cookie. It is frozen so neither token can be
-    changed after it is issued.
+    Sign-in and refresh end the same way, with a new access token and a new
+    refresh token, so they return the same type. This is internal data
+    passed from the service to the router, not a response schema: the
+    router puts the access token in the body and the refresh token in the
+    cookie. It is frozen so neither token can be changed after it is issued.
 
     Attributes:
         access_token: The signed JWT for the ``Authorization: Bearer``
@@ -98,7 +99,49 @@ class LoginResult:
     refresh_token: str
 
 
-def login(session: Session, email: str, password: str) -> LoginResult:
+def _issue_tokens(
+    session: Session,
+    user: User,
+    expires_at: datetime,
+) -> tuple[IssuedTokens, RefreshToken]:
+    """Create a new access token and refresh token for a user.
+
+    This is the part sign-in and refresh share. A random refresh token is
+    generated, and a row holding only its SHA-256 hash is added to the
+    session; the raw value is returned once, for the cookie, and never
+    stored. The access token is signed for the same user.
+
+    The caller chooses the expiry, because the two cases differ: sign-in
+    starts a new window of ``REFRESH_TOKEN_EXPIRE_DAYS``, while refresh
+    keeps the old token's expiry, so refreshing never extends a session.
+    Nothing is committed: each caller commits once at the end of its own
+    use case, so a refresh can never save the new token without also
+    revoking the old one. The row has no id until the session flushes.
+
+    Args:
+        session: The open database session. The new row is added to it
+            but not committed.
+        user: The user the tokens are for.
+        expires_at: When the new refresh token stops working, timezone-aware
+            UTC.
+
+    Returns:
+        The tokens to send to the client, and the new refresh token's row,
+        which refresh links the revoked token to.
+    """
+    raw_refresh_token = generate_refresh_token()
+    refresh_token_row = RefreshToken(
+        user_id=user.id,
+        token_hash=hash_refresh_token(raw_refresh_token),
+        expires_at=expires_at,
+    )
+
+    repository.add(session, refresh_token_row)
+
+    return IssuedTokens(create_access_token(user.id), raw_refresh_token), refresh_token_row
+
+
+def login(session: Session, email: str, password: str) -> IssuedTokens:
     """Sign a user in with their email and password.
 
     The email is matched ignoring case and surrounding spaces. The password
@@ -144,24 +187,15 @@ def login(session: Session, email: str, password: str) -> LoginResult:
     # One timestamp for both writes, so the token's expiry and the recorded
     # sign-in time agree exactly.
     now = datetime.now(UTC)
-    raw_token = generate_refresh_token()
+    expires_at = now + timedelta(days=get_settings().refresh_token_expire_days)
 
-    repository.add(
-        session,
-        RefreshToken(
-            user_id=user.id,
-            token_hash=hash_refresh_token(raw_token),
-            expires_at=now + timedelta(days=get_settings().refresh_token_expire_days),
-        ),
-    )
+    # The new row is only needed when a refresh links the old token to it.
+    issued_tokens, _ = _issue_tokens(session=session, user=user, expires_at=expires_at)
 
     user.last_login_at = now
     session.commit()
 
-    return LoginResult(
-        access_token=create_access_token(user.id),
-        refresh_token=raw_token,
-    )
+    return issued_tokens
 
 
 def get_authenticated_user(session: Session, access_token: str) -> User:

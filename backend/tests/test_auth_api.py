@@ -9,6 +9,7 @@ from app.core.errors import ErrorCode
 from app.core.security import REFRESH_COOKIE_NAME
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
+from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
 from app.modules.auth.models import RefreshToken
@@ -16,6 +17,7 @@ from app.modules.users.models import User
 
 LOGIN_URL = "/api/v1/auth/login"
 ME_URL = "/api/v1/auth/me"
+REFRESH_URL = "/api/v1/auth/refresh"
 PASSWORD = "Correct-Password-1"
 
 
@@ -325,3 +327,143 @@ def test_me_still_works_while_a_password_change_is_pending(
         "role": user.role,
         "must_change_password": True,
     }
+
+
+def test_refresh_returns_a_new_bearer_access_token(
+    user: User,
+    client: TestClient,
+) -> None:
+    """After sign-in, a refresh answers 200 with a bearer token for the user.
+
+    The client keeps the sign-in cookie and sends it back by itself, as a
+    browser does, so the request carries no Authorization header at all.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    refresh_response = client.post(REFRESH_URL)
+    body = refresh_response.json()
+
+    assert refresh_response.status_code == 200
+    assert body["token_type"] == "bearer"
+    assert decode_access_token(body["access_token"]) == user.id
+
+
+def test_refresh_sets_a_new_refresh_cookie_with_its_security_flags(
+    user: User,
+    client: TestClient,
+) -> None:
+    """A refresh replaces the cookie with a different token and the same flags.
+
+    A cookie that kept the sign-in value would mean the token was not
+    rotated. Max-Age isn't pinned here, since the cookie's lifetime and the
+    token's fixed expiry may still be aligned later.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 200
+
+    set_cookie = refresh_response.headers["set-cookie"].lower()
+    login_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+    refresh_cookie = refresh_response.cookies[REFRESH_COOKIE_NAME]
+
+    assert f"{REFRESH_COOKIE_NAME}=" in set_cookie
+    assert "httponly" in set_cookie
+    assert "samesite=strict" in set_cookie
+    assert "path=/api/v1/auth" in set_cookie
+    assert refresh_cookie != login_cookie
+
+
+def test_the_refreshed_token_never_appears_in_the_body(user: User, client: TestClient) -> None:
+    """The body holds only the access token and its type, never the refresh token.
+
+    The key set catches any extra field, and the text search catches the
+    token hidden in any value. It must stay in the HttpOnly cookie.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 200
+
+    body = refresh_response.json()
+    refresh_cookie = refresh_response.cookies[REFRESH_COOKIE_NAME]
+
+    assert set(body) == {"access_token", "token_type"}
+    assert refresh_cookie not in refresh_response.text
+
+
+def test_refresh_without_a_cookie_is_the_standard_401(client: TestClient) -> None:
+    """A refresh without the cookie gets the standard 401 and no cookie.
+
+    Not a 422: the route's cookie parameter defaults to None, so the
+    request reaches the service, which reports it as unauthenticated.
+    """
+    refresh_response = client.post(REFRESH_URL)
+    error = refresh_response.json()["error"]
+
+    assert refresh_response.status_code == 401
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == "Invalid or expired token."
+    assert "set-cookie" not in refresh_response.headers
+
+
+def test_refresh_with_an_unknown_cookie_is_the_standard_401(client: TestClient) -> None:
+    """A well-formed token the server never issued gets the standard 401.
+
+    The cookie is set with the same path the server uses, so the client
+    really sends it; with any other path it would be left out and this
+    would only repeat the missing-cookie test.
+    """
+    client.cookies.set(REFRESH_COOKIE_NAME, generate_refresh_token(), path="/api/v1/auth")
+    refresh_response = client.post(REFRESH_URL)
+    error = refresh_response.json()["error"]
+
+    assert refresh_response.status_code == 401
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == "Invalid or expired token."
+    assert "set-cookie" not in refresh_response.headers
+
+
+def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestClient) -> None:
+    """Replaying a replaced cookie fails and kills the newer cookie as well.
+
+    After one refresh the sign-in token is spent. Sending it again looks
+    like a stolen copy, so every token of the user is revoked: the new
+    cookie, which was valid a moment earlier, now gets a 401 too. This is
+    the protection rotation exists for, seen from outside.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    old_token = login_response.cookies[REFRESH_COOKIE_NAME]
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 200
+
+    new_token = refresh_response.cookies[REFRESH_COOKIE_NAME]
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, old_token, path="/api/v1/auth")
+    reuse_response = client.post(REFRESH_URL)
+    reuse_error = reuse_response.json()["error"]
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, new_token, path="/api/v1/auth")
+    after_reuse_response = client.post(REFRESH_URL)
+    after_reuse_error = after_reuse_response.json()["error"]
+
+    assert reuse_response.status_code == 401
+    assert reuse_error["code"] == "AUTHENTICATION_FAILED"
+    assert reuse_error["message"] == "Invalid or expired token."
+    assert after_reuse_response.status_code == 401
+    assert after_reuse_error["code"] == "AUTHENTICATION_FAILED"
+    assert after_reuse_error["message"] == "Invalid or expired token."

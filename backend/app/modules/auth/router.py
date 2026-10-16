@@ -1,4 +1,4 @@
-"""HTTP routes for signing in and for the signed-in user.
+"""HTTP routes for signing in, refreshing the session, and the signed-in user.
 
 The router handles HTTP only: it reads the request, calls one service
 function or dependency, and turns the result into a response. Every rule
@@ -6,8 +6,10 @@ about who may sign in, and who counts as signed in, lives in the service,
 and failures come back as domain errors that the exception handlers turn
 into the standard error body.
 
-Signing in is Public, since it is how a caller becomes authenticated. The
-current-user route is Authenticated: it needs a valid access token.
+Signing in is Public, since it is how a caller becomes authenticated.
+Refresh is Public with the refresh cookie: it must work when the access
+token has expired or is gone. The current-user route is Authenticated: it
+needs a valid access token.
 """
 
 # Attaches a dependency to a parameter's type.
@@ -15,6 +17,9 @@ from typing import Annotated
 
 # Groups these routes under /auth so the API router can include them as one unit.
 from fastapi import APIRouter
+
+# Reads the refresh token from the request's cookie instead of the body.
+from fastapi import Cookie
 
 # Asks FastAPI to build the form and the database session for the route.
 from fastapi import Depends
@@ -30,6 +35,9 @@ from sqlalchemy.orm import Session
 
 # The signed-in user, loaded from the bearer token before the route runs.
 from app.api.deps import CurrentUser
+
+# The refresh cookie's name, shared with set_refresh_cookie so reading and writing agree.
+from app.core.security import REFRESH_COOKIE_NAME
 
 # Writes the refresh token into its HttpOnly cookie with every security flag.
 from app.core.security import set_refresh_cookie
@@ -89,6 +97,60 @@ def login(
     set_refresh_cookie(response, result.refresh_token)
 
     return TokenResponse(access_token=result.access_token)
+
+
+@router.post(
+    "/refresh",
+    summary="Refresh the session",
+    response_model=TokenResponse,
+    responses={
+        401: {
+            "description": (
+                "Missing, invalid, expired, or reused refresh token, or the account is deactivated."
+            )
+        }
+    },
+)
+def refresh(
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE_NAME)] = None,
+) -> TokenResponse:
+    """Exchange the refresh cookie for a new access token. Public, with the cookie.
+
+    The web app calls this after a page reload and whenever an access token
+    expires, so it needs no ``Authorization`` header. The browser sends the
+    cookie by itself, only to ``/api/v1/auth`` paths. On success the new
+    access token goes in the body and the new refresh token replaces the
+    old one in the ``HttpOnly`` cookie, as at sign-in. It is a ``POST``
+    because it changes state, and ``SameSite=Strict`` keeps other sites
+    from sending the cookie.
+
+    The cookie defaults to None, so a request without it reaches the
+    service and gets the standard 401 rather than a 422 validation error.
+    A failed refresh sets no cookie: the error handler builds a new
+    response, so nothing set here would survive.
+
+    Args:
+        response: The response being built; the new refresh cookie is set
+            on it.
+        db: Session for this request; the service commits it.
+        refresh_token: The refresh cookie's value, or None when the browser
+            sent none.
+
+    Returns:
+        The new access token, with ``token_type`` ``"bearer"``.
+
+    Raises:
+        AuthenticationError: From the service, if the cookie is missing,
+            unknown, expired, or already used, or the account is
+            deactivated. The handler turns it into a 401 with code
+            ``AUTHENTICATION_FAILED``.
+    """
+    issued_tokens = service.refresh(db, refresh_token)
+    set_refresh_cookie(response, issued_tokens.refresh_token)
+
+    return TokenResponse(access_token=issued_tokens.access_token)
 
 
 @router.get(

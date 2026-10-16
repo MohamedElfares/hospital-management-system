@@ -4,6 +4,7 @@ from datetime import datetime
 from datetime import timedelta
 
 import pytest
+from factories import make_refresh_token
 from factories import make_user
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
+from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
 from app.modules.auth import service
@@ -32,6 +34,18 @@ FAILED_LOGINS = [
     pytest.param("ghost@example.com", PASSWORD, True, id="unknown-email"),
     pytest.param("test@example.com", PASSWORD, False, id="inactive-user"),
     pytest.param("test@example.com", "Wrong-Password-1", False, id="inactive-wrong-password"),
+]
+
+# Every way a refresh can fail without being reuse. Each name is turned into
+# the value to present by _present_token, because some cases need a saved
+# token and a plain list of values can't build one. Reuse is tested apart,
+# since it is the one failure that writes.
+UNUSABLE_REFRESH_TOKENS = [
+    pytest.param("missing", id="missing"),
+    pytest.param("empty", id="empty"),
+    pytest.param("unknown", id="unknown"),
+    pytest.param("expired", id="expired"),
+    pytest.param("inactive-user", id="inactive-user"),
 ]
 
 
@@ -88,6 +102,72 @@ def lookup_calls(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
 
     monkeypatch.setattr(service, "get_user_by_id", spy)
     return calls
+
+
+def _save_refresh_token(db_session: Session, user: User, **overrides: object) -> str:
+    """Save a refresh token for a user and return its raw value.
+
+    The row stores only the hash, as the service does, and the raw value
+    is returned because that is what a client presents from its cookie.
+    Overrides let a test save a token that is already revoked or expired.
+
+    Args:
+        db_session: The test's session; the row is flushed, not committed.
+        user: The saved user who owns the token.
+        **overrides: Columns to set, such as ``expires_at`` or ``revoked_at``.
+
+    Returns:
+        The raw refresh token whose hash was saved.
+    """
+    raw_refresh_token = generate_refresh_token()
+    refresh_token_row = make_refresh_token(
+        user.id,
+        token_hash=hash_refresh_token(raw_refresh_token),
+        **overrides,
+    )
+
+    db_session.add(refresh_token_row)
+    db_session.flush()
+
+    return raw_refresh_token
+
+
+def _present_token(db_session: Session, user: User, case: str) -> str | None:
+    """Build the refresh token value a test presents for one failure case.
+
+    ``missing`` and ``empty`` are what arrives without a usable cookie, and
+    ``unknown`` is a well-formed token that was never saved. ``expired``
+    and ``inactive-user`` save a real token, so the failure comes from the
+    expiry or the account and not from the lookup. An unrecognized name
+    raises instead of returning None, so a typo can't quietly turn a case
+    into ``missing``.
+
+    Args:
+        db_session: The test's session.
+        user: The saved user who owns any token created here.
+        case: One of the ids in ``UNUSABLE_REFRESH_TOKENS``.
+
+    Returns:
+        The raw token to pass to ``refresh``, or None for a missing cookie.
+
+    Raises:
+        ValueError: If ``case`` isn't a known case name.
+    """
+    if case == "missing":
+        return None
+    if case == "empty":
+        return ""
+    if case == "unknown":
+        return generate_refresh_token()  # never saved, so no row has its hash
+    if case == "expired":
+        expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        return _save_refresh_token(db_session, user, expires_at=expires_at)
+    if case == "inactive-user":
+        raw_refresh_token = _save_refresh_token(db_session, user)
+        user.is_active = False
+        db_session.flush()
+        return raw_refresh_token
+    raise ValueError(f"Unknown case: {case}")
 
 
 def test_login_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
@@ -380,3 +460,284 @@ def test_a_valid_token_looks_up_the_user_it_names(
 
     assert lookup_calls == [user.id]
     assert result.id == user.id
+
+
+def test_refresh_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
+    """A valid refresh token gets a new access token that names its owner."""
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    issued_tokens = service.refresh(db_session, raw_refresh_token)
+
+    assert decode_access_token(issued_tokens.access_token) == user.id
+
+
+def test_refresh_issues_a_new_refresh_token(db_session: Session, user: User) -> None:
+    """Refresh returns a different refresh token, saved and still usable.
+
+    Checking the saved row matters more than the inequality: a refresh that
+    returned a random string without storing it would hand the client a
+    token its next refresh could never use.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    issued_tokens = service.refresh(db_session, raw_refresh_token)
+    new_token_hash = hash_refresh_token(issued_tokens.refresh_token)
+
+    new_token_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == new_token_hash)
+    ).one_or_none()
+
+    assert issued_tokens.refresh_token != raw_refresh_token
+    assert new_token_row is not None
+    assert new_token_row.revoked_at is None
+
+
+def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
+    db_session: Session,
+    user: User,
+) -> None:
+    """The presented token is revoked and points to the token that replaced it.
+
+    Each row is found by the hash of its own raw value: the presented token
+    for the old row, the returned token for the new one. The link is what
+    lets a later investigation follow a chain of rotations.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    issued_tokens = service.refresh(db_session, raw_refresh_token)
+    old_token_hash = hash_refresh_token(raw_refresh_token)
+    new_token_hash = hash_refresh_token(issued_tokens.refresh_token)
+
+    old_token_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == old_token_hash)
+    ).one()
+
+    new_token_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == new_token_hash)
+    ).one_or_none()
+
+    assert old_token_row.revoked_at is not None
+    assert new_token_row is not None
+    assert old_token_row.replaced_by_id == new_token_row.id
+
+
+def test_the_new_token_keeps_the_old_expiry(db_session: Session, user: User) -> None:
+    """The replacement token expires exactly when the original one did.
+
+    The original expiry is three days away, not the configured seven, so a
+    refresh that started a fresh window would give a visibly different
+    value. Keeping it means everyone signs in again at least once a window.
+    """
+    original_expires_at = datetime.now(UTC) + timedelta(days=3)
+    raw_refresh_token = _save_refresh_token(db_session, user, expires_at=original_expires_at)
+    issued_tokens = service.refresh(db_session, raw_refresh_token)
+    new_token_hash = hash_refresh_token(issued_tokens.refresh_token)
+
+    new_token_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == new_token_hash)
+    ).one()
+
+    assert new_token_row.expires_at == original_expires_at
+
+
+def test_refresh_works_while_a_password_change_is_pending(db_session: Session, user: User) -> None:
+    """A user who must change their password still gets a working session.
+
+    The web app refreshes after a reload and then shows the change-password
+    screen, so refresh must stay open in this state.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    user.must_change_password = True
+
+    db_session.flush()
+
+    issued_tokens = service.refresh(db_session, raw_refresh_token)
+
+    assert decode_access_token(issued_tokens.access_token) == user.id
+
+
+def test_a_refresh_token_works_only_once(db_session: Session, user: User) -> None:
+    """Presenting the same refresh token a second time gets the generic error.
+
+    This is rotation seen from the client: the first refresh replaces the
+    token, so the second use is treated as reuse.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    service.refresh(db_session, raw_refresh_token)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_refresh_token)
+
+    assert exc_info.value.message == INVALID_TOKEN
+
+
+@pytest.mark.parametrize("case", UNUSABLE_REFRESH_TOKENS)
+def test_an_unusable_refresh_token_raises_the_generic_error(
+    db_session: Session,
+    user: User,
+    case: str,
+) -> None:
+    """Every unusable refresh token gets the same error and message.
+
+    A missing cookie, an empty one, an unknown token, an expired one, and a
+    deactivated owner are indistinguishable from outside, so the reply
+    never says which check failed.
+    """
+    raw_refresh_token = _present_token(db_session, user, case)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_refresh_token)
+
+    assert exc_info.value.message == INVALID_TOKEN
+
+
+@pytest.mark.parametrize("case", UNUSABLE_REFRESH_TOKENS)
+def test_an_unusable_refresh_token_writes_nothing(
+    db_session: Session,
+    user: User,
+    case: str,
+) -> None:
+    """A failed refresh adds no token and revokes none.
+
+    A valid token is saved first, so there is something a faulty refresh
+    could wrongly change, and rows are counted after each case's own setup.
+    Reuse is the only failure that writes, and it has its own tests.
+    """
+    _save_refresh_token(db_session, user)
+    raw_refresh_token = _present_token(db_session, user, case)
+    token_count_before = len(db_session.scalars(select(RefreshToken)).all())
+
+    with pytest.raises(AuthenticationError):
+        service.refresh(db_session, raw_refresh_token)
+
+    token_rows = db_session.scalars(select(RefreshToken)).all()
+
+    assert len(token_rows) == token_count_before
+    assert all(row.revoked_at is None for row in token_rows)
+
+
+def test_reusing_a_revoked_token_revokes_every_token_of_the_user(
+    db_session: Session,
+    user: User,
+) -> None:
+    """Presenting a revoked token ends the user's other sessions too.
+
+    The user also holds an active token, as on a second device. A revoked
+    token coming back means a copy exists, and the server can't tell the
+    real user from a thief, so the active token is revoked as well.
+    """
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_revoked_token)
+
+    other_device_row = db_session.scalars(
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(raw_other_device_token)
+        )
+    ).one()
+
+    assert exc_info.value.message == INVALID_TOKEN
+    assert other_device_row.revoked_at is not None
+
+
+def test_the_reuse_revocation_survives_the_failed_request(
+    db_session: Session,
+    user: User,
+) -> None:
+    """The revocation that reuse triggers is committed before the error.
+
+    The session is rolled back after the error, as a failed request's is,
+    and the other device's token is still revoked. Without the commit the
+    rollback would undo the revocation, and the stolen copy would keep
+    working; the previous test can't see that, because the change is still
+    in the session there.
+    """
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_revoked_token)
+
+    # A failed request's session is rolled back; only committed work remains.
+    db_session.rollback()
+
+    other_device_row = db_session.scalars(
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(raw_other_device_token)
+        )
+    ).one()
+
+    assert exc_info.value.message == INVALID_TOKEN
+    assert other_device_row.revoked_at is not None
+
+
+def test_reuse_is_logged_without_the_token(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Reuse logs exactly one warning naming the user, and never the token.
+
+    The warning lets someone find the incident later. The raw token must
+    not appear anywhere in the captured logs, because anyone who can read
+    the logs could otherwise use it.
+    """
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+
+    with caplog.at_level("WARNING"), pytest.raises(AuthenticationError):
+        service.refresh(db_session, raw_revoked_token)
+
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+
+    assert len(warnings) == 1
+    assert str(user.id) in warnings[0].getMessage()
+    assert raw_revoked_token not in caplog.text
+
+
+def test_an_expired_token_does_not_revoke_the_others(db_session: Session, user: User) -> None:
+    """An expired token is only rejected; the user's other session survives.
+
+    Tokens expire whenever someone stays away for a while, so treating
+    expiry like reuse would sign ordinary users out on every device.
+    """
+    raw_expired_token = _save_refresh_token(
+        db_session,
+        user,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with pytest.raises(AuthenticationError):
+        service.refresh(db_session, raw_expired_token)
+
+    other_device_token_hash = hash_refresh_token(raw_other_device_token)
+    other_device_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == other_device_token_hash)
+    ).one()
+
+    assert other_device_row.revoked_at is None
+
+
+def test_reuse_leaves_other_users_tokens_alone(db_session: Session, user: User) -> None:
+    """Reuse ends the sessions of the token's owner and nobody else.
+
+    The repository tests prove the revocation query filters by user; this
+    proves the service passes the owner of the presented token, so a
+    stolen token can never sign out the rest of the hospital.
+    """
+    other_user = make_user(email="other-user@example.com")
+
+    db_session.add(other_user)
+    db_session.flush()
+
+    raw_other_user_token = _save_refresh_token(db_session, other_user)
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+
+    with pytest.raises(AuthenticationError):
+        service.refresh(db_session, raw_revoked_token)
+
+    other_user_token_hash = hash_refresh_token(raw_other_user_token)
+    other_user_row = db_session.scalars(
+        select(RefreshToken).where(RefreshToken.token_hash == other_user_token_hash)
+    ).one()
+
+    assert other_user_row.revoked_at is None

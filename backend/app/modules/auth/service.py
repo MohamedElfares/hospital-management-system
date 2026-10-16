@@ -1,4 +1,4 @@
-"""Business rules for signing in and for recognizing a signed-in user.
+"""Business rules for signing in, refreshing a session, and recognizing a signed-in user.
 
 The service decides whether a sign-in succeeds and, if it does, issues the
 session: a short-lived access token for the response body and a refresh
@@ -7,17 +7,26 @@ user's sign-in time are committed together or not at all. It raises domain
 errors from ``app.core.errors``, never HTTP errors, and returns plain data
 that the router turns into a response and a cookie.
 
+Refresh rotates the session: each refresh token works once, and using it
+replaces it with a new one that keeps the original expiry. A token that is
+presented again after being replaced means a copy exists, so every session
+of that user is ended.
+
 On every later request, it turns the access token back into the user who
 sent it, reading the account from the database so a deactivation takes
 effect at once rather than when the token expires.
 
 Every failed sign-in looks the same from outside: the same error, the same
 message, and roughly the same time, so the API never reveals which emails
-have accounts or which accounts are deactivated. A rejected access token
-works the same way: one error and one message for every reason.
+have accounts or which accounts are deactivated. A rejected access or
+refresh token works the same way: one error and one message for every
+reason.
 """
 
-# Immutable record type for the tokens a sign-in returns.
+# Standard logging; records refresh token reuse as a security warning.
+import logging
+
+# Immutable record type for the tokens a sign-in or refresh returns.
 from dataclasses import dataclass
 
 # UTC time zone; sign-in times and token expiries are always in UTC.
@@ -75,6 +84,9 @@ _INVALID_CREDENTIALS = "Incorrect email or password."
 # looks exactly like an expired token. Tests pin both to one literal, so
 # the two copies can't drift apart unnoticed.
 _INVALID_TOKEN = "Invalid or expired token."
+
+# Named after this module, so a reuse warning shows where it came from.
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,7 +150,14 @@ def _issue_tokens(
 
     repository.add(session, refresh_token_row)
 
-    return IssuedTokens(create_access_token(user.id), raw_refresh_token), refresh_token_row
+    # Keywords, because both fields are strings: swapped positions would put
+    # the raw refresh token in the response body.
+    issued_tokens = IssuedTokens(
+        access_token=create_access_token(user.id),
+        refresh_token=raw_refresh_token,
+    )
+
+    return issued_tokens, refresh_token_row
 
 
 def login(session: Session, email: str, password: str) -> IssuedTokens:
@@ -193,6 +212,107 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
     issued_tokens, _ = _issue_tokens(session=session, user=user, expires_at=expires_at)
 
     user.last_login_at = now
+
+    # TODO(1.3): audit sign-ins, failed ones too (plan §8.6)
+
+    session.commit()
+
+    return issued_tokens
+
+
+def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
+    """Exchange a refresh token for a new access token and refresh token.
+
+    The web app calls this after a page reload, when the access token held
+    in memory is gone, and after an access token expires. The presented
+    token is looked up by its hash and its row stays locked until the
+    commit, so two refreshes with the same cookie run one after the other.
+
+    Each refresh token works once. On success it is revoked and linked to
+    the new token that replaces it, and the new token keeps the old one's
+    expiry, so refreshing never extends a session past its original window.
+    The new token, the revocation, and the link are committed together.
+
+    A token that is already revoked means a copy of it exists, held by the
+    real user or by a thief, and the server can't tell which. Every refresh
+    token of that user is then revoked, a warning is logged with the user
+    and token ids but never the token, and that revocation is committed
+    before the error is raised, since a failed request saves nothing
+    otherwise. This check runs before the expiry check, so an old stolen
+    token still raises the alarm. An expired token is only rejected, as
+    expiring is normal.
+
+    A pending password change doesn't block refresh, so the web app can
+    restore the session after a reload and show the change-password screen.
+    Refresh is not a sign-in, so ``last_login_at`` is left alone.
+
+    Args:
+        session: The open database session. This function commits it on
+            success and when reuse is detected.
+        raw_refresh_token: The cookie's value as the browser sent it, or
+            None when there is no cookie. Never logged or stored.
+
+    Returns:
+        The new access token for the response body and the new raw refresh
+        token for the cookie.
+
+    Raises:
+        AuthenticationError: If the token is missing, unknown, already
+            revoked, or expired, or its user is missing or deactivated. The
+            message is the same in every case.
+    """
+    if not raw_refresh_token:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    presented_token = repository.get_by_hash(session, hash_refresh_token(raw_refresh_token))
+
+    if presented_token is None:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    now = datetime.now(UTC)
+
+    # A revoked token presented again means a copy exists. Checked before
+    # expiry so an old stolen token still raises the alarm, and committed
+    # before raising because a failed request would otherwise save nothing.
+    if presented_token.revoked_at is not None:
+        logger.warning(
+            "Refresh token reuse detected (user_id=%s, token_id=%s)",
+            presented_token.user_id,
+            presented_token.id,
+        )
+
+        repository.revoke_all_for_user(session, presented_token.user_id, now)
+
+        # TODO(1.3): audit the reuse and the mass revocation (plan §8.6)
+
+        session.commit()
+
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    # No alarm and no revocation: tokens running out is normal.
+    if presented_token.expires_at <= now:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    # Deactivation also revokes every token (plan §8.1); checking the account
+    # here means a token that escaped that still can't start a new session.
+    user = get_user_by_id(session, presented_token.user_id)
+
+    if user is None or not user.is_active:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    # The old expiry, not a new one: refreshing never extends a session.
+    issued_tokens, new_token_row = _issue_tokens(
+        session,
+        user,
+        presented_token.expires_at,
+    )
+
+    # The new row gets its id on insert; flush so the link below isn't None.
+    session.flush()
+
+    presented_token.revoked_at = now
+    presented_token.replaced_by_id = new_token_row.id
+
     session.commit()
 
     return issued_tokens

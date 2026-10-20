@@ -1,4 +1,4 @@
-"""HTTP routes for signing in, refreshing the session, and the signed-in user.
+"""HTTP routes for signing in and out, refreshing the session, and the signed-in user.
 
 The router handles HTTP only: it reads the request, calls one service
 function or dependency, and turns the result into a response. Every rule
@@ -8,8 +8,8 @@ into the standard error body.
 
 Signing in is Public, since it is how a caller becomes authenticated.
 Refresh is Public with the refresh cookie: it must work when the access
-token has expired or is gone. The current-user route is Authenticated: it
-needs a valid access token.
+token has expired or is gone. Sign-out and the current-user route are
+Authenticated: they need a valid access token.
 """
 
 # Attaches a dependency to a parameter's type.
@@ -24,7 +24,7 @@ from fastapi import Cookie
 # Asks FastAPI to build the form and the database session for the route.
 from fastapi import Depends
 
-# The response FastAPI sends; the route sets the refresh cookie on it.
+# The response FastAPI sends; the routes set or clear the refresh cookie on it.
 from fastapi import Response
 
 # Reads the OAuth2 password form: the email in "username" and the password.
@@ -38,6 +38,9 @@ from app.api.deps import CurrentUser
 
 # The refresh cookie's name, shared with set_refresh_cookie so reading and writing agree.
 from app.core.security import REFRESH_COOKIE_NAME
+
+# Deletes the refresh cookie with the same name, path, and flags it was set with.
+from app.core.security import clear_refresh_cookie
 
 # Writes the refresh token into its HttpOnly cookie with every security flag.
 from app.core.security import set_refresh_cookie
@@ -151,6 +154,56 @@ def refresh(
     set_refresh_cookie(response, issued_tokens.refresh_token)
 
     return TokenResponse(access_token=issued_tokens.access_token)
+
+
+@router.post(
+    "/logout",
+    status_code=204,
+    summary="Sign out",
+    responses={
+        401: {
+            "description": (
+                "Missing, invalid, or expired access token, or the account is deactivated."
+            )
+        }
+    },
+)
+def logout(
+    user: CurrentUser,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE_NAME)] = None,
+) -> None:
+    """Sign out on this device. Authenticated.
+
+    The refresh token in the cookie is revoked, so this device can never
+    refresh again, and the cookie is cleared, so the browser stops sending
+    it. The user's other devices stay signed in. The access token can't be
+    revoked: the web app drops it from memory, and it expires on its own
+    within minutes.
+
+    Signing out always answers 204 with an empty body and clears the
+    cookie, even when the cookie is missing, unknown, already revoked, or
+    belongs to someone else, so signing out twice is harmless. It needs a
+    valid access token, so a caller can only end their own session; with
+    an expired one, the web app refreshes first. It stays open while
+    ``must_change_password`` is set, so a user can always sign out.
+
+    Args:
+        user: The active user the bearer token belongs to.
+        response: The response being built; the cookie is cleared on it.
+        db: Session for this request; the service commits it when a token
+            is revoked.
+        refresh_token: The refresh cookie's value, or None when the browser
+            sent none.
+
+    Raises:
+        AuthenticationError: From the dependency, before this runs, if the
+            access token is missing, invalid, or expired, or the account is
+            deactivated. The handler turns it into a 401.
+    """
+    service.logout(db, user, refresh_token)
+    clear_refresh_cookie(response)
 
 
 @router.get(

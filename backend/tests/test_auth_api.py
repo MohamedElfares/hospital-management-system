@@ -16,6 +16,7 @@ from app.modules.auth.models import RefreshToken
 from app.modules.users.models import User
 
 LOGIN_URL = "/api/v1/auth/login"
+LOGOUT_URL = "/api/v1/auth/logout"
 ME_URL = "/api/v1/auth/me"
 REFRESH_URL = "/api/v1/auth/refresh"
 PASSWORD = "Correct-Password-1"
@@ -467,3 +468,92 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
     assert after_reuse_response.status_code == 401
     assert after_reuse_error["code"] == "AUTHENTICATION_FAILED"
     assert after_reuse_error["message"] == "Invalid or expired token."
+
+
+def test_logout_clears_the_cookie_and_ends_the_session(user: User, client: TestClient) -> None:
+    """Logout answers 204, clears the cookie, and revokes the token behind it.
+
+    The cookie's value is saved before logout and put back afterwards,
+    because the client deletes the cookie once logout clears it: a refresh
+    without it would get 401 whether or not the token was revoked. Only a
+    refresh with the old value proves the session really ended.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    access_token = login_response.json()["access_token"]
+    raw_refresh_token = login_response.cookies[REFRESH_COOKIE_NAME]
+
+    logout_response = client.post(LOGOUT_URL, headers={"Authorization": f"Bearer {access_token}"})
+
+    assert logout_response.status_code == 204
+    assert logout_response.content == b""
+
+    cleared_cookie_header = logout_response.headers["set-cookie"].lower()
+
+    assert cleared_cookie_header.startswith(f"{REFRESH_COOKIE_NAME}=")
+    assert "max-age=0" in cleared_cookie_header
+    assert "path=/api/v1/auth" in cleared_cookie_header
+
+    client.cookies.set(REFRESH_COOKIE_NAME, raw_refresh_token, path="/api/v1/auth")
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 401
+
+
+def test_logout_without_an_access_token_is_the_standard_401(user: User, client: TestClient) -> None:
+    """Logout without an access token gets the standard 401 and ends nothing.
+
+    The client holds a valid refresh cookie from signing in but sends no
+    ``Authorization`` header. The bearer scheme rejects the request before
+    the route runs, and the refresh that follows still works, which proves
+    the cookie alone can't be used to revoke a session.
+    """
+    client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    logout_response = client.post(LOGOUT_URL)
+
+    assert logout_response.status_code == 401
+
+    error = logout_response.json()["error"]
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 200
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == "Not authenticated"
+
+
+def test_logout_without_a_cookie_still_succeeds(user: User, client: TestClient) -> None:
+    """Logout with a valid access token but no cookie still answers 204.
+
+    The test never signs in, so the client has no cookie to send. Signing
+    out never fails, so a second tab or a cookie that is already gone is
+    not an error, and the cookie is cleared anyway.
+    """
+    headers = _auth_header(user)
+    logout_response = client.post(LOGOUT_URL, headers=headers)
+    cleared_cookie_header = logout_response.headers["set-cookie"].lower()
+
+    assert logout_response.status_code == 204
+    assert "max-age=0" in cleared_cookie_header
+
+
+def test_logout_works_while_a_password_change_is_pending(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """A user who must change their password can still sign out.
+
+    Logout is one of the routes the forced-password-change gate leaves open
+    (plan §8.1), so a user is never trapped in a session they can't end.
+    This test guards that exemption once the gate exists.
+    """
+    user.must_change_password = True
+
+    db_session.flush()
+
+    headers = _auth_header(user)
+    logout_response = client.post(LOGOUT_URL, headers=headers)
+
+    assert logout_response.status_code == 204

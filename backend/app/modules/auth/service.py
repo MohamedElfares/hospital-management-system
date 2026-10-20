@@ -1,4 +1,4 @@
-"""Business rules for signing in, refreshing a session, and recognizing a signed-in user.
+"""Business rules for signing in and out, refreshing a session, and recognizing a user.
 
 The service decides whether a sign-in succeeds and, if it does, issues the
 session: a short-lived access token for the response body and a refresh
@@ -11,6 +11,9 @@ Refresh rotates the session: each refresh token works once, and using it
 replaces it with a new one that keeps the original expiry. A token that is
 presented again after being replaced means a copy exists, so every session
 of that user is ended.
+
+Signing out revokes only the refresh token of the device signing out, and
+never fails, so signing out twice is harmless.
 
 On every later request, it turns the access token back into the user who
 sent it, reading the account from the database so a deactivation takes
@@ -316,6 +319,53 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     session.commit()
 
     return issued_tokens
+
+
+def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
+    """Sign a user out on this device by revoking its refresh token.
+
+    The refresh token from this browser's cookie is revoked, so the device
+    can never refresh again. Only that one session ends: the user's other
+    devices stay signed in. The token is revoked without a
+    ``replaced_by_id``, which tells a sign-out apart from a rotation when
+    the table is investigated later. The access token can't be revoked,
+    since it is checked by signature and not looked up; the web app drops
+    it from memory, and it expires within ``ACCESS_TOKEN_EXPIRE_MINUTES``.
+
+    Sign-out never fails. A missing cookie, an unknown token, a token that
+    is already revoked, and another user's token all leave the database
+    unchanged, and the router still clears the cookie, so signing out twice
+    gives the same result as signing out once.
+
+    Args:
+        session: The open database session. This function commits it only
+            when a token is revoked.
+        user: The signed-in user, from the access token. Only their own
+            token can be revoked.
+        raw_refresh_token: The cookie's value as the browser sent it, or
+            None when there is no cookie. Never logged or stored.
+    """
+    if not raw_refresh_token:
+        return
+
+    presented_token = repository.get_by_hash(session, hash_refresh_token(raw_refresh_token))
+
+    # Signing out ends only the caller's own session, so a stolen cookie
+    # can't be used with another account to end someone else's. A revoked
+    # token raises no reuse alarm here, unlike in refresh: a double-clicked
+    # sign-out must not end the user's sessions on every device.
+    if (
+        presented_token is None
+        or presented_token.user_id != user.id
+        or presented_token.revoked_at is not None
+    ):
+        return
+
+    presented_token.revoked_at = datetime.now(UTC)
+
+    # TODO(1.3): audit sign-outs (plan §8.6)
+
+    session.commit()
 
 
 def get_authenticated_user(session: Session, access_token: str) -> User:

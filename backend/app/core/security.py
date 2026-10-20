@@ -47,7 +47,7 @@ from typing import Any
 # PyJWT; signs, verifies, and decodes the access tokens.
 import jwt
 
-# FastAPI's HTTP response; set_refresh_cookie adds the Set-Cookie header to it.
+# FastAPI's HTTP response; the refresh cookie is set on it and cleared from it.
 from fastapi import Response
 
 # pwdlib's hasher; recommended() gives Argon2id with safe default settings.
@@ -298,4 +298,31 @@ def set_refresh_cookie(response: Response, token: str) -> None:
         path="/api/v1/auth",
         secure=settings.is_production,
         max_age=max_age,
+    )
+
+
+def clear_refresh_cookie(response: Response) -> None:
+    """Tell the browser to delete the refresh token cookie.
+
+    Sign-out calls this so the browser stops sending a token that no longer
+    works. The response carries a ``Set-Cookie`` header with an empty value
+    and ``Max-Age=0``, which makes the browser drop the cookie at once.
+
+    A browser only replaces a cookie with the same name and path, so these
+    attributes must match ``set_refresh_cookie`` exactly: with any other
+    path, the browser would treat this as a different cookie and keep the
+    real one. The security flags match too, so the deleting header is held
+    to the same rules as the one that created the cookie. No token is
+    needed: a cookie is deleted by its name, never by its value.
+
+    Args:
+        response: The response that will carry the ``Set-Cookie`` header.
+    """
+    settings = get_settings()
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        httponly=True,
+        samesite="strict",
+        path="/api/v1/auth",
+        secure=settings.is_production,
     )

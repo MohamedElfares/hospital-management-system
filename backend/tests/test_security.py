@@ -15,11 +15,13 @@ from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.security import _DUMMY_HASH
 from app.core.security import check_password
+from app.core.security import clear_refresh_cookie
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
 from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
+from app.core.security import set_refresh_cookie
 from app.core.security import verify_password
 
 # Written out rather than imported from app.core.security, so a change to the
@@ -465,6 +467,43 @@ def test_the_refresh_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(security, "get_settings", lambda: production)
 
     response = Response()
-    security.set_refresh_cookie(response, "token")
+    set_refresh_cookie(response, "token")
+
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_clear_refresh_cookie_expires_the_refresh_cookie() -> None:
+    """Clearing sends the refresh cookie back with ``Max-Age=0``.
+
+    The browser deletes a cookie only when the deleting header names the
+    same cookie and path as the one that set it, so the name and
+    ``Path=/api/v1/auth`` are checked along with ``Max-Age=0``. The
+    ``HttpOnly`` and ``SameSite=Strict`` flags must match the original
+    cookie too.
+    """
+    response = Response()
+    clear_refresh_cookie(response)
+    cleared_cookie_header = response.headers["set-cookie"].lower()
+
+    assert "httponly" in cleared_cookie_header
+    assert "max-age=0" in cleared_cookie_header
+    assert "samesite=strict" in cleared_cookie_header
+    assert "path=/api/v1/auth" in cleared_cookie_header
+    assert cleared_cookie_header.startswith("refresh_token=")
+
+
+def test_the_cleared_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In production, the header that clears the refresh cookie carries ``Secure``.
+
+    The deleting header must keep the flags of the cookie it deletes, so a
+    change to one cookie function and not the other fails here.
+    ``get_settings`` is replaced with a production copy, as in the test
+    for setting the cookie.
+    """
+    production = get_settings().model_copy(update={"environment": "production"})
+    monkeypatch.setattr(security, "get_settings", lambda: production)
+
+    response = Response()
+    clear_refresh_cookie(response)
 
     assert "secure" in response.headers["set-cookie"].lower()

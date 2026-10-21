@@ -1,10 +1,12 @@
-"""Schemas for user accounts: input for creating them and output for showing them.
+"""Schemas for user accounts: the password rule, input for creating users, and output.
 
 An input schema checks and cleans data before any business rule runs. The
 same schema serves every way a user is created, the ``create-admin`` command
-now and the staff administration API later (IAM-5), so the email, name, and
-password rules are written once. Invalid input raises Pydantic's
-``ValidationError``, which the API turns into a 422 response.
+now and the staff administration API later (IAM-5), so the email and name
+rules are written once. The password rule is the ``Password`` type, shared
+with every schema that sets a password, such as changing one. Invalid input
+raises Pydantic's ``ValidationError``, which the API turns into a 422
+response.
 
 The output schema decides which fields of a user ever leave the API, so the
 password hash and internal flags can't be sent by accident.
@@ -40,6 +42,19 @@ from pydantic import StringConstraints
 # The role enum a new user must be given.
 from app.core.permissions import Role
 
+# Plan §8.1: 12 to 128 characters and no composition rules (NIST SP 800-63B).
+# The maximum also caps the work of hashing, since Argon2 reads every byte.
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 128
+
+# The one password rule for every way a password is set: creating a user,
+# changing a password, and later resetting one. A SecretStr shows
+# "**********" when printed, so a model holding it can't leak it into a log.
+Password = Annotated[
+    SecretStr,
+    Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH),
+]
+
 
 class UserCreate(BaseModel):
     """Validated input for creating one user account.
@@ -51,12 +66,13 @@ class UserCreate(BaseModel):
     config deliberately doesn't strip every string, since that would also
     strip the password.
 
-    The password follows the plan's rule of 12 to 128 characters with no
-    composition rules (NIST SP 800-63B). It is a ``SecretStr``, so printing
-    or logging the model shows ``**********``; the real value is read only
-    once, with ``get_secret_value()``, to hash it. Pydantic's validation
-    errors still contain the rejected input, so callers must report only
-    each error's location and message, never the error itself.
+    The password follows the shared ``Password`` rule of 12 to 128
+    characters with no composition rules (NIST SP 800-63B), the same rule
+    every other way of setting a password uses. It is a ``SecretStr``, so
+    printing or logging the model shows ``**********``; the real value is
+    read only once, with ``get_secret_value()``, to hash it. Pydantic's
+    validation errors still contain the rejected input, so callers must
+    report only each error's location and message, never the error itself.
 
     Attributes:
         email: Sign-in email, validated and lowercased.
@@ -74,7 +90,7 @@ class UserCreate(BaseModel):
             max_length=255,
         ),
     ]
-    password: SecretStr = Field(min_length=12, max_length=128)
+    password: Password
     role: Role
 
 

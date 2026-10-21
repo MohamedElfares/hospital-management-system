@@ -28,6 +28,8 @@ from app.core.permissions import Role
 
 # Opens a database session from the configured DATABASE_URL.
 from app.db.session import SessionLocal
+from app.modules.users.schemas import PASSWORD_MAX_LENGTH
+from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
 # Validates the email, name, and password before anything is saved.
 from app.modules.users.schemas import UserCreate
@@ -39,7 +41,7 @@ app = typer.Typer(help="Hospital Management System maintenance commands.")
 
 # Replaces Pydantic's SecretStr wording ("at least 12 items ..., not 5"),
 # which is confusing and echoes the length of what was typed.
-_PASSWORD_RULE = "must be 12 to 128 characters."
+_PASSWORD_RULE = f"must be {PASSWORD_MIN_LENGTH} to {PASSWORD_MAX_LENGTH} characters."
 
 
 @app.callback()

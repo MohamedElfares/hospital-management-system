@@ -28,7 +28,11 @@ from app.core.permissions import Role
 
 # Opens a database session from the configured DATABASE_URL.
 from app.db.session import SessionLocal
+
+# Longest password the rule allows; keeps the CLI's message in step with it.
 from app.modules.users.schemas import PASSWORD_MAX_LENGTH
+
+# Shortest password the rule allows; keeps the CLI's message in step with it.
 from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
 # Validates the email, name, and password before anything is saved.

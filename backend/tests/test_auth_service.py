@@ -11,16 +11,21 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError
+from app.core.errors import BadRequestError
+from app.core.errors import ErrorCode
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
 from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
+from app.core.security import verify_password
 from app.modules.auth import service
 from app.modules.auth.models import RefreshToken
+from app.modules.auth.schemas import PasswordChange
 from app.modules.users.models import User
 
 PASSWORD = "Correct-Password-1"
+NEW_PASSWORD = "New-Password-123"
 INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
 REFRESH_TOKEN_EXPIRE_DAYS = get_settings().refresh_token_expire_days
@@ -46,6 +51,23 @@ UNUSABLE_REFRESH_TOKENS = [
     pytest.param("unknown", id="unknown"),
     pytest.param("expired", id="expired"),
     pytest.param("inactive-user", id="inactive-user"),
+]
+
+# Every way a password change is refused, each with the field it replaces in
+# the otherwise valid input and the message the user sees. The wrong current
+# password is valid as a password, so the refusal comes from the service's
+# check against the stored hash, not from the schema.
+REJECTED_PASSWORD_CHANGES = [
+    pytest.param(
+        {"current_password": "Wrong-Password-1"},
+        "Current password is incorrect.",
+        id="wrong-current-password",
+    ),
+    pytest.param(
+        {"new_password": PASSWORD},
+        "The new password must be different from the current one.",
+        id="new-password-same-as-current",
+    ),
 ]
 
 
@@ -200,6 +222,28 @@ def _token_row(db_session: Session, raw_token: str) -> RefreshToken:
         .where(RefreshToken.token_hash == hash_refresh_token(raw_token))
         .execution_options(populate_existing=True)
     ).scalar_one()
+
+
+def _password_change(
+    current_password: str = PASSWORD,
+    new_password: str = NEW_PASSWORD,
+) -> PasswordChange:
+    """Build a validated password change for the ``user`` fixture.
+
+    By default it holds the fixture's real password and a different, valid
+    new one, so ``change_password`` succeeds. A test that checks a rejection
+    replaces only the value it is about, so a failure points at that value.
+
+    Args:
+        current_password: The password the user claims to sign in with now.
+            Defaults to ``PASSWORD``, the fixture's real password.
+        new_password: The password to replace it. Defaults to
+            ``NEW_PASSWORD``, which differs from ``PASSWORD``.
+
+    Returns:
+        The validated input to pass to ``service.change_password``.
+    """
+    return PasswordChange(current_password=current_password, new_password=new_password)
 
 
 def test_login_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
@@ -879,3 +923,154 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
 
     assert user_refresh_token_row.revoked_at is None
     assert other_user_refresh_token_row.revoked_at is None
+
+
+def test_change_password_stores_a_hash_of_the_new_password(db_session: Session, user: User) -> None:
+    """Changing the password stores a hash that only the new password matches.
+
+    The stored value isn't the plain new password, the old password no
+    longer verifies, and the new one does.
+    """
+    service.change_password(db_session, user, _password_change())
+
+    assert user.password_hash != NEW_PASSWORD
+    assert not verify_password(PASSWORD, user.password_hash)
+    assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
+def test_change_password_clears_the_forced_change_flag(db_session: Session, user: User) -> None:
+    """A successful change clears ``must_change_password``.
+
+    The flag is set first, so the test sees it go from true to false.
+    Clearing it lifts the forced-change gate, so the user can reach the
+    rest of the API.
+    """
+    user.must_change_password = True
+    db_session.flush()
+
+    service.change_password(db_session, user, _password_change())
+
+    assert user.must_change_password is False
+
+
+def test_change_password_revokes_every_existing_session(db_session: Session, user: User) -> None:
+    """Changing the password revokes every refresh token the user holds.
+
+    The two tokens stand for two signed-in devices. Both are revoked, so
+    anyone still holding an old token, such as someone who knew the old
+    password, is signed out everywhere.
+    """
+    first_token = _save_refresh_token(db_session, user)
+    second_token = _save_refresh_token(db_session, user)
+
+    service.change_password(db_session, user, _password_change())
+
+    first_token_row = _token_row(db_session, first_token)
+    second_token_row = _token_row(db_session, second_token)
+
+    assert first_token_row.revoked_at is not None
+    assert second_token_row.revoked_at is not None
+
+
+def test_change_password_returns_a_working_session(db_session: Session, user: User) -> None:
+    """The change returns a new session for the device that made it.
+
+    The new refresh token belongs to the user, escapes the revocation of
+    the old tokens, and expires the configured number of days after the
+    change: a fresh window, checked from both sides so a longer lifetime
+    fails too. The access token names the user.
+    """
+    before = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    issued_tokens = service.change_password(db_session, user, _password_change())
+    after = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    token_row = _token_row(db_session, issued_tokens.refresh_token)
+
+    assert token_row.user_id == user.id
+    assert token_row.revoked_at is None
+    assert before <= token_row.expires_at <= after
+    assert decode_access_token(issued_tokens.access_token) == user.id
+
+
+def test_the_password_change_is_committed(db_session: Session, user: User) -> None:
+    """The password change is committed, so it survives a rollback.
+
+    The session is rolled back after the change, as the request's session
+    is when it closes, and the new password, the cleared flag, and the new
+    session are all still saved. The rollback also makes ``user`` reload
+    from the database. The earlier tests can't see a missing commit,
+    because the changes are still in the session there.
+    """
+    issued_tokens = service.change_password(db_session, user, _password_change())
+
+    db_session.rollback()
+
+    new_token_row = _token_row(db_session, issued_tokens.refresh_token)
+
+    assert verify_password(NEW_PASSWORD, user.password_hash)
+    assert user.must_change_password is False
+    assert new_token_row.revoked_at is None
+
+
+@pytest.mark.parametrize(("overrides", "message"), REJECTED_PASSWORD_CHANGES)
+def test_a_rejected_change_raises_and_writes_nothing(
+    db_session: Session,
+    user: User,
+    overrides: dict[str, str],
+    message: str,
+) -> None:
+    """A refused change raises a 400 with its own message and changes nothing.
+
+    The user has one signed-in device and the forced-change flag set, as
+    the fixture's database default leaves it. After the refusal, the stored
+    hash is exactly the one from before, the flag is still set, the
+    device's token is not revoked, and no new token was issued: none of the
+    four things a successful change writes. The hash is compared directly,
+    because in the reuse case a hash rewritten from the same password would
+    still verify. There is no rollback, so even changes the service made
+    without committing would show.
+    """
+    _save_refresh_token(db_session, user)
+    original_hash = user.password_hash
+
+    with pytest.raises(BadRequestError) as exc_info:
+        service.change_password(db_session, user, _password_change(**overrides))
+
+    error = exc_info.value
+    token_rows = (
+        db_session.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))
+        .scalars()
+        .all()
+    )
+
+    assert error.status_code == 400
+    assert error.code == ErrorCode.BAD_REQUEST
+    assert error.message == message
+    assert user.password_hash == original_hash
+    assert user.must_change_password is True
+    assert len(token_rows) == 1
+    assert token_rows[0].revoked_at is None
+
+
+def test_change_password_leaves_other_users_alone(db_session: Session, user: User) -> None:
+    """Changing one user's password leaves every other account as it was.
+
+    Another user is signed in on a device. After ``user`` changes their
+    password, that user's token is not revoked and their password hash is
+    unchanged. The service commits, so ``other_user`` reloads from the
+    database and the hash read afterwards is the saved one.
+    """
+    other_user = make_user(email="other-user@example.com")
+    other_user_original_hash = other_user.password_hash
+
+    db_session.add(other_user)
+    db_session.flush()
+
+    other_user_raw_token = _save_refresh_token(db_session, other_user)
+
+    service.change_password(db_session, user, _password_change())
+
+    other_user_token_row = _token_row(db_session, other_user_raw_token)
+
+    assert other_user_token_row.revoked_at is None
+    assert other_user.password_hash == other_user_original_hash

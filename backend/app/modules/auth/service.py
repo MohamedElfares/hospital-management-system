@@ -1,4 +1,4 @@
-"""Business rules for signing in and out, refreshing a session, and recognizing a user.
+"""Business rules for signing in and out, sessions, password changes, and recognizing a user.
 
 The service decides whether a sign-in succeeds and, if it does, issues the
 session: a short-lived access token for the response body and a refresh
@@ -14,6 +14,10 @@ of that user is ended.
 
 Signing out revokes only the refresh token of the device signing out, and
 never fails, so signing out twice is harmless.
+
+Changing a password requires the current one. It ends every session the
+user has, on every device, and starts a new one for the device that made
+the change.
 
 On every later request, it turns the access token back into the user who
 sent it, reading the account from the database so a deactivation takes
@@ -50,6 +54,9 @@ from app.core.config import get_settings
 # Error that the API turns into a 401 response; raised for every failed sign-in.
 from app.core.errors import AuthenticationError
 
+# Error that the API turns into a 400 response; raised when a password change is refused.
+from app.core.errors import BadRequestError
+
 # Verifies the password, paying the same cost when the email matches no user.
 from app.core.security import check_password
 
@@ -62,14 +69,23 @@ from app.core.security import decode_access_token
 # Creates the random refresh token sent in the cookie.
 from app.core.security import generate_refresh_token
 
+# Hashes the new password with Argon2id; only the hash is stored.
+from app.core.security import hash_password
+
 # Hashes the refresh token; only the hash is stored.
 from app.core.security import hash_refresh_token
+
+# Checks a password against the stored hash; confirms the current one and rejects reuse.
+from app.core.security import verify_password
 
 # Saves refresh token rows without committing.
 from app.modules.auth import repository
 
 # The refresh_tokens table's ORM model.
 from app.modules.auth.models import RefreshToken
+
+# Validated input for a password change: the current and the new password.
+from app.modules.auth.schemas import PasswordChange
 
 # The users table's ORM model; the type of the signed-in user.
 from app.modules.users.models import User
@@ -414,3 +430,64 @@ def get_authenticated_user(session: Session, access_token: str) -> User:
         raise AuthenticationError(_INVALID_TOKEN)
 
     return user
+
+
+def change_password(session: Session, user: User, data: PasswordChange) -> IssuedTokens:
+    """Change the signed-in user's password and start a fresh session.
+
+    The user must prove they know the current password, so a stolen access
+    token alone can't take over the account. The new password must differ
+    from the current one. That is checked with ``verify_password`` and not
+    by comparing hashes, because Argon2 salts every hash, so two hashes of
+    the same password never match. Both refusals are 400s, not 401s: the
+    web app treats a 401 as an expired session and would sign the user out.
+
+    On success the new hash replaces the old one and
+    ``must_change_password`` is cleared, which lifts the forced-change
+    gate. Every refresh token the user holds is revoked, ending their
+    sessions on all devices, including any held by someone who knew the
+    old password (plan §8.1). The caller gets a new session with a fresh
+    refresh window, so the device that made the change stays signed in.
+    Access tokens already issued keep working until they expire, within
+    ``ACCESS_TOKEN_EXPIRE_MINUTES``. The sign-in time is left alone, since
+    this isn't a sign-in. Everything is committed together.
+
+    Args:
+        session: The open database session. This function commits it.
+        user: The signed-in user, from the access token.
+        data: The current and new passwords, the new one already checked
+            against the password rule. Neither is logged or stored.
+
+    Returns:
+        The new session's access token and refresh token.
+
+    Raises:
+        BadRequestError: If the current password is wrong, or the new
+            password is the same as the current one. Nothing is saved.
+    """
+    current_password = data.current_password.get_secret_value()
+    new_password = data.new_password.get_secret_value()
+
+    if not verify_password(current_password, user.password_hash):
+        raise BadRequestError("Current password is incorrect.")
+
+    if verify_password(new_password, user.password_hash):
+        raise BadRequestError("The new password must be different from the current one.")
+
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(days=get_settings().refresh_token_expire_days)
+
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+
+    # Revoke before issuing: the bulk UPDATE would otherwise also revoke the
+    # new token, which autoflush has already written to the table.
+    repository.revoke_all_for_user(session, user.id, now)
+
+    issued_tokens, _ = _issue_tokens(session, user, expires_at)
+
+    # TODO(1.3): audit password changes (plan §8.6)
+
+    session.commit()
+
+    return issued_tokens

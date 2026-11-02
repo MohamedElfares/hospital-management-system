@@ -21,7 +21,9 @@ the change.
 
 On every later request, it turns the access token back into the user who
 sent it, reading the account from the database so a deactivation takes
-effect at once rather than when the token expires.
+effect at once rather than when the token expires. A user who must still
+replace a temporary password is then refused everywhere except the routes
+the change itself needs.
 
 Every failed sign-in looks the same from outside: the same error, the same
 message, and roughly the same time, so the API never reveals which emails
@@ -56,6 +58,12 @@ from app.core.errors import AuthenticationError
 
 # Error that the API turns into a 400 response; raised when a password change is refused.
 from app.core.errors import BadRequestError
+
+# Machine-readable error codes; marks the 403 as a pending password change.
+from app.core.errors import ErrorCode
+
+# Error that the API turns into a 403 response; refuses a user with a temporary password.
+from app.core.errors import PermissionDeniedError
 
 # Verifies the password, paying the same cost when the email matches no user.
 from app.core.security import check_password
@@ -103,6 +111,9 @@ _INVALID_CREDENTIALS = "Incorrect email or password."
 # looks exactly like an expired token. Tests pin both to one literal, so
 # the two copies can't drift apart unnoticed.
 _INVALID_TOKEN = "Invalid or expired token."
+
+# Tells the user what to do next; the web app relies on the error code, not this text.
+_PASSWORD_CHANGE_REQUIRED = "You must change your password before continuing."
 
 # Named after this module, so a reuse warning shows where it came from.
 logger = logging.getLogger(__name__)
@@ -419,7 +430,9 @@ def get_authenticated_user(session: Session, access_token: str) -> User:
 
     This function deliberately ignores ``must_change_password``: the
     current-user endpoint must keep working while a password change is
-    pending, so that gate is applied separately, on the routes it covers.
+    pending. The gate is ``ensure_password_change_not_pending``, which
+    every route except the few the change needs applies through
+    ``CurrentUser``.
 
     Args:
         session: The open database session. Only read, never committed.
@@ -441,6 +454,35 @@ def get_authenticated_user(session: Session, access_token: str) -> User:
         raise AuthenticationError(_INVALID_TOKEN)
 
     return user
+
+
+def ensure_password_change_not_pending(user: User) -> None:
+    """Refuse a user who must still replace a temporary password.
+
+    A new account, or one whose password an administrator reset, gets a
+    temporary password and ``must_change_password`` set. Until the user
+    chooses their own password, every endpoint except the few that the
+    change itself needs refuses them (plan §8.1), so a temporary password
+    that was shared or written down can't be used for real work.
+
+    The check runs after the access token and the account have been
+    accepted, so a bad token or a deactivated account still gets a 401;
+    only a valid, active user can get this 403. It is a 403, not a 401,
+    because the user is signed in: the web app reads the code and shows the
+    change-password screen instead of signing them out.
+
+    Args:
+        user: The active, signed-in user.
+
+    Raises:
+        PermissionDeniedError: With code ``PASSWORD_CHANGE_REQUIRED`` if
+            ``must_change_password`` is set.
+    """
+    if user.must_change_password:
+        raise PermissionDeniedError(
+            _PASSWORD_CHANGE_REQUIRED,
+            code=ErrorCode.PASSWORD_CHANGE_REQUIRED,
+        )
 
 
 def change_password(session: Session, user: User, data: PasswordChange) -> IssuedTokens:

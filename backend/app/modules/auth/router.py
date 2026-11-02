@@ -10,6 +10,9 @@ Signing in is Public, since it is how a caller becomes authenticated.
 Refresh is Public with the refresh cookie: it must work when the access
 token has expired or is gone. Sign-out, changing the password, and the
 current-user route are Authenticated: they need a valid access token.
+They are also the only routes in the API that stay open while a
+password change is pending, since a user with a temporary password needs
+them to see the change-password screen, change it, or sign out.
 """
 
 # Attaches a dependency to a parameter's type.
@@ -33,8 +36,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 # Type of the database session passed to the service.
 from sqlalchemy.orm import Session
 
-# The signed-in user, loaded from the bearer token before the route runs.
-from app.api.deps import CurrentUser
+# The signed-in user without the password-change gate; these routes are the
+# ones a user with a temporary password still needs.
+from app.api.deps import CurrentUserAllowingPasswordChange
 
 # The refresh cookie's name, shared with set_refresh_cookie so reading and writing agree.
 from app.core.security import REFRESH_COOKIE_NAME
@@ -173,7 +177,7 @@ def refresh(
     },
 )
 def logout(
-    user: CurrentUser,
+    user: CurrentUserAllowingPasswordChange,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
     refresh_token: Annotated[str | None, Cookie(alias=REFRESH_COOKIE_NAME)] = None,
@@ -222,7 +226,7 @@ def logout(
         }
     },
 )
-def me(user: CurrentUser) -> User:
+def me(user: CurrentUserAllowingPasswordChange) -> User:
     """Return the signed-in user's account. Authenticated.
 
     The web app calls this after every page load to learn who is signed in
@@ -264,7 +268,7 @@ def me(user: CurrentUser) -> User:
 )
 def change_password(
     data: PasswordChange,
-    user: CurrentUser,
+    user: CurrentUserAllowingPasswordChange,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
 ) -> TokenResponse:

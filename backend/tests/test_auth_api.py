@@ -1,9 +1,11 @@
 import pytest
 from factories import make_user
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.errors import ErrorCode
 from app.core.security import REFRESH_COOKIE_NAME
@@ -18,6 +20,7 @@ from app.modules.users.schemas import PASSWORD_MAX_LENGTH
 from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
 CHANGE_PASSWORD_URL = "/api/v1/auth/change-password"
+GATED_URL = "/api/v1/test/gated"
 LOGIN_URL = "/api/v1/auth/login"
 LOGOUT_URL = "/api/v1/auth/logout"
 ME_URL = "/api/v1/auth/me"
@@ -112,6 +115,27 @@ def _password_change_body(**overrides: str) -> dict[str, str]:
         The JSON body to send.
     """
     return {"current_password": PASSWORD, "new_password": NEW_PASSWORD, **overrides}
+
+
+@pytest.fixture
+def gated_route(app: FastAPI) -> None:
+    """Add a route at ``GATED_URL`` that uses the ordinary ``CurrentUser``.
+
+    Every route that uses ``CurrentUser`` today is exempt from the
+    password-change gate, so the tests need one that isn't. It is added to
+    this test's own application, which the ``client`` fixture is bound to,
+    so it goes through the real middleware and exception handlers, never
+    exists outside the test, and can't leak into other tests.
+
+    Args:
+        app: The application built for this test.
+    """
+
+    def gated(user: CurrentUser) -> dict[str, str]:
+        """Return the caller's id, proving the route ran for that user."""
+        return {"user_id": str(user.id)}
+
+    app.add_api_route(GATED_URL, gated, methods=["GET"])
 
 
 def test_login_returns_a_bearer_access_token(user: User, client: TestClient) -> None:
@@ -846,3 +870,108 @@ def test_another_device_refreshing_after_a_change_keeps_this_session(
 
     assert phone_refresh.status_code == 401
     assert laptop_refresh.status_code == 200
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_a_pending_password_change_blocks_other_routes(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """A user who must change their password gets the standard 403 elsewhere.
+
+    The route uses the ordinary ``CurrentUser``, as every route outside the
+    exempt three does. The body has the ``PASSWORD_CHANGE_REQUIRED`` code
+    the web app reads to show the change-password screen.
+    """
+    user.must_change_password = True
+    db_session.flush()
+
+    response = client.get(GATED_URL, headers=_auth_header(user))
+    error = response.json()["error"]
+
+    assert response.status_code == 403
+    assert error["code"] == ErrorCode.PASSWORD_CHANGE_REQUIRED
+    assert error["message"] == "You must change your password before continuing."
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_a_user_without_a_pending_change_reaches_other_routes(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """Without a pending change the same route answers 200 for that user.
+
+    This is the positive control: it proves the test route works, so the
+    403 in the previous test comes from the gate and nothing else.
+    """
+    user.must_change_password = False
+    db_session.flush()
+
+    response = client.get(GATED_URL, headers=_auth_header(user))
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": str(user.id)}
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_a_gated_route_without_an_access_token_is_the_standard_401(client: TestClient) -> None:
+    """Without an access token the caller isn't signed in, so it's a 401, never a 403."""
+    response = client.get(GATED_URL)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_a_deactivated_user_with_a_pending_change_gets_401_not_403(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """The account check runs before the gate, so a deactivated user gets 401.
+
+    A 403 would tell the holder of an old token that the account still
+    exists and only needs a new password; a deactivated account must look
+    like any other rejected token.
+    """
+    headers = _auth_header(user)
+    user.must_change_password = True
+    user.is_active = False
+    db_session.flush()
+
+    response = client.get(GATED_URL, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_changing_the_password_opens_the_other_routes(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """The whole forced-change flow: blocked, change the password, then let in.
+
+    The user is refused first, changes the password through the exempt
+    route, and with the access token that change returns reaches the route
+    that refused them a moment earlier.
+    """
+    user.must_change_password = True
+    db_session.flush()
+    headers = _auth_header(user)
+
+    blocked_response = client.get(GATED_URL, headers=headers)
+    change_response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=headers
+    )
+
+    assert blocked_response.status_code == 403
+    assert change_response.status_code == 200
+
+    new_headers = {"Authorization": f"Bearer {change_response.json()['access_token']}"}
+    allowed_response = client.get(GATED_URL, headers=new_headers)
+
+    assert allowed_response.status_code == 200

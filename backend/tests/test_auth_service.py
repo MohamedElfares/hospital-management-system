@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.errors import BadRequestError
 from app.core.errors import ErrorCode
+from app.core.errors import PermissionDeniedError
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
 from app.core.security import generate_refresh_token
@@ -28,6 +29,7 @@ PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
 INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
+PASSWORD_CHANGE_REQUIRED = "You must change your password before continuing."
 REFRESH_TOKEN_EXPIRE_DAYS = get_settings().refresh_token_expire_days
 
 # Every way a sign-in can fail. The only saved user is test@example.com with
@@ -1131,3 +1133,30 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
     assert exc_info.value.message == INVALID_TOKEN
     assert other_device_row.revoked_at is None
     assert warnings == []
+
+
+def test_a_pending_password_change_is_refused(user: User) -> None:
+    """A user who must change their password is refused with its own 403 code.
+
+    The code, not the generic ``PERMISSION_DENIED``, is what tells the web
+    app to show the change-password screen instead of an error.
+    """
+    user.must_change_password = True
+
+    with pytest.raises(PermissionDeniedError) as exc_info:
+        service.ensure_password_change_not_pending(user)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.code == ErrorCode.PASSWORD_CHANGE_REQUIRED
+    assert exc_info.value.message == PASSWORD_CHANGE_REQUIRED
+
+
+def test_a_user_without_a_pending_change_passes_the_gate(user: User) -> None:
+    """A user with no pending password change passes the gate without an error.
+
+    The flag is cleared explicitly, because the fixture's user starts with
+    the database default, which is set.
+    """
+    user.must_change_password = False
+
+    assert service.ensure_password_change_not_pending(user) is None

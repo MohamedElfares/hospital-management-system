@@ -154,6 +154,33 @@ def _save_refresh_token(db_session: Session, user: User, **overrides: object) ->
     return raw_refresh_token
 
 
+def _save_rotated_token(db_session: Session, user: User) -> str:
+    """Save a refresh token that was already rotated and return its raw value.
+
+    Rotation revokes a token and links it to the token that replaced it, so
+    this saves the replacement first, then the old token with both
+    ``revoked_at`` and ``replaced_by_id`` set. Presenting the old token again
+    is reuse: only a rotated token coming back proves a copy exists. A token
+    revoked any other way, by sign-out or a password change, has no
+    replacement, so it can't stand in for reuse.
+
+    Args:
+        db_session: The test's session; the rows are flushed, not committed.
+        user: The saved user who owns both tokens.
+
+    Returns:
+        The raw value of the old, rotated token.
+    """
+    replacement_row = _token_row(db_session, _save_refresh_token(db_session, user))
+
+    return _save_refresh_token(
+        db_session,
+        user,
+        revoked_at=datetime.now(UTC),
+        replaced_by_id=replacement_row.id,
+    )
+
+
 def _present_token(db_session: Session, user: User, case: str) -> str | None:
     """Build the refresh token value a test presents for one failure case.
 
@@ -671,21 +698,22 @@ def test_an_unusable_refresh_token_writes_nothing(
     assert all(row.revoked_at is None for row in token_rows)
 
 
-def test_reusing_a_revoked_token_revokes_every_token_of_the_user(
+def test_reusing_a_rotated_token_revokes_every_token_of_the_user(
     db_session: Session,
     user: User,
 ) -> None:
-    """Presenting a revoked token ends the user's other sessions too.
+    """Presenting a rotated token again ends the user's other sessions too.
 
-    The user also holds an active token, as on a second device. A revoked
-    token coming back means a copy exists, and the server can't tell the
-    real user from a thief, so the active token is revoked as well.
+    The user also holds an active token, as on a second device. A token
+    that was already replaced coming back means a copy exists, and the
+    server can't tell the real user from a thief, so the active token is
+    revoked as well.
     """
-    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
 
     with pytest.raises(AuthenticationError) as exc_info:
-        service.refresh(db_session, raw_revoked_token)
+        service.refresh(db_session, raw_rotated_token)
 
     other_device_row = _token_row(db_session, raw_other_device_token)
 
@@ -705,11 +733,11 @@ def test_the_reuse_revocation_survives_the_failed_request(
     working; the previous test can't see that, because the change is still
     in the session there.
     """
-    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
 
     with pytest.raises(AuthenticationError) as exc_info:
-        service.refresh(db_session, raw_revoked_token)
+        service.refresh(db_session, raw_rotated_token)
 
     # A failed request's session is rolled back; only committed work remains.
     db_session.rollback()
@@ -731,16 +759,16 @@ def test_reuse_is_logged_without_the_token(
     not appear anywhere in the captured logs, because anyone who can read
     the logs could otherwise use it.
     """
-    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_rotated_token = _save_rotated_token(db_session, user)
 
     with caplog.at_level("WARNING"), pytest.raises(AuthenticationError):
-        service.refresh(db_session, raw_revoked_token)
+        service.refresh(db_session, raw_rotated_token)
 
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
 
     assert len(warnings) == 1
     assert str(user.id) in warnings[0].getMessage()
-    assert raw_revoked_token not in caplog.text
+    assert raw_rotated_token not in caplog.text
 
 
 def test_an_expired_token_does_not_revoke_the_others(db_session: Session, user: User) -> None:
@@ -777,10 +805,10 @@ def test_reuse_leaves_other_users_tokens_alone(db_session: Session, user: User) 
     db_session.flush()
 
     raw_other_user_token = _save_refresh_token(db_session, other_user)
-    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=datetime.now(UTC))
+    raw_rotated_token = _save_rotated_token(db_session, user)
 
     with pytest.raises(AuthenticationError):
-        service.refresh(db_session, raw_revoked_token)
+        service.refresh(db_session, raw_rotated_token)
 
     other_user_row = _token_row(db_session, raw_other_user_token)
 
@@ -879,10 +907,10 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
 ) -> None:
     """An already revoked token is ignored: no warning, and no mass revocation.
 
-    In refresh, a revoked token means a copy exists and ends every session.
-    At logout it usually means a double click or a second tab signing out
-    too, so the user's other token must stay active and nothing is logged
-    as a security warning.
+    In refresh, a rotated token presented again means a copy exists and
+    ends every session. At logout a revoked token usually means a double
+    click or a second tab signing out too, so the user's other token must
+    stay active and nothing is logged as a security warning.
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     unrevoked_raw_token = _save_refresh_token(db_session, user)
@@ -1074,3 +1102,32 @@ def test_change_password_leaves_other_users_alone(db_session: Session, user: Use
 
     assert other_user_token_row.revoked_at is None
     assert other_user.password_hash == other_user_original_hash
+
+
+def test_a_token_revoked_without_rotation_is_refused_quietly(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A token revoked on purpose gets the generic error and raises no alarm.
+
+    The token has ``revoked_at`` but no ``replaced_by_id``, as a sign-out
+    or a password change leaves it. The server ended it on purpose, so it
+    is not a stolen copy: the user's other device keeps its session, and
+    nothing is logged as a warning. Without this, another device
+    refreshing after a password change would sign out the device that
+    made the change.
+    """
+    five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with caplog.at_level("WARNING"), pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_revoked_token)
+
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    other_device_row = _token_row(db_session, raw_other_device_token)
+
+    assert exc_info.value.message == INVALID_TOKEN
+    assert other_device_row.revoked_at is None
+    assert warnings == []

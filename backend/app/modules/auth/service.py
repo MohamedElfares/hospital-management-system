@@ -240,45 +240,49 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
 
 
 def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
-    """Exchange a refresh token for a new access token and refresh token.
+    """Exchange a refresh token for a new session, rotating the token.
+
+    Each refresh token works once. A successful refresh revokes the
+    presented token, links it to its replacement through
+    ``replaced_by_id``, and issues a new access token and refresh token.
+    The new refresh token keeps the old one's expiry, so refreshing never
+    extends a session past the fixed window that began at sign-in. The
+    presented row is locked while it is read, so two requests with the
+    same token can't both rotate it.
+
+    Only a rotated token presented again counts as reuse: it was already
+    exchanged, so whoever sends it kept a copy, and the server can't tell
+    the real user from a thief. Every token of that user is then revoked,
+    a warning is logged without the token, and the revocation is committed
+    before the error is raised. A token revoked any other way, by sign-out,
+    a password change, deactivation, or an earlier alarm, has no
+    replacement. It was ended on purpose, so it is refused like any other
+    unusable token, with no alarm. This matters after a password change:
+    the user's other devices still hold such tokens, and treating them as
+    reuse would sign out the device that made the change.
 
     The web app calls this after a page reload, when the access token held
-    in memory is gone, and after an access token expires. The presented
-    token is looked up by its hash and its row stays locked until the
-    commit, so two refreshes with the same cookie run one after the other.
-
-    Each refresh token works once. On success it is revoked and linked to
-    the new token that replaces it, and the new token keeps the old one's
-    expiry, so refreshing never extends a session past its original window.
-    The new token, the revocation, and the link are committed together.
-
-    A token that is already revoked means a copy of it exists, held by the
-    real user or by a thief, and the server can't tell which. Every refresh
-    token of that user is then revoked, a warning is logged with the user
-    and token ids but never the token, and that revocation is committed
-    before the error is raised, since a failed request saves nothing
-    otherwise. This check runs before the expiry check, so an old stolen
-    token still raises the alarm. An expired token is only rejected, as
-    expiring is normal.
-
-    A pending password change doesn't block refresh, so the web app can
+    in memory is gone, and whenever an access token expires. An expired
+    token is only refused, with no alarm, since running out is normal. A
+    pending password change doesn't block refresh, so the web app can
     restore the session after a reload and show the change-password screen.
     Refresh is not a sign-in, so ``last_login_at`` is left alone.
 
+    Every failure raises the same error with the same message, so the
+    reply never says which check failed.
+
     Args:
         session: The open database session. This function commits it on
-            success and when reuse is detected.
+            success, and when reuse is detected.
         raw_refresh_token: The cookie's value as the browser sent it, or
             None when there is no cookie. Never logged or stored.
 
     Returns:
-        The new access token for the response body and the new raw refresh
-        token for the cookie.
+        The new access token and refresh token.
 
     Raises:
-        AuthenticationError: If the token is missing, unknown, already
-            revoked, or expired, or its user is missing or deactivated. The
-            message is the same in every case.
+        AuthenticationError: If the token is missing, unknown, revoked,
+            or expired, or its owner is missing or deactivated.
     """
     if not raw_refresh_token:
         raise AuthenticationError(_INVALID_TOKEN)
@@ -290,16 +294,22 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
 
     now = datetime.now(UTC)
 
-    # A revoked token presented again means a copy exists. Checked before
-    # expiry so an old stolen token still raises the alarm, and committed
-    # before raising because a failed request would otherwise save nothing.
     if presented_token.revoked_at is not None:
+        # Only a rotated token proves a copy exists. One revoked any other
+        # way was ended on purpose, and after a password change the other
+        # devices still hold such tokens: an alarm here would end the
+        # session the change just started.
+        if presented_token.replaced_by_id is None:
+            raise AuthenticationError(_INVALID_TOKEN)
+
+        # Checked before expiry so an old stolen token still raises the
+        # alarm, and committed before raising because a failed request
+        # would otherwise save nothing.
         logger.warning(
             "Refresh token reuse detected (user_id=%s, token_id=%s)",
             presented_token.user_id,
             presented_token.id,
         )
-
         repository.revoke_all_for_user(session, presented_token.user_id, now)
 
         # TODO(1.3): audit the reuse and the mass revocation (plan §8.6)
@@ -368,8 +378,9 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
 
     # Signing out ends only the caller's own session, so a stolen cookie
     # can't be used with another account to end someone else's. A revoked
-    # token raises no reuse alarm here, unlike in refresh: a double-clicked
-    # sign-out must not end the user's sessions on every device.
+    # token, even a rotated one, raises no reuse alarm here, unlike in
+    # refresh: signing out can't start a session, so a copy gains nothing,
+    # and a double-clicked sign-out must not end every device's session.
     if (
         presented_token is None
         or presented_token.user_id != user.id

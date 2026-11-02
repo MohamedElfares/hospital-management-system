@@ -76,8 +76,8 @@ def get_by_hash(session: Session, token_hash: str) -> RefreshToken | None:
 def revoke_all_for_user(session: Session, user_id: uuid.UUID, revoked_at: datetime) -> None:
     """Revoke every refresh token of one user that isn't revoked yet.
 
-    Used whenever all of a user's sessions must end at once: when a revoked
-    token is reused, and later on password change and deactivation. One
+    Used whenever all of a user's sessions must end at once: when a rotated
+    token is reused, on password change, and later on deactivation. One
     ``UPDATE`` covers any number of tokens. Tokens that are already revoked
     keep their original time, so the record of when each one was rotated
     or revoked is never overwritten. The service passes the time, so every

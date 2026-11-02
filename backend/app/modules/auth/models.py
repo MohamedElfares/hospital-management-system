@@ -43,8 +43,10 @@ class RefreshToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     A row is created at sign-in and on every refresh. Refreshing rotates
     the token: the old row is revoked and points to its replacement, and
-    a new row is issued. If a revoked token is presented again, it may have
-    been stolen, so every token of that user is revoked (plan §8.1).
+    a new row is issued. If a rotated token is presented again, it may have
+    been stolen, so every token of that user is revoked (plan §8.1). A
+    token revoked without a replacement was ended on purpose and is only
+    refused.
 
     A token is usable only while ``revoked_at`` is NULL and ``expires_at``
     is in the future. Revoking keeps the row, so the rotation chain stays
@@ -63,12 +65,14 @@ class RefreshToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         expires_at: When the token stops working, in UTC. Set by the
             service from ``REFRESH_TOKEN_EXPIRE_DAYS``; there is no default
             so a missing value fails instead of picking a lifetime.
-        revoked_at: When the token was revoked by rotation, sign-out, or
-            reuse detection. None while the token is still usable.
+        revoked_at: When the token was revoked by rotation, sign-out, a
+            password change, or reuse detection. None while the token is
+            still usable.
         replaced_by_id: The token issued when this one was rotated. None
             if it was never rotated, so a revoked row with no replacement
-            was ended by sign-out or reuse detection. Cleared if the
-            replacement row is deleted (ON DELETE SET NULL).
+            was ended by sign-out, a password change, or reuse detection.
+            Refresh raises the reuse alarm only when this is set. Cleared
+            if the replacement row is deleted (ON DELETE SET NULL).
     """
 
     __tablename__ = "refresh_tokens"

@@ -14,12 +14,51 @@ from app.core.security import hash_password
 from app.core.security import hash_refresh_token
 from app.modules.auth.models import RefreshToken
 from app.modules.users.models import User
+from app.modules.users.schemas import PASSWORD_MAX_LENGTH
+from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
+CHANGE_PASSWORD_URL = "/api/v1/auth/change-password"
 LOGIN_URL = "/api/v1/auth/login"
 LOGOUT_URL = "/api/v1/auth/logout"
 ME_URL = "/api/v1/auth/me"
 REFRESH_URL = "/api/v1/auth/refresh"
+NEW_PASSWORD = "New-Password-123"
 PASSWORD = "Correct-Password-1"
+
+# Every way the service refuses a change: the body field that differs from a
+# valid change, and the message the user sees. Both bodies pass validation.
+REFUSED_PASSWORD_CHANGES = [
+    pytest.param(
+        {"current_password": "Wrong-Password-1"},
+        "Current password is incorrect.",
+        id="wrong-current-password",
+    ),
+    pytest.param(
+        {"new_password": PASSWORD},
+        "The new password must be different from the current one.",
+        id="new-password-same-as-current",
+    ),
+]
+
+# Bodies the schema rejects before the service runs, with the field the
+# 422 names. Lengths come from the shared rule, so they follow it.
+INVALID_PASSWORD_CHANGE_BODIES = [
+    pytest.param(
+        {"current_password": PASSWORD, "new_password": "a" * (PASSWORD_MIN_LENGTH - 1)},
+        "body.new_password",
+        id="new-password-too-short",
+    ),
+    pytest.param(
+        {"current_password": "a" * (PASSWORD_MAX_LENGTH + 1), "new_password": NEW_PASSWORD},
+        "body.current_password",
+        id="current-password-too-long",
+    ),
+    pytest.param(
+        {"current_password": PASSWORD},
+        "body.new_password",
+        id="new-password-missing",
+    ),
+]
 
 
 @pytest.fixture
@@ -57,6 +96,22 @@ def _auth_header(user: User) -> dict[str, str]:
         The headers to pass to the test client.
     """
     return {"Authorization": f"Bearer {create_access_token(user.id)}"}
+
+
+def _password_change_body(**overrides: str) -> dict[str, str]:
+    """Build a valid change-password body for the ``user`` fixture.
+
+    By default it holds the fixture's real password and a different, valid
+    new one, so the change succeeds. A test replaces only the field it is
+    about.
+
+    Args:
+        **overrides: Fields that replace the defaults.
+
+    Returns:
+        The JSON body to send.
+    """
+    return {"current_password": PASSWORD, "new_password": NEW_PASSWORD, **overrides}
 
 
 def test_login_returns_a_bearer_access_token(user: User, client: TestClient) -> None:
@@ -557,3 +612,237 @@ def test_logout_works_while_a_password_change_is_pending(
     logout_response = client.post(LOGOUT_URL, headers=headers)
 
     assert logout_response.status_code == 204
+
+
+def test_change_password_returns_a_new_access_token(user: User, client: TestClient) -> None:
+    """A successful change returns a bearer access token that works on /auth/me."""
+    response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    me_response = client.get(ME_URL, headers={"Authorization": f"Bearer {body['access_token']}"})
+
+    assert body["token_type"] == "bearer"
+    assert decode_access_token(body["access_token"]) == user.id
+    assert me_response.status_code == 200
+
+
+def test_change_password_sets_a_new_refresh_cookie(user: User, client: TestClient) -> None:
+    """Changing the password replaces the refresh cookie with a new one that works.
+
+    The user signs in first, so the browser holds a cookie. Changing the
+    password revokes that token, so the response must send exactly one new
+    cookie with the same security flags. Without it, the device would be
+    signed out when its access token expires. The new cookie differs from
+    the old one, and ``/auth/refresh`` accepts it.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+
+    response = client.post(
+        CHANGE_PASSWORD_URL,
+        json=_password_change_body(),
+        headers={"Authorization": f"Bearer {login_response.json()['access_token']}"},
+    )
+    set_cookie_headers = response.headers.get_list("set-cookie")
+    new_cookie = response.cookies[REFRESH_COOKIE_NAME]
+    refresh_response = client.post(REFRESH_URL)
+
+    cookie_attributes = set_cookie_headers[0].lower()
+
+    assert response.status_code == 200
+    assert len(set_cookie_headers) == 1
+    assert new_cookie != old_cookie
+    assert "httponly" in cookie_attributes
+    assert "samesite=strict" in cookie_attributes
+    assert "path=/api/v1/auth" in cookie_attributes
+    assert refresh_response.status_code == 200
+
+
+def test_change_password_ends_the_old_session(user: User, client: TestClient) -> None:
+    """The refresh cookie from before the change no longer works.
+
+    The old cookie is put back after the change, as a second device or a
+    thief would still hold it, and ``/auth/refresh`` refuses it.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+
+    client.post(
+        CHANGE_PASSWORD_URL,
+        json=_password_change_body(),
+        headers={"Authorization": f"Bearer {login_response.json()['access_token']}"},
+    )
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, old_cookie, path="/api/v1/auth")
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 401
+
+
+def test_only_the_new_password_signs_in(user: User, client: TestClient) -> None:
+    """After the change, the new password signs in and the old one is refused."""
+    client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user))
+
+    old_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    new_login = client.post(LOGIN_URL, data={"username": user.email, "password": NEW_PASSWORD})
+
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200
+
+
+def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: TestClient) -> None:
+    """The new refresh token travels only in its HttpOnly cookie, never in the body."""
+    response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
+    )
+    new_cookie = response.cookies[REFRESH_COOKIE_NAME]
+
+    assert new_cookie not in response.text
+
+
+@pytest.mark.parametrize(("overrides", "message"), REFUSED_PASSWORD_CHANGES)
+def test_a_refused_change_is_a_400_without_a_cookie(
+    user: User,
+    client: TestClient,
+    overrides: dict[str, str],
+    message: str,
+) -> None:
+    """A refused change returns the standard 400 with its message and sets no cookie.
+
+    Nothing changed, so the browser keeps its current cookie: sending a new
+    one would replace a working session for no reason.
+    """
+    response = client.post(
+        CHANGE_PASSWORD_URL,
+        json=_password_change_body(**overrides),
+        headers=_auth_header(user),
+    )
+    error = response.json()["error"]
+
+    assert response.status_code == 400
+    assert error["code"] == ErrorCode.BAD_REQUEST
+    assert error["message"] == message
+    assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize(("body", "field"), INVALID_PASSWORD_CHANGE_BODIES)
+def test_an_invalid_body_is_a_validation_error(
+    user: User,
+    client: TestClient,
+    body: dict[str, str],
+    field: str,
+) -> None:
+    """A body that breaks the password rule is a 422 naming the field.
+
+    The error body never contains a password that was sent, so a rejected
+    password can't end up in logs or in the browser's network panel.
+    """
+    response = client.post(CHANGE_PASSWORD_URL, json=body, headers=_auth_header(user))
+    fields = [detail["field"] for detail in response.json()["error"]["details"]]
+
+    assert response.status_code == 422
+    assert field in fields
+    for password in body.values():
+        assert password not in response.text
+
+
+def test_a_form_body_is_a_validation_error(user: User, client: TestClient) -> None:
+    """The route reads JSON only; a form body like login's is a 422."""
+    response = client.post(
+        CHANGE_PASSWORD_URL, data=_password_change_body(), headers=_auth_header(user)
+    )
+
+    assert response.status_code == 422
+
+
+def test_change_password_without_an_access_token_is_the_standard_401(
+    user: User,
+    client: TestClient,
+) -> None:
+    """Without an access token the change is refused with the standard 401 body."""
+    response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body())
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+
+
+def test_change_password_rejects_a_deactivated_user(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """A deactivated user's still-valid access token can't change the password."""
+    headers = _auth_header(user)
+    user.is_active = False
+    db_session.flush()
+
+    response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=headers)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+
+
+def test_change_password_works_while_a_password_change_is_pending(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """A user who must change their password can still reach this route.
+
+    This route is how the forced change gets done, so the 7d gate must
+    exempt it. The test passes today and keeps that exemption in place once
+    the gate is added.
+    """
+    user.must_change_password = True
+    db_session.flush()
+
+    response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
+    )
+
+    assert response.status_code == 200
+
+
+def test_another_device_refreshing_after_a_change_keeps_this_session(
+    user: User,
+    client: TestClient,
+) -> None:
+    """Another device's old cookie is refused without signing out the device that changed.
+
+    The user is signed in on a phone and a laptop, and changes the password
+    on the laptop. The phone still holds its old cookie, which the change
+    revoked, and refreshes first: it gets a 401. That token was ended on
+    purpose and never rotated, so it is not reuse, and the laptop's new
+    session survives. Its refresh still gets a 200. The order matters:
+    only the phone refreshing first can show a false alarm.
+    """
+    phone_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    phone_cookie = phone_login.cookies[REFRESH_COOKIE_NAME]
+
+    client.cookies.clear()
+    laptop_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    change_response = client.post(
+        CHANGE_PASSWORD_URL,
+        json=_password_change_body(),
+        headers={"Authorization": f"Bearer {laptop_login.json()['access_token']}"},
+    )
+
+    assert change_response.status_code == 200
+
+    laptop_new_cookie = change_response.cookies[REFRESH_COOKIE_NAME]
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, phone_cookie, path="/api/v1/auth")
+    phone_refresh = client.post(REFRESH_URL)
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, laptop_new_cookie, path="/api/v1/auth")
+    laptop_refresh = client.post(REFRESH_URL)
+
+    assert phone_refresh.status_code == 401
+    assert laptop_refresh.status_code == 200

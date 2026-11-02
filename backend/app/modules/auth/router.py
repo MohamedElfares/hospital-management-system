@@ -1,4 +1,4 @@
-"""HTTP routes for signing in and out, refreshing the session, and the signed-in user.
+"""HTTP routes for signing in and out, sessions, password changes, and the signed-in user.
 
 The router handles HTTP only: it reads the request, calls one service
 function or dependency, and turns the result into a response. Every rule
@@ -8,8 +8,8 @@ into the standard error body.
 
 Signing in is Public, since it is how a caller becomes authenticated.
 Refresh is Public with the refresh cookie: it must work when the access
-token has expired or is gone. Sign-out and the current-user route are
-Authenticated: they need a valid access token.
+token has expired or is gone. Sign-out, changing the password, and the
+current-user route are Authenticated: they need a valid access token.
 """
 
 # Attaches a dependency to a parameter's type.
@@ -50,6 +50,9 @@ from app.db.session import get_db
 
 # Sign-in rules; imported as a module so tests can replace one function.
 from app.modules.auth import service
+
+# Body of a password change: the current and the new password, as JSON.
+from app.modules.auth.schemas import PasswordChange
 
 # Body of a successful sign-in: the access token and its type.
 from app.modules.auth.schemas import TokenResponse
@@ -109,7 +112,8 @@ def login(
     responses={
         401: {
             "description": (
-                "Missing, invalid, expired, or reused refresh token, or the account is deactivated."
+                "Missing, invalid, expired, revoked, or reused refresh token, "
+                "or the account is deactivated."
             )
         }
     },
@@ -146,9 +150,9 @@ def refresh(
 
     Raises:
         AuthenticationError: From the service, if the cookie is missing,
-            unknown, expired, or already used, or the account is
-            deactivated. The handler turns it into a 401 with code
-            ``AUTHENTICATION_FAILED``.
+            unknown, expired, revoked by sign-out or a password change, or
+            already used, or the account is deactivated. The handler turns
+            it into a 401 with code ``AUTHENTICATION_FAILED``.
     """
     issued_tokens = service.refresh(db, refresh_token)
     set_refresh_cookie(response, issued_tokens.refresh_token)
@@ -239,3 +243,67 @@ def me(user: CurrentUser) -> User:
             deactivated. The handler turns it into a 401.
     """
     return user
+
+
+@router.post(
+    "/change-password",
+    summary="Change the password",
+    response_model=TokenResponse,
+    responses={
+        400: {
+            "description": (
+                "Current password is incorrect, or the new password is the same as the current one."
+            )
+        },
+        401: {
+            "description": (
+                "Missing, invalid, or expired access token, or the account is deactivated."
+            )
+        },
+    },
+)
+def change_password(
+    data: PasswordChange,
+    user: CurrentUser,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> TokenResponse:
+    """Change the signed-in user's password. Authenticated.
+
+    The body is JSON with the current and the new password; the user comes
+    from the access token, so a caller can only change their own password.
+    On success every session the user had, on every device, is ended, and
+    this device gets a new one: a new access token in the body and a new
+    refresh token in the ``HttpOnly`` cookie, replacing the old one. The
+    other devices are refused at their next refresh, without a reuse alarm.
+
+    A refused change answers 400, not 401, because the web app treats a
+    401 as an expired session and would sign the user out. It sets no
+    cookie: the error handler builds a new response, and nothing changed,
+    so the browser keeps its working cookie. An invalid body, such as a new
+    password shorter than 12 characters, is a 422 that never contains the
+    passwords. The route stays open while ``must_change_password`` is set,
+    since it is how a temporary password gets replaced.
+
+    Args:
+        data: The current and the new password.
+        user: The active user the bearer token belongs to.
+        response: The response being built; the new refresh cookie is set
+            on it.
+        db: Session for this request; the service commits it on success.
+
+    Returns:
+        The new access token, with ``token_type`` ``"bearer"``.
+
+    Raises:
+        BadRequestError: From the service, if the current password is wrong
+            or the new one is the same as the current one. The handler
+            turns it into a 400 with code ``BAD_REQUEST``.
+        AuthenticationError: From the dependency, before this runs, if the
+            access token is missing, invalid, or expired, or the account is
+            deactivated. The handler turns it into a 401.
+    """
+    issued_tokens = service.change_password(db, user, data)
+    set_refresh_cookie(response, issued_tokens.refresh_token)
+
+    return TokenResponse(access_token=issued_tokens.access_token)

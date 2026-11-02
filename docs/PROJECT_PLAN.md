@@ -15,7 +15,7 @@
 - **No deadline.** The 30-day limit, the cut rule, and the Must/Should/Won't split are gone. Work is organized into five phases without dates.
 - **Nothing cut from your original idea.** The Manager, Customer Service, and Patient roles and the pharmacy branches are back. All former "Should have" items are part of Phase 1.
 - **React frontend,** written by Claude Code and served from the same origin as the API.
-- **Clear ownership (§14).** You own configuration, Alembic migrations, backend business logic, and backend tests. Claude Code owns CI/CD, documentation, and the frontend, and guides you through everything else.
+- **Clear ownership (§14).** You write all backend code: configuration, Alembic migrations, backend business logic, and backend tests. Claude Code owns code review, CI/CD, documentation, and the frontend, and guides you through everything else.
 - **Cookie-based refresh tokens from Phase 1,** because a browser app is now planned.
 - Extra ideas that were never part of your original request, such as billing and labs, are listed as optional (§2).
 
@@ -512,8 +512,9 @@ erDiagram
 - **First Admin:** `python -m app.cli create-admin` takes the email and full name as options and the password only from a hidden, confirmed prompt, never as an argument or environment variable. It calls the users service, creates an Admin with `must_change_password` false, and refuses when an active Admin already exists, so it works for a fresh database and for recovery after every Admin has been deactivated. It prints the new user's ID and email, never the password.
 - **Access token:** an HS256 JWT signed with PyJWT, valid for 15 minutes, containing only `sub` (user ID), `iat`, and `exp`.
 - **Refresh token:** a random opaque value, valid for 7 days. The database stores only its SHA-256 hash. It travels only in a cookie that is `HttpOnly`, `SameSite=Strict`, limited to `Path=/api/v1/auth`, and `Secure` in production.
-- **Rotation and reuse detection:** each refresh revokes the old token and issues a new one. If a revoked token is used again, it may have been stolen, so every refresh token for that user is revoked.
+- **Rotation and reuse detection:** each refresh revokes the old token and issues a new one that keeps the old token's expiry, so refreshing never extends a session beyond 7 days from sign-in. The token's row is locked while it is checked, so two refreshes with the same cookie are handled one after the other. If a token that was already rotated is used again, it may have been stolen, so every refresh token for that user is revoked and a warning is logged without the token. A token revoked any other way (logout, password change, deactivation) is refused without the alarm: after a password change the user's other devices still hold such tokens, and an alarm would sign out the device that made the change.
 - **Revocation:** logout revokes the current token and clears the cookie. Deactivation, password change, and password reset revoke all of the user's tokens.
+- **Password change:** requires the current password, and the new one must differ from it. Both refusals return `400 BAD_REQUEST`, not `401`, because the web app treats a `401` as an expired session. A successful change clears `must_change_password`, revokes all of the user's tokens, and starts a new 7-day session for the device that made the change.
 - **Every request** loads the user from the database; inactive users get `401`.
 - **Forced password change:** while `must_change_password` is set, every endpoint except `/auth/me`, `/auth/refresh`, `/auth/change-password`, and `/auth/logout` returns `403 PASSWORD_CHANGE_REQUIRED`. Refresh stays open so the web app can restore the session after a reload and show the change-password screen.
 - **Rate limiting:** login and portal activation are limited per IP address and per account. The limiter is in memory, which is correct for a single instance; ADR-0004 notes that several instances would need a shared store such as Redis. Over the limit, the API returns `429 RATE_LIMITED`.
@@ -1039,7 +1040,7 @@ Claude Code uses this list to suggest edge cases before you write tests. For eve
 | Libraries | Run the install commands; ask for details when you want them | Names each library you need with a one-line purpose and its install command; explains each import in one line (what it is and how it helps here); goes deeper only when asked |
 | Configuration: `backend/.env`, `backend/.env.example`, `backend/app/core/config.py` | Write | Guides and reviews; can't edit these files |
 | Migrations: `backend/alembic.ini`, `backend/migrations/` | Write, generate, review, and apply | Guides and reviews; can't edit these files or run `alembic revision` |
-| Backend business logic | Write | Mentors with questions and hints, reviews, and fixes code only when you ask, explaining why |
+| Backend business logic | Write | Mentors with questions and hints, and reviews |
 | Backend tests (pytest) | Write | Explains the pytest features you need, suggests edge cases before you start, and reviews |
 | CI/CD: GitHub Actions, Dependabot, Docker, Compose, Render Blueprint | Understand each step | Writes and maintains; reads failed runs with the GitHub CLI |
 | Documentation: detailed docstrings, one-line import comments, README, OpenAPI text | Review | Writes and keeps it up to date (§17) |

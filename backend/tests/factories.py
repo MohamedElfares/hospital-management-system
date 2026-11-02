@@ -7,13 +7,31 @@ directly (``from factories import make_user``), which works because pytest
 puts this folder on the import path.
 """
 
+# Random hex values; a unique stand-in hash for each built refresh token.
+import secrets
+
+# Type of the user ID that every refresh token must reference.
+import uuid
+
+# UTC time zone; refresh token expiries are always in UTC.
+from datetime import UTC
+
+# Current time, the starting point of a token's default expiry.
+from datetime import datetime
+
+# Adds the default seven-day lifetime to the current time.
+from datetime import timedelta
+
 # Allows the defaults dict to hold values of different types.
 from typing import Any
 
 # Default role for built users.
 from app.core.permissions import Role
 
-# The ORM model the factory builds.
+# The ORM model make_refresh_token builds.
+from app.modules.auth.models import RefreshToken
+
+# The ORM model make_user builds.
 from app.modules.users.models import User
 
 # The input schema the second factory builds.
@@ -79,3 +97,36 @@ def make_user_create(**overrides: object) -> UserCreate:
     values.update(overrides)
 
     return UserCreate(**values)
+
+
+def make_refresh_token(user_id: uuid.UUID, **overrides: object) -> RefreshToken:
+    """Build an unsaved refresh token for a user, replacing any given fields.
+
+    The token is unrevoked, has no replacement, and expires in seven days.
+    Its hash is 64 random hex characters, the same shape as a real SHA-256
+    hex digest, and different on every call, so a test that builds several
+    tokens never breaks the unique constraint by accident; a test that
+    wants a duplicate passes the same ``token_hash`` twice. The user ID is
+    required because the foreign key needs a saved user, which the test
+    creates and flushes first.
+
+    Args:
+        user_id: ID of the user the token belongs to. To set it to another
+            value, including None, pass ``user_id`` inside a dict unpacked
+            on its own, such as ``make_refresh_token(**{"user_id": None})``,
+            because a positional value and an override can't both be given.
+        **overrides: Column values that replace the defaults, such as
+            ``token_hash=...`` or ``expires_at=None``.
+
+    Returns:
+        A new ``RefreshToken`` that has not been added to any session.
+    """
+    values: dict[str, Any] = {
+        "user_id": user_id,
+        "token_hash": secrets.token_hex(32),
+        "expires_at": datetime.now(UTC) + timedelta(days=7),
+    }
+
+    values.update(overrides)
+
+    return RefreshToken(**values)

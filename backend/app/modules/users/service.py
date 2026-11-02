@@ -1,11 +1,15 @@
-"""Business rules for creating user accounts.
+"""Business rules for creating and finding user accounts.
 
-The service is the only place that decides whether a user may be created.
+The service is the only place that decides whether a user may be created,
+and the way other modules, such as auth, look users up.
 It checks the rules, hashes the password, saves through the repository, and
 owns the transaction: each use case ends with exactly one commit. It raises
 domain errors from ``app.core.errors``, never HTTP errors, so the API and
 the ``create-admin`` command can each report them in their own way.
 """
+
+# The UUID type of user ids; annotates the id passed to the lookup.
+import uuid
 
 # Raised on flush when a database constraint rejects the row.
 from sqlalchemy.exc import IntegrityError
@@ -121,3 +125,52 @@ def create_first_admin(session: Session, data: UserCreate) -> User:
 
     admin_data = data.model_copy(update={"role": Role.ADMIN})
     return create_user(session, admin_data, must_change_password=False)
+
+
+def get_user_by_email(session: Session, email: str) -> User | None:
+    """Find a user by email, ignoring case and surrounding spaces.
+
+    This is how other modules look users up, since only this module may use
+    the users repository. Emails are stored lowercase, so the input is
+    stripped and lowercased first; sign-in passes the raw form value, and
+    ``" Admin@Example.COM "`` must find ``admin@example.com``.
+
+    Inactive users are returned too. Deciding what deactivation means is
+    the caller's job: sign-in must check the password before it looks at
+    ``is_active``, so it needs the account either way. Nothing is written,
+    so nothing is committed.
+
+    Args:
+        session: The open database session.
+        email: The email as the user typed it.
+
+    Returns:
+        The matching user, active or not, or None if no user has that
+        email.
+    """
+    normalized = email.strip().lower()
+
+    return repository.get_by_email(session, normalized)
+
+
+def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
+    """Find a user by id.
+
+    This is how other modules load an account they already have an id
+    for: auth uses it to find the user an access token names, since only
+    this module may use the users repository. A UUID has no case or
+    spacing to normalize, so the id is passed through unchanged.
+
+    Inactive users are returned too. Deciding what deactivation means is
+    the caller's job: auth rejects them, while staff administration must
+    still find a deactivated account to show or reactivate it. Nothing is
+    written, so nothing is committed.
+
+    Args:
+        session: The open database session.
+        user_id: The id of the user to load.
+
+    Returns:
+        The matching user, active or not, or None if no user has that id.
+    """
+    return repository.get_by_id(session, user_id)

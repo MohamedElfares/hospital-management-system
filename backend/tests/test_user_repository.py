@@ -1,3 +1,5 @@
+import uuid
+
 from factories import make_user
 from sqlalchemy.orm import Session
 
@@ -5,6 +7,7 @@ from app.core.permissions import Role
 from app.modules.users.repository import active_admin_exists
 from app.modules.users.repository import add
 from app.modules.users.repository import get_by_email
+from app.modules.users.repository import get_by_id
 
 
 def test_an_added_user_can_be_found_by_email(db_session: Session) -> None:
@@ -81,3 +84,42 @@ def test_an_active_doctor_is_not_counted_as_an_admin(db_session: Session) -> Non
     db_session.flush()
 
     assert active_admin_exists(db_session) is False
+
+
+def test_an_added_user_can_be_found_by_id(db_session: Session) -> None:
+    """A saved user is returned by an id lookup, and not the other saved user.
+
+    The decoy is added first, so a lookup that ignored the id and returned
+    the first row would return the decoy and fail. The session is emptied
+    before the lookup, so the user is read from the database, not from the
+    session's memory.
+    """
+    decoy_user = make_user(email="other@example.com")
+    user = make_user()
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    result = get_by_id(db_session, user.id)
+
+    assert result is not None
+    assert result.id == user.id
+
+
+def test_an_unknown_id_finds_no_user(db_session: Session) -> None:
+    """An id that no user has returns None, even with users in the table.
+
+    Because two users exist, any lookup that returned "some user" instead
+    of the matching one would fail here, whatever order the rows come in.
+    """
+    user = make_user()
+    decoy_user = make_user(email="other@example.com")
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    assert get_by_id(db_session, uuid.uuid4()) is None

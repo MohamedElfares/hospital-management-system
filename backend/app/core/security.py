@@ -1,18 +1,54 @@
-"""Password hashing and verification.
+"""Password hashing, access tokens, and the refresh token cookie.
 
 Passwords are never stored. Each one is hashed with Argon2id through pwdlib:
 a slow, memory-hard function with a random salt per password, so a leaked
 ``users`` table can't be turned back into passwords and each hash has to be
-attacked separately. The rest of the backend calls ``hash_password`` and
-``verify_password`` and never imports pwdlib, so the algorithm or its
-settings can change in this one file.
+attacked separately.
+
+After sign-in, requests carry a short-lived access token instead of the
+password: an HS256 JSON Web Token signed with ``JWT_SECRET_KEY`` that names
+the user and expires after ``ACCESS_TOKEN_EXPIRE_MINUTES``. The token proves
+only who the caller is. Whether that user still exists, is active, and may
+do what they ask is checked against the database on every request.
+
+A refresh token, a random value that lasts ``REFRESH_TOKEN_EXPIRE_DAYS``,
+gets the client a new access token without signing in again. It travels
+only in an ``HttpOnly`` cookie, and the database keeps only its SHA-256
+hash, so the token can be revoked and a leaked table can't be used.
+
+The rest of the backend calls the functions here and never imports pwdlib
+or PyJWT, so the algorithms or their settings can change in this one file.
 """
+
+# Standard-library hashing; SHA-256 of refresh tokens for storage and lookup.
+import hashlib
 
 # Standard-library logging; records unsupported hashes without their contents.
 import logging
 
-# Cryptographically secure random values; the unguessable input of _DUMMY_HASH.
+# Cryptographically secure random values; refresh tokens and the dummy password.
 import secrets
+
+# UUID type of user IDs; the token's subject is parsed back into one.
+import uuid
+
+# UTC time zone; token timestamps are always in UTC.
+from datetime import UTC
+
+# Current time for the token's issued-at claim.
+from datetime import datetime
+
+# Adds the configured lifetime to the issue time to get the expiry.
+from datetime import timedelta
+
+# Type of the claim values, which mix strings and datetimes.
+from typing import Any
+
+# PyJWT; signs, verifies, and decodes the access tokens.
+import jwt
+
+# FastAPI's HTTP response; the refresh cookie is set on it and cleared from it.
+from fastapi import Response
 
 # pwdlib's hasher; recommended() gives Argon2id with safe default settings.
 from pwdlib import PasswordHash
@@ -20,10 +56,26 @@ from pwdlib import PasswordHash
 # Raised by pwdlib when a stored hash isn't in a format it recognizes.
 from pwdlib.exceptions import UnknownHashError
 
+# Cached settings; supplies the signing key and the token lifetime.
+from app.core.config import get_settings
+
+# Error that the API turns into a 401 response; raised for any bad token.
+from app.core.errors import AuthenticationError
+
 logger = logging.getLogger(__name__)
 
 # One hasher for the whole process, so every hash uses the same settings.
 _password_hash = PasswordHash.recommended()
+
+# Fixed in code rather than configuration: the algorithm is a security
+# decision, not a per-environment value, and decoding accepts only this one,
+# so a token that names another algorithm (including "none") is rejected.
+_JWT_ALGORITHM = "HS256"
+
+# Public because sign-in sets this cookie, refresh reads it, and sign-out
+# clears it: one constant means a typo fails loudly instead of creating a
+# cookie that the other endpoints never find.
+REFRESH_COOKIE_NAME = "refresh_token"
 
 
 def hash_password(password: str) -> str:
@@ -81,3 +133,196 @@ def verify_password(password: str, password_hash: str) -> bool:
 # hash_password, not pasted in, so it always has the same settings, and
 # therefore the same cost, as real hashes.
 _DUMMY_HASH = hash_password(secrets.token_urlsafe())
+
+
+def create_access_token(user_id: uuid.UUID) -> str:
+    """Create a signed access token for a user who has just signed in.
+
+    The token holds three claims and nothing else: ``sub`` (the user ID as
+    a string), ``iat`` (when it was issued), and ``exp`` (when it expires,
+    ``ACCESS_TOKEN_EXPIRE_MINUTES`` later). Role, email, and permissions are
+    left out on purpose: a token can't be changed once issued, so anything
+    in it could go stale, and every request loads the user from the
+    database instead. The token is signed, not encrypted, so anyone holding
+    it can read the claims; that is why they contain no personal data.
+
+    The short lifetime limits the damage of a stolen token. The client
+    gets a new one through the refresh token instead of signing in again.
+
+    Args:
+        user_id: ID of the authenticated user.
+
+    Returns:
+        The encoded token, in the form ``header.payload.signature``. Never
+        logged.
+    """
+    settings = get_settings()
+    sub = str(user_id)
+    iat = datetime.now(UTC)
+    exp = iat + timedelta(minutes=settings.access_token_expire_minutes)
+    claims: dict[str, Any] = {"sub": sub, "iat": iat, "exp": exp}
+
+    return jwt.encode(
+        claims, key=settings.jwt_secret_key.get_secret_value(), algorithm=_JWT_ALGORITHM
+    )
+
+
+def decode_access_token(token: str) -> uuid.UUID:
+    """Verify an access token and return the ID of the user it names.
+
+    The token is accepted only if it was signed with ``JWT_SECRET_KEY``
+    using HS256, contains ``sub``, ``iat``, and ``exp``, hasn't expired, and
+    wasn't issued in the future, and if ``sub`` is a valid UUID. Claims are
+    required explicitly because PyJWT checks ``exp`` only when it's present,
+    and a token without one would never expire.
+
+    Every failure raises the same error with the same message, so a caller
+    can't tell which check failed. The token only proves identity: the
+    caller must still load the user and reject one who no longer exists or
+    has been deactivated.
+
+    Args:
+        token: The encoded token from the ``Authorization: Bearer`` header.
+
+    Returns:
+        The user ID from the ``sub`` claim.
+
+    Raises:
+        AuthenticationError: If the token is malformed, tampered with,
+            signed with another key or algorithm, expired, or missing a
+            required claim, or if its subject isn't a UUID.
+    """
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            key=get_settings().jwt_secret_key.get_secret_value(),
+            algorithms=[_JWT_ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+        return uuid.UUID(payload["sub"])
+    except (jwt.InvalidTokenError, ValueError):
+        # A bad token is ordinary client input, not a server fault, so
+        # PyJWT's exception is left out of the chain rather than attached
+        # to the error as its cause.
+        raise AuthenticationError("Invalid or expired token.") from None
+
+
+def generate_refresh_token() -> str:
+    """Create a new random refresh token.
+
+    The token is 32 bytes from the operating system's secure random source,
+    256 bits that can't be guessed or derived from earlier tokens. It is
+    encoded with URL-safe base64, so it fits in a cookie without escaping.
+    It means nothing by itself: it is valid only while a stored row with its
+    hash says so.
+
+    Returns:
+        The raw token, about 43 characters long. It is sent to the client
+        once, in the cookie, and never stored or logged.
+    """
+    return secrets.token_urlsafe(32)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Hash a refresh token for storage in ``refresh_tokens.token_hash``.
+
+    SHA-256 is fast and unsalted on purpose, unlike password hashing. The
+    token is 256 random bits, so a fast hash can't be brute-forced, and
+    without a salt the same token always gives the same hash, which is what
+    lets a refresh find its row with an indexed lookup. Changing the
+    algorithm would make every stored token unfindable and sign every user
+    out.
+
+    Args:
+        token: The raw token from the client's cookie.
+
+    Returns:
+        The hash as 64 lowercase hexadecimal characters.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def check_password(password: str, password_hash: str | None) -> bool:
+    """Check a sign-in password, taking the same time whether or not the user exists.
+
+    When no user matched the email, the caller passes None. The password is
+    then verified against ``_DUMMY_HASH`` so the slow Argon2 work still
+    happens, and response times can't reveal which emails have accounts.
+    The result of that check is ignored and False is returned explicitly,
+    so a missing user can never sign in, whatever the dummy hash is.
+
+    Args:
+        password: The password the user submitted.
+        password_hash: The stored hash of the matching user, or None if no
+            user has that email.
+
+    Returns:
+        True only if a user exists and the password matches their hash.
+    """
+    if password_hash is None:
+        verify_password(password, _DUMMY_HASH)
+        return False
+
+    return verify_password(password, password_hash)
+
+
+def set_refresh_cookie(response: Response, token: str) -> None:
+    """Send the refresh token to the browser in its protected cookie.
+
+    Each cookie setting closes off one way to steal or misuse the token:
+
+    - ``HttpOnly``: page scripts can't read it, so an XSS bug can't copy it.
+    - ``SameSite=Strict``: the browser never sends it with requests started
+      by another site, which blocks CSRF.
+    - ``Path=/api/v1/auth``: it is sent only to the auth endpoints, not with
+      every API call.
+    - ``Secure`` in production: it is sent only over HTTPS. It is off
+      elsewhere because local development uses plain HTTP, where a secure
+      cookie would never be sent.
+    - ``Max-Age``: the browser drops it when the token expires,
+      ``REFRESH_TOKEN_EXPIRE_DAYS`` after sign-in.
+
+    Args:
+        response: The response that will carry the ``Set-Cookie`` header.
+        token: The raw refresh token. It goes only into this cookie, never
+            into a response body or a log.
+    """
+    settings = get_settings()
+    max_age = settings.refresh_token_expire_days * 24 * 60 * 60
+
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="strict",
+        path="/api/v1/auth",
+        secure=settings.is_production,
+        max_age=max_age,
+    )
+
+
+def clear_refresh_cookie(response: Response) -> None:
+    """Tell the browser to delete the refresh token cookie.
+
+    Sign-out calls this so the browser stops sending a token that no longer
+    works. The response carries a ``Set-Cookie`` header with an empty value
+    and ``Max-Age=0``, which makes the browser drop the cookie at once.
+
+    A browser only replaces a cookie with the same name and path, so these
+    attributes must match ``set_refresh_cookie`` exactly: with any other
+    path, the browser would treat this as a different cookie and keep the
+    real one. The security flags match too, so the deleting header is held
+    to the same rules as the one that created the cookie. No token is
+    needed: a cookie is deleted by its name, never by its value.
+
+    Args:
+        response: The response that will carry the ``Set-Cookie`` header.
+    """
+    settings = get_settings()
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        httponly=True,
+        samesite="strict",
+        path="/api/v1/auth",
+        secure=settings.is_production,
+    )

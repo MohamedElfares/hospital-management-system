@@ -14,7 +14,9 @@ The full specification — scope, rules, endpoints and decisions — is in
 
 **Phase 1, Milestone 1.2 (Identity and access), in progress.** The application runs,
 serves its health checks, and has a `users` table with hashed passwords and a
-`create-admin` command. Login, permissions and staff administration come next in this
+`create-admin` command. Users can sign in, keep their session through a refresh cookie,
+sign out, and change their password, and a temporary password must be changed before
+anything else. Rate limiting, permissions and staff administration come next in this
 milestone; clinical data arrives in the milestones below.
 
 | Milestone | What it adds | State |
@@ -39,8 +41,13 @@ There is no public deployment yet; the first one happens in Milestone 1.2.
 | `GET /health/live` | The process is running. Touches nothing else, so a sleeping database never makes it fail. |
 | `GET /health/ready` | The application can serve requests: it runs `SELECT 1`. Answers `503` in the standard error format when the database is unreachable. |
 | `GET /docs` | Interactive API documentation, generated from the code. |
+| `POST /api/v1/auth/login` | Sign in with an email and password. Returns a 15-minute access token and sets a 7-day refresh cookie. |
+| `POST /api/v1/auth/refresh` | Exchange the refresh cookie for a new access token and a new cookie. |
+| `POST /api/v1/auth/logout` | Sign out on this device: its refresh token is revoked and the cookie cleared. |
+| `GET /api/v1/auth/me` | The signed-in user's account, including whether a password change is due. |
+| `POST /api/v1/auth/change-password` | Change the password with the current one. Ends the sessions on every other device. |
 
-Behind those three:
+Behind those endpoints:
 
 - **Validated settings.** A wrong database driver, a short JWT secret or an unknown
   timezone stops the application at startup instead of failing later.
@@ -58,6 +65,19 @@ Behind those three:
   empty database. The password is typed twice at a hidden prompt, never passed as an
   argument, and must be 12 to 128 characters. The command refuses when an active Admin
   already exists.
+- **Sessions that can be ended.** The access token is a short-lived JWT the web app will
+  keep in memory only. The refresh token travels only in an `HttpOnly`, `SameSite=Strict`
+  cookie, the database stores only its hash, and it works once: every refresh replaces
+  it, without ever extending the 7 days that began at sign-in. If a replaced token comes
+  back, a copy exists, so every session of that user is ended
+  ([ADR-0004](docs/adr/0004-tokens-and-rate-limiting.md)).
+- **One answer for every failed sign-in.** A wrong email, a wrong password and a
+  deactivated account get the same `401` in roughly the same time, so the API never
+  reveals which accounts exist.
+- **A forced password change.** While an account still has a temporary password, every
+  endpoint except the current-user, refresh, sign-out and change-password routes answers
+  `403 PASSWORD_CHANGE_REQUIRED`. The check is on by default, so a new endpoint can't
+  forget it.
 
 ## The workflow this is being built toward
 
@@ -98,9 +118,10 @@ Cross-cutting infrastructure lives in `app/core/` (settings, errors, logging) an
 `app/db/` (base model, session), and neither imports from the business modules.
 
 The decisions behind this are recorded as ADRs in [`docs/adr/`](docs/adr/):
-[0001 — a modular monolith instead of microservices](docs/adr/0001-modular-monolith.md)
+[0001 — a modular monolith instead of microservices](docs/adr/0001-modular-monolith.md),
+[0002 — synchronous SQLAlchemy instead of async](docs/adr/0002-synchronous-sqlalchemy.md),
 and
-[0002 — synchronous SQLAlchemy instead of async](docs/adr/0002-synchronous-sqlalchemy.md).
+[0004 — short-lived access tokens, rotating refresh tokens in a cookie, and in-memory rate limiting](docs/adr/0004-tokens-and-rate-limiting.md).
 
 Three rules shape most of the design:
 
@@ -120,6 +141,7 @@ Three rules shape most of the design:
 | Web framework | FastAPI 0.141 with Pydantic 2 |
 | Database | PostgreSQL 17, SQLAlchemy 2 with psycopg 3 |
 | Migrations | Alembic |
+| Authentication | PyJWT for HS256 access tokens, pwdlib with Argon2id for passwords |
 | Packaging | uv, with a committed lockfile |
 | Lint and format | Ruff, also run by pre-commit |
 | Tests | pytest with pytest-cov, against a real PostgreSQL database |
@@ -156,7 +178,9 @@ uv run python -m app.cli create-admin --email admin@hospital.test --full-name "A
 uv run fastapi dev app/main.py
 ```
 
-Then open <http://localhost:8000/docs>. Sign-in arrives later in Milestone 1.2.
+Then open <http://localhost:8000/docs>, click **Authorize**, and sign in with the Admin's
+email as the username and the password you chose. The protected endpoints then send the
+access token for you.
 
 `.env.example` lists every setting with a safe development value. Only `JWT_SECRET_KEY`
 has to be replaced; the database URLs match the Compose file.
@@ -165,7 +189,7 @@ has to be replaced; the database URLs match the Compose file.
 
 ```bash
 cd backend
-uv run pytest                 # 79 tests
+uv run pytest                 # 245 tests
 uv run pytest --cov=app       # with coverage; CI requires at least 80%
 ```
 
@@ -190,10 +214,12 @@ backend/
 ├── app/
 │   ├── main.py            # create_app(): logging, error handlers, middleware, routers
 │   ├── cli.py             # maintenance commands: create-admin
-│   ├── api/health.py      # liveness and readiness checks
-│   ├── core/              # config, errors, logging, permissions (roles), security (hashing)
+│   ├── api/               # health checks, the /api/v1 router, the signed-in-user dependencies
+│   ├── core/              # config, errors, logging, permissions (roles), security (passwords, tokens, cookies)
 │   ├── db/                # base.py (declarative base and mixins), session.py
-│   └── modules/users/     # models, schemas, repository, service
+│   └── modules/
+│       ├── auth/          # sign-in, refresh, sign-out, password change: models to router
+│       └── users/         # models, schemas, repository, service
 ├── migrations/            # Alembic
 └── tests/                 # pytest suite and its fixtures
 docs/PROJECT_PLAN.md       # the specification this follows
@@ -215,9 +241,14 @@ docker-compose.yml         # PostgreSQL 17 for development
 
 ## Known limitations
 
-- **No sign-in yet.** Accounts exist, but login, permissions and the audit log arrive
-  later in Milestone 1.2 and in 1.3, so the endpoints that exist today are deliberately
-  public.
+- **No permissions yet.** Users can sign in, but every signed-in user can reach the same
+  endpoints: permission checks and staff administration arrive later in Milestone 1.2,
+  and the audit log in 1.3. Only the first Admin can be created so far.
+- **No rate limiting yet.** Sign-in, and the current-password check when changing a
+  password, can be retried without limit until rate limiting arrives later in Milestone
+  1.2.
+- **An access token outlives sign-out.** It can't be revoked, so it keeps working for up
+  to 15 minutes after a sign-out or a password change; the refresh token stops at once.
 - **Not deployed.** The Docker image and the first Render deployment come with Milestone
   1.2, together with a live demo link and demo accounts.
 - **No frontend.** Phase 2 adds the React application; until then the API documentation at
@@ -230,8 +261,8 @@ This is a learning project, and the split is deliberate.
 
 | Written by | Parts |
 |---|---|
-| **[@MohamedElfares](https://github.com/MohamedElfares)** | All backend code and tests: settings, the database layer and migrations, the error format, the request-ID middleware, the health checks, the application factory, the users model, schema, repository and service, password hashing, the `create-admin` command, and the tests in `backend/tests/` |
-| **Claude Code** | CI/CD and Docker configuration, the documentation (docstrings, import comments, this README, the tutorial pages), code review, and the fixes applied on request during those reviews |
+| **[@MohamedElfares](https://github.com/MohamedElfares)** | All backend code and tests: settings, the database layer and migrations, the error format, the request-ID middleware, the health checks, the application factory, the users model, schema, repository and service, password hashing, the `create-admin` command, the auth module (access and refresh tokens, sign-in, refresh with reuse detection, sign-out, the current user, changing the password, and the forced-password-change gate), and the tests in `backend/tests/` |
+| **Claude Code** | CI/CD and Docker configuration, the documentation (docstrings, import comments, this README, the ADRs written up from the decisions as explained to it, the tutorial pages), and code review |
 
 Every backend change was written by hand and reviewed against the plan; the rules that
 govern that collaboration are in [`CLAUDE.md`](CLAUDE.md).

@@ -15,7 +15,7 @@
 - **No deadline.** The 30-day limit, the cut rule, and the Must/Should/Won't split are gone. Work is organized into five phases without dates.
 - **Nothing cut from your original idea.** The Manager, Customer Service, and Patient roles and the pharmacy branches are back. All former "Should have" items are part of Phase 1.
 - **React frontend,** written by Claude Code and served from the same origin as the API.
-- **Clear ownership (§14).** You own configuration, Alembic migrations, backend business logic, and backend tests. Claude Code owns CI/CD, documentation, and the frontend, and guides you through everything else.
+- **Clear ownership (§14).** You write all backend code: configuration, Alembic migrations, backend business logic, and backend tests. Claude Code owns code review, CI/CD, documentation, and the frontend, and guides you through everything else.
 - **Cookie-based refresh tokens from Phase 1,** because a browser app is now planned.
 - Extra ideas that were never part of your original request, such as billing and labs, are listed as optional (§2).
 
@@ -1040,7 +1040,7 @@ Claude Code uses this list to suggest edge cases before you write tests. For eve
 | Libraries | Run the install commands; ask for details when you want them | Names each library you need with a one-line purpose and its install command; explains each import in one line (what it is and how it helps here); goes deeper only when asked |
 | Configuration: `backend/.env`, `backend/.env.example`, `backend/app/core/config.py` | Write | Guides and reviews; can't edit these files |
 | Migrations: `backend/alembic.ini`, `backend/migrations/` | Write, generate, review, and apply | Guides and reviews; can't edit these files or run `alembic revision` |
-| Backend business logic | Write | Mentors with questions and hints, reviews, and fixes code only when you ask, explaining why |
+| Backend business logic | Write | Mentors with questions and hints, and reviews |
 | Backend tests (pytest) | Write | Explains the pytest features you need, suggests edge cases before you start, and reviews |
 | CI/CD: GitHub Actions, Dependabot, Docker, Compose, Render Blueprint | Understand each step | Writes and maintains; reads failed runs with the GitHub CLI |
 | Documentation: detailed docstrings, one-line import comments, README, OpenAPI text | Review | Writes and keeps it up to date (§17) |

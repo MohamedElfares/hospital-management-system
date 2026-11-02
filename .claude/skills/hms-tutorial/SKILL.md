@@ -126,12 +126,17 @@ importantly, that each code panel matches the repo file it claims to quote, read
 `git show` at the commit the page records.
 
 Pages 01–07 quote commits from the branch of pull request #10, which Milestone 1.1 was
-squash-merged from, so a fresh clone doesn't have them. Fetch them once before validating
-those pages:
+squash-merged from, and pages 11–12 quote a commit from the branch of pull request #38
+(issue #15), so a fresh clone doesn't have them. Fetch them once before validating those
+pages:
 
 ```bash
 git fetch origin refs/pull/10/head:refs/pull/10/head
+git fetch origin refs/pull/38/head:refs/pull/38/head
 ```
+
+When a new page quotes a commit from a branch that will be squash-merged, add its pull
+request here and in `tutorial/README.md` once the pull request has a number.
 
 Fix what it reports, then tell the user what was checked. Open the page in a browser if you
 can; the validator sees structure, not layout.

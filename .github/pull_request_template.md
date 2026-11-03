@@ -17,5 +17,6 @@ Closes #
 - [ ] OpenAPI summary, tag, response model, and error responses documented
 - [ ] Detailed docstrings and one-line import comments added; README and docs updated where behavior changed
 - [ ] Claude Code review completed and findings resolved
+- [ ] `/review new` run clean at the end of the milestone, with findings settled or tracked
 - [ ] I can explain every backend change without notes
 - [ ] Merged and successfully deployed

@@ -12,7 +12,6 @@ Severity: `bug`, `security`, `plan` (deviates from the project plan),
 
 | ID | Severity | File | What | Needs |
 |---|---|---|---|---|
-| R-002 | plan | backend/app/modules/auth/router.py | Route queries the database directly instead of calling the service | My decision: fix now or open an issue |
 
 ## Settled
 
@@ -21,4 +20,3 @@ the conversation.
 
 | ID | Date | File | What | Decision and why |
 |---|---|---|---|---|
-| R-001 | 2026-11-02 | backend/app/core/security.py | `token` is vague where both access and refresh tokens are handled | Renamed to `access_token`. Applied in run 1. |

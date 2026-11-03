@@ -66,6 +66,7 @@
 - Its features work on the live URL with demo accounts: through the API docs in Phase 1, and through the web app from Phase 2 onward.
 - Every new protected endpoint has authorization tests for allowed and denied roles.
 - CI is green. Overall coverage stays at or above 80%, and permission, allocation, dispensing, and transfer code is fully covered.
+- A `/review` run covering the phase's code is complete, with every finding settled or tracked as an issue (§14).
 - The README, ADRs, API docs, and code documentation are up to date, and the release is tagged.
 
 ---
@@ -683,9 +684,11 @@ hospital-management-system/
 │   └── vite.config.ts             # Dev proxy for /api
 ├── docs/
 │   ├── PROJECT_PLAN.md
-│   └── adr/
+│   ├── adr/
+│   └── review/                    # Review trackers: state, findings, naming, log
 ├── .claude/
-│   └── settings.json
+│   ├── settings.json
+│   └── skills/review/SKILL.md     # The /review command
 ├── .github/
 │   ├── workflows/ci.yml
 │   ├── pull_request_template.md
@@ -1045,6 +1048,7 @@ Claude Code uses this list to suggest edge cases before you write tests. For eve
 | CI/CD: GitHub Actions, Dependabot, Docker, Compose, Render Blueprint | Understand each step | Writes and maintains; reads failed runs with the GitHub CLI |
 | Documentation: detailed docstrings, one-line import comments, README, OpenAPI text | Review | Writes and keeps it up to date (§17) |
 | ADRs | Explain each decision in your own words | Writes the ADR from your explanation for you to approve |
+| Code review | Start it, and decide on the findings | Runs `/review` in stages and keeps the trackers |
 | React frontend and its tests | Try it in the browser and report problems | Writes and maintains |
 
 ### How Claude Code explains libraries
@@ -1062,6 +1066,24 @@ Imports:
 ```
 
 Say "details", "explain more", or "why" when you want the long version. When Claude Code documents the code, the same one-line explanation becomes the import's comment (§17).
+
+### Code review
+
+Run `/review <scope>` in Claude Code. It checks the code against this plan, checks that every docstring and comment matches what the code does, and improves names. It changes names and documentation only: bugs, security gaps, and plan deviations are recorded, never fixed in the same pass.
+
+- **Scopes:** `new` reviews only what changed since each file was last reviewed, `all` sweeps everything, and `module <name>` or `file <path>` narrows it.
+- **When:** `/review all` once to set a baseline, then `/review new` at the end of each milestone and before each release.
+- **Stages:** about 400 lines or one module each, with one session per stage, so a run survives usage limits. Each stage ends with passing linters and tests, committed trackers, and a report.
+- **Trackers** in `docs/review/`, committed to Git:
+
+| File | What it carries between runs |
+|---|---|
+| `STATE.md` | Each reviewed file and the commit it was reviewed at, so `new` runs stay small |
+| `FINDINGS.md` | Open items needing your decision, and settled items with the reason, which later runs must not raise again |
+| `NAMING.md` | The vocabulary already settled, so names don't drift between modules |
+| `REVIEW_LOG.md` | What each run covered, its commits, and whether the checks passed |
+
+Findings keep permanent IDs (`R-001`). When the same kind of finding appears three times, Claude Code proposes a `CLAUDE.md` rule to stop it recurring, which is how the review gets cheaper over time.
 
 ### Feature loop
 
@@ -1097,6 +1119,7 @@ Say "details", "explain more", or "why" when you want the long version. When Cla
 - [ ] OpenAPI summary, tag, response model, and error responses documented
 - [ ] Detailed docstrings and one-line import comments added; README and docs updated where behavior changed
 - [ ] Claude Code review completed and findings resolved
+- [ ] `/review new` run clean at the end of the milestone, with findings settled or tracked
 - [ ] You can explain every backend change without notes
 - [ ] Merged and successfully deployed
 
@@ -1105,7 +1128,8 @@ Say "details", "explain more", or "why" when you want the long version. When Cla
 - **Start Claude Code from the repository root.** Project settings load from the folder where a session starts, and the path rules below are resolved from it.
 - **`CLAUDE.md`:** the collaboration rules and conventions, loaded at the start of every session.
 - **`.claude/settings.json`:** deny rules that stop Claude Code from reading `backend/.env`, from editing your configuration and migration files, and from running `alembic revision`; it also asks for your approval before `alembic upgrade` or `downgrade`. Claude Code enforces these rules on its own tools and on recognized shell file commands, but a program it runs (such as a Python script) can still open files, so treat them as a guard rail, not a sandbox.
-- **Plan mode** before each feature: Claude Code reads files and proposes an approach without editing source files.
+- **`.claude/skills/review/SKILL.md`:** the `/review` command. Only you can start it; Claude Code won't run it on its own.
+- **Plan mode** before each feature, and for a review's audit step: Claude Code reads files and proposes an approach without editing source files.
 - **Learning output style (optional):** for extra practice, Claude Code leaves small parts of the code for you to write.
 
 ---
@@ -1263,6 +1287,7 @@ Claude Code writes the documentation, and you review it. Docstrings are detailed
 - **React code** follows the same rules with TSDoc comments. Generated API client files and copied shadcn/ui components are skipped.
 - **Your files:** Claude Code can't edit `config.py` or migrations, so it tells you which docstrings and comments to add there.
 - OpenAPI summaries, descriptions, and examples are documentation too, and are reviewed like code.
+- `docs/review/` records each review run and the decisions it settled (§14). Keep it in Git: it's the reason a later run doesn't re-litigate the same names and findings.
 
 Ruff enforces part of this through `backend/pyproject.toml`, both locally and in CI:
 
@@ -1373,6 +1398,7 @@ The whole plan is roughly 14–20 weeks. Phase 1 on its own is already a strong 
 - **Start of the week:** move the week's issues to Ready, and keep only one milestone in progress.
 - **Every day:** end with passing tests and a pushed branch.
 - **End of the week:** review the board, write any ADRs that are due, update this plan if a decision changed, and take a lighter day.
+- **End of each milestone:** run `/review new` before the release tag.
 
 ### Phase 1: Core hospital API
 
@@ -1480,6 +1506,8 @@ The whole plan is roughly 14–20 weeks. Phase 1 on its own is already a strong 
 | `PROJECT_PLAN.md` | `docs/PROJECT_PLAN.md` | This plan |
 | `CLAUDE.md` | `CLAUDE.md` | Rules Claude Code loads in every session |
 | `settings.json` | `.claude/settings.json` | Blocks Claude Code from your secrets, configuration, and migration files |
+| `SKILL.md` | `.claude/skills/review/SKILL.md` | The `/review` command |
+| Review trackers | `docs/review/` | State, findings, naming, and run log, with a README explaining each |
 
 Commit these files in Milestone 1.1. Folders whose names start with a dot, such as `.claude`, are hidden by default in macOS and Linux file browsers.
 

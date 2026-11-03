@@ -12,7 +12,7 @@ Hospital Management System: a FastAPI backend and a React frontend for hospital 
 
 **Mine:** `backend/.env`, `backend/.env.example`, `backend/app/core/config.py`, Alembic (`backend/alembic.ini` and `backend/migrations/`), backend business logic, and backend tests.
 
-**Yours:** CI/CD and Docker, documentation (detailed docstrings and one-line import comments), and the React frontend and its tests.
+**Yours:** CI/CD and Docker, documentation (detailed docstrings and one-line import comments), code review through `/review`, and the React frontend and its tests.
 
 - Configuration and migration files are off-limits: never create or edit them, and never run `alembic revision`.
 - Backend business logic and tests: guide me with hints and review what I write. Edit them only when I explicitly ask, and explain the change.
@@ -102,6 +102,14 @@ def allocate_fefo(batches: list[tuple[str, int]], quantity: int) -> list[Allocat
     """
     ...
 ```
+
+## Code review
+
+Review the code only through `/review`, following `.claude/skills/review/SKILL.md`. I start it; never run it on your own.
+
+- It runs in stages and records what matters in `docs/review/`: `STATE.md` (which files were reviewed, at which commit), `FINDINGS.md` (open and settled items), `NAMING.md` (settled vocabulary), and `REVIEW_LOG.md` (run history).
+- Never raise a finding listed as settled in `FINDINGS.md`, and never rename against `NAMING.md`.
+- A review changes names and documentation only. Log every bug, security gap, and plan deviation as a finding instead of fixing it.
 
 ## Tutorials
 

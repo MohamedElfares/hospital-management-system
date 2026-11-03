@@ -40,7 +40,7 @@ purpose, so each change is taught in the stage that makes it.
 To keep those pages verifiable, every page records the commit it was written from in
 `<meta name="hms-source-commit">`, and the validator compares its code panels with that
 commit rather than with today's files. Pages 01–07 quote commits from the Milestone 1.1
-branch (pull request #10), and pages 11–12 quote a commit from the sign-in branch (pull
+branch (pull request #10), and pages 11–15 quote commits from the sign-in branch (pull
 request #38). Both branches are squash-merged, so a fresh clone doesn't include those
 commits; fetch them once before validating those pages:
 

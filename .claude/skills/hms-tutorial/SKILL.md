@@ -126,7 +126,7 @@ importantly, that each code panel matches the repo file it claims to quote, read
 `git show` at the commit the page records.
 
 Pages 01–07 quote commits from the branch of pull request #10, which Milestone 1.1 was
-squash-merged from, and pages 11–12 quote a commit from the branch of pull request #38
+squash-merged from, and pages 11–15 quote commits from the branch of pull request #38
 (issue #15), so a fresh clone doesn't have them. Fetch them once before validating those
 pages:
 

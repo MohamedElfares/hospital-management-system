@@ -1,9 +1,10 @@
 """Database queries for user accounts.
 
 The repository is the only layer that queries the ``users`` table. It never
-commits: the users service owns the transaction, calls these functions, and
-commits once per use case. Other modules must go through the users service,
-never through this module.
+commits: the service running the use case owns the transaction and commits
+once, even when another module's service, such as ``auth``'s sign-in, is
+the one running it. Other modules reach these queries only through the
+users service, never by importing this module.
 """
 
 # The UUID type of user ids; annotates the primary key being looked up.
@@ -18,7 +19,7 @@ from sqlalchemy import select
 # The database session the service passes in.
 from sqlalchemy.orm import Session
 
-# Role values used in query conditions.
+# The role enum; the active-Admin check filters on Role.ADMIN.
 from app.core.permissions import Role
 
 # The users table's ORM model.
@@ -30,8 +31,9 @@ def get_user_by_email(session: Session, email: str) -> User | None:
 
     Emails are stored lowercase, and this function doesn't change the value
     it receives, so callers must pass an already normalized email, as
-    ``UserCreate`` produces. The unique constraint guarantees at most one
-    match.
+    ``UserCreate`` and the users service's ``get_user_by_email`` produce.
+    The unique constraint guarantees at most one match. Inactive users are
+    returned too; filtering is the caller's decision.
 
     Args:
         session: The open database session.
@@ -69,7 +71,9 @@ def exists_active_admin(session: Session) -> bool:
     ``create-admin`` uses this to allow a new Admin only when nobody can
     sign in as one: on a fresh database, or after every Admin has been
     deactivated. Inactive Admins are ignored for that reason. ``EXISTS``
-    lets PostgreSQL stop at the first match instead of loading rows.
+    lets PostgreSQL stop at the first match instead of loading rows, and
+    the composite index on ``role`` and ``is_active`` covers both
+    conditions.
 
     Args:
         session: The open database session.
@@ -82,11 +86,13 @@ def exists_active_admin(session: Session) -> bool:
 
 
 def create_user(session: Session, user: User) -> None:
-    """Register a new user with the session.
+    """Add a new user to the session, to be inserted at the next flush.
 
-    Nothing is written yet: the row is inserted when the service flushes or
-    commits, which is where constraint violations such as a duplicate email
-    surface.
+    Nothing is written yet: the ``INSERT`` runs at the session's next flush,
+    whether an explicit ``flush()``, the autoflush before its next query, or
+    the commit. That is where a constraint violation such as a duplicate
+    email surfaces, so the users service flushes right away and turns a
+    duplicate into a ``ConflictError``.
 
     Args:
         session: The open database session.

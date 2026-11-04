@@ -1,5 +1,6 @@
 import uuid
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
@@ -54,3 +55,38 @@ def test_client_request_id_is_echoed_back(client: TestClient) -> None:
     )
 
     assert response.headers["x-request-id"] == "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
+
+
+def test_unexpected_error_returns_a_generic_500_with_the_request_id(app: FastAPI) -> None:
+    """A crash answers with the fixed 500 body and the request ID, never its text.
+
+    The route raises an exception whose message holds a fake password, the
+    way a real bug's message can hold SQL, file paths, or patient data
+    (plan §12). The client gets only the generic message, the code
+    ``INTERNAL_ERROR``, and the request ID it sent, which is what finds the
+    traceback in the log. Starlette re-raises the exception once the 500 is
+    sent, so this client is built not to raise it again inside the test.
+    """
+
+    def crash() -> None:
+        """Fail the way an unhandled bug does, with a secret in the message."""
+        raise RuntimeError("password=Leaked-Secret-1")
+
+    app.add_api_route("/api/v1/test/crash", crash, methods=["GET"])
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/v1/test/crash",
+        headers={"X-Request-ID": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "INTERNAL_ERROR",
+            "message": "An unexpected error occurred.",
+            "details": [],
+            "request_id": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc",
+        }
+    }
+    assert "Leaked-Secret-1" not in response.text

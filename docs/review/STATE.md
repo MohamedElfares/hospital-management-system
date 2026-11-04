@@ -17,6 +17,10 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/db/__init__.py` | `56f211b` | 2026-11-04 | 1 |
 | `backend/app/db/base.py` | `56f211b` | 2026-11-04 | 1 |
 | `backend/app/db/session.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/app/modules/auth/__init__.py` | `b7d1692` | 2026-11-05 | 1 |
+| `backend/app/modules/auth/models.py` | `b7d1692` | 2026-11-05 | 1 |
+| `backend/app/modules/auth/repository.py` | `b7d1692` | 2026-11-05 | 1 |
+| `backend/app/modules/auth/schemas.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/users/__init__.py` | `8cee6f1` | 2026-11-04 | 1 |
 | `backend/app/modules/users/models.py` | `8cee6f1` | 2026-11-04 | 1 |
 | `backend/app/modules/users/repository.py` | `8cee6f1` | 2026-11-04 | 1 |

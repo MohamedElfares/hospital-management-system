@@ -20,6 +20,8 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/modules/users/__init__.py` | `8cee6f1` | 2026-11-04 | 1 |
 | `backend/app/modules/users/models.py` | `8cee6f1` | 2026-11-04 | 1 |
 | `backend/app/modules/users/repository.py` | `8cee6f1` | 2026-11-04 | 1 |
+| `backend/app/modules/users/schemas.py` | `75ec621` | 2026-11-04 | 1 |
+| `backend/app/modules/users/service.py` | `75ec621` | 2026-11-04 | 1 |
 | `backend/migrations/env.py` | `2a1b18b` | 2026-11-04 | 1 |
 | `backend/migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` | `2a1b18b` | 2026-11-04 | 1 |
 | `backend/migrations/versions/feee06ced45e_create_users_table.py` | `2a1b18b` | 2026-11-04 | 1 |

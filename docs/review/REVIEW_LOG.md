@@ -45,6 +45,12 @@ closes when the last stage is done, so an interrupted run is obvious.
   found. Its `STATE.md` row now points at `7d080c0`, so the next
   `/review new` skips it unless it changes again; `logging.py` is still
   due. No finding is open.
+- **Carried to stage 7 (from stage 6):** `PasswordChange` in
+  `auth/schemas.py` says the current password's maximum caps the hashing
+  work. Measured with `hash_password`, Argon2's time barely grows with
+  length (about 51 ms for 128 characters and 53 ms for a million), so
+  stage 7 should correct that sentence, as stage 6 corrected the same
+  claim in the `PASSWORD_MAX_LENGTH` comment.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -55,7 +61,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [x] 3. Core security and permissions — `app/core/security.py`, `app/core/permissions.py` (377 lines) — refactor: `4a04d9d` (`_password_hash` → `_password_hasher`; `check_password` → `verify_login_password`, which also reaches `auth/service.py`, `tests/test_security.py`, and `tests/test_auth_service.py`); docs: `fe8906c`; Ruff clean, 281 passed; no router or schema touched, so no OpenAPI diff; findings R-013, R-014
 - [x] 4. Database and migrations — `app/db/__init__.py`, `app/db/base.py`, `app/db/session.py`, `migrations/env.py`, `migrations/versions/feee06ced45e_create_users_table.py`, `migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` (476 lines; migrations audit only) — refactor: none, no rename needed (the migrations' names are Alembic's own); docs: `56f211b`; Ruff clean, 281 passed; no router or schema touched, so no OpenAPI diff; every docstring claim checked on scratch databases; findings R-015 and R-016, both fixed before the stage closed (`77bfb8a`, `2a1b18b`, `3cad085`)
 - [x] 5. users: models and repository — `app/modules/users/__init__.py`, `models.py`, `repository.py` (251 lines) — refactor: `217dbac` (`get_by_email` → `get_user_by_email`, `get_by_id` → `get_user_by_id`, `active_admin_exists` → `exists_active_admin`, and `add` → `create_user`, per the repository shape rule; it reaches `users/service.py`, `tests/test_cli.py`, `tests/test_user_repository.py`, and `tests/test_user_service.py`, including a `monkeypatch` target string; `NAMING.md` gained the `create_<thing>` row); docs: `8cee6f1`; Ruff clean, 281 passed; no router or schema touched, so no OpenAPI diff; claims checked with `EXPLAIN` and SQL probes on `hms_test`; no findings
-- [ ] 6. users: schemas and service — `app/modules/users/schemas.py`, `service.py` (299 lines)
+- [x] 6. users: schemas and service — `app/modules/users/schemas.py`, `service.py` (299 lines) — refactor: none, no rename needed (`data` stays, your choice of my recommendation, now a `NAMING.md` row); docs: `75ec621`; Ruff clean, 281 passed; OpenAPI exported before and after: the only difference is `UserRead`'s description, which is its docstring; claims checked with probes on `hms_test` and the installed Pydantic, email-validator, and SQLAlchemy; findings R-018 to R-020
 - [ ] 7. auth: models, repository, and schemas — `app/modules/auth/__init__.py`, `models.py`, `repository.py`, `schemas.py` (274 lines)
 - [ ] 8. auth: service — `app/modules/auth/service.py` (546 lines)
 - [ ] 9. auth: router and request dependencies — `app/modules/auth/router.py`, `app/api/deps.py` (428 lines)

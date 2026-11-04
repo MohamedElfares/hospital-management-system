@@ -26,6 +26,14 @@ closes when the last stage is done, so an interrupted run is obvious.
   accept or reject: "Every guard that keeps secrets or personal data out of
   responses and logs, or stops startup on a bad setting, gets a test that
   fails when the guard is removed."
+- **Changed after planning (2026-11-04):** the fixes for R-003 and R-009
+  to R-011 grew `tests/test_errors.py` and `tests/test_logging.py`, so
+  stage 12 is now about 506 lines; split it when you reach it. Stage 9's
+  `app/api/deps.py` gained the user-ID line. `app/core/logging.py` has
+  changed since stage 2 reviewed it at `8522543`, so the next
+  `/review new` takes it again, as it will `config.py` once your R-004
+  and R-005 commit lands. `tests/test_config.py` (R-012) gets its own
+  stage when it is committed.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

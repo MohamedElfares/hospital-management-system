@@ -122,11 +122,13 @@ def revoke_all_refresh_tokens_for_user(
     The caller must already hold the user's row lock, from the users
     service's ``get_user_by_id_for_update``, because the ``UPDATE`` sees
     only the tokens committed when it starts. Every refresh takes that lock
-    before it locks a token, so with it held no refresh of this user is
-    halfway done: one that came first has committed, and its new token is
-    revoked here too, and one that comes later waits and then finds its own
-    token revoked. Without the lock, a refresh caught between its own lock
-    and its commit would issue a token this statement never sees.
+    before it locks a token, and every sign-in before it issues one, so with
+    it held no refresh or sign-in of this user is halfway done. One that
+    came first has committed, and its new token is revoked here too. One
+    that comes later waits: a refresh then finds its own token revoked, and
+    a sign-in after a password change finds the password changed. Without
+    the lock, a request caught between its checks and its commit would
+    issue a token this statement never sees.
 
     The statement runs in the database, and SQLAlchemy then updates only
     the attributes this session has loaded: a token read by a query shows

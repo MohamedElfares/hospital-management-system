@@ -214,10 +214,11 @@ def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
 def get_user_by_id_for_update(session: Session, user_id: uuid.UUID) -> User | None:
     """Find a user by ID and lock the account's row until the transaction ends.
 
-    Auth calls this before it rotates a refresh token or revokes all of a
-    user's tokens, so that two such changes to one user's sessions, such as
-    a refresh on one device and a password change on another, run one after
-    the other instead of overlapping. The row is read as the database holds it now,
+    Auth calls this before it issues, rotates, or revokes a user's refresh
+    tokens: at sign-in once the password has passed, at refresh, and at a
+    password change. Two such changes to one user's sessions, such as a
+    refresh on one device and a password change on another, then run one
+    after the other instead of overlapping. The row is read as the database holds it now,
     even if this session loaded the user earlier, so the caller sees a
     change that another request has just committed, such as a new password
     hash.

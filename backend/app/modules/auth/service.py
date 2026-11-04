@@ -10,9 +10,9 @@ that the router turns into a response and a cookie.
 Refresh rotates the session: each refresh token works once, and using it
 replaces it with a new one that keeps the original expiry. A token that is
 presented again after being replaced means a copy exists, so every session
-of that user is ended. Refresh and a password change both lock the user's
-row first, so a refresh never overlaps with a revocation of all of that
-user's tokens.
+of that user is ended. Sign-in, refresh, and a password change lock the
+user's row before they issue or revoke tokens, so no session is ever
+being started while all of that user's tokens are revoked.
 
 Signing out revokes only the refresh token of the device signing out, and
 never fails, so signing out twice is harmless.
@@ -106,7 +106,7 @@ from app.modules.users.service import get_user_by_email
 # Users service lookup by id; loads the account an access token names.
 from app.modules.users.service import get_user_by_id
 
-# Users service lookup that locks the account's row; puts refreshes and password changes in turn.
+# Users service lookup that locks the account's row, so session changes take turns.
 from app.modules.users.service import get_user_by_id_for_update
 
 # One message for every failure, so no reply hints at which check failed.
@@ -215,6 +215,18 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
     change their password can still sign in; the API blocks their other
     requests until they do. A failed sign-in writes nothing.
 
+    Once the password has passed, the account's row is locked, as refresh
+    and a password change lock it, and read again before the session is
+    issued. If the account changed during the check, because its password
+    was changed or it was deactivated or deleted, the sign-in fails like any
+    other, so the old password can't start a session that the password
+    change should have ended. A password change that comes later waits for
+    the lock and then revokes this session with the rest. The lock is taken
+    only after the check: a failed sign-in never takes it, so two failed
+    attempts on an existing account don't wait for each other, and that
+    can't reveal which emails exist, since attempts on an unknown email
+    never wait either.
+
     Args:
         session: The open database session. This function commits it on
             success.
@@ -227,8 +239,9 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
 
     Raises:
         AuthenticationError: If the email matches no user, the password is
-            wrong, or the account is deactivated. The message is the same
-            in every case.
+            wrong, or the account is deactivated, or if the account changed
+            while the password was checked. The message is the same in every
+            case.
     """
     user = get_user_by_email(session, email)
 
@@ -238,6 +251,15 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
     # verify_login_password already rejected a missing user; testing for None again
     # lets the type checker know that user is set from here on.
     if user is None or not user.is_active:
+        raise AuthenticationError(_INVALID_CREDENTIALS)
+
+    # Lock and reread the account only now, so failed sign-ins never wait for
+    # each other. The hash the password passed against must still be the
+    # stored one: if it changed, the password did.
+    verified_password_hash = user.password_hash
+    user = get_user_by_id_for_update(session, user.id)
+
+    if user is None or user.password_hash != verified_password_hash or not user.is_active:
         raise AuthenticationError(_INVALID_CREDENTIALS)
 
     # One timestamp for both writes, so the token's expiry and the recorded
@@ -268,9 +290,10 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
 
     Two row locks keep concurrent requests apart, always taken in the same
     order: the user's row, then the token's. A password change locks the
-    user's row first too, so no revocation of all the user's tokens can run
-    while this refresh is between its locks and its commit, and the token
-    it issues can't escape one. Two refreshes with the same cookie run one after the other too,
+    user's row first too, as does a sign-in once its password has passed,
+    so no revocation of all the user's tokens can run while this refresh is
+    between its locks and its commit, and the token it issues can't escape
+    one. Two refreshes with the same cookie run one after the other too,
     and the second finds the token rotated and raises the alarm, which
     ADR-0004 accepts. The token's own lock does the same for a sign-out of
     that token. Taking them in the other order would let the alarm and a
@@ -556,7 +579,7 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     current_password = data.current_password.get_secret_value()
     new_password = data.new_password.get_secret_value()
 
-    # The same lock refresh takes first, so the two run in turn (see refresh).
+    # The same lock refresh and sign-in take, so they run in turn (see refresh).
     # It reloads user in place, because user belongs to this session.
     get_user_by_id_for_update(session, user.id)
 

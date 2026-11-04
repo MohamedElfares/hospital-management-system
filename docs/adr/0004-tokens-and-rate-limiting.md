@@ -57,6 +57,12 @@ their password at least once a week, which suits a system holding sensitive data
   alarm or a password change ran kept the new token it issued. The two locks are always
   taken in that order: the other order lets two requests wait for each other until
   PostgreSQL aborts one of them.
+- *Added 2026-11-05 (review run 1, R-025):* a sign-in takes the same user lock once its
+  password has passed, and is refused if the stored hash changed during the check, so a
+  sign-in with the old password can't outlive a password change. It doesn't lock before
+  the check: failed sign-ins of an existing account would then wait for each other, while
+  those for an unknown email never wait, and the difference would reveal which accounts
+  exist.
 
 **Why:** when a used token comes back, the server can't tell the real user from a thief,
 so ending every session is the only safe answer: the real user signs in again, and the

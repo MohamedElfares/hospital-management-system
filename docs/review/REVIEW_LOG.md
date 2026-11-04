@@ -65,6 +65,24 @@ closes when the last stage is done, so an interrupted run is obvious.
   run like CI in a clean worktree: 287, 288, then 296 tests. R-021, the
   `create-admin` example's `.test` address, found while fixing R-018, was
   fixed in `7e2eaed`. No finding is open.
+- **Stage 7's findings fixed (2026-11-05):** R-023 (`18f8a67`), R-022
+  (`9f603dd`), and R-024 (`c5f30ea`), written at your request, one commit
+  each, in dependency order: the lock tests first, pinning today's
+  behaviour, then the fix with tests that fail before it. `f1c3525` gave
+  the race tests a database of their own, after a run of mine failed
+  while another test run used the shared test database at the same
+  moment, and `e689774` covers a user deleted while refresh waits. They
+  change `auth/repository.py` after stage 7 reviewed it at `b7d1692`,
+  `users/repository.py` after stage 5 (`8cee6f1`), and
+  `users/service.py` after stage 6 (`75ec621`), so the next
+  `/review new` takes those files again. `auth/service.py` changed before
+  stage 8 reaches it, its `repository` import comment included. New tests
+  landed in `test_auth_repository.py` and `test_user_repository.py`
+  (stage 16) and `test_user_service.py` (stage 15), and the new
+  `tests/test_auth_concurrency.py` is stage 25. Each commit passes Ruff
+  and the suite on its own, run like CI in a clean worktree: 298, 311,
+  311, 311, then 312 tests, with coverage at 99.56%. R-025, a sign-in
+  racing a password change, found while fixing R-022, is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -97,3 +115,4 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [ ] 22. auth API tests, part 2 — `tests/test_auth_api.py`: `GET /auth/me`, `POST /auth/refresh`, and `POST /auth/logout` tests (about 375 lines)
 - [ ] 23. auth API tests, part 3 — `tests/test_auth_api.py`: `POST /auth/change-password` and gated-route tests (about 340 lines)
 - [ ] 24. Settings tests — `tests/test_config.py` (327 lines), added 2026-11-04 for R-012
+- [ ] 25. auth concurrency tests — `tests/test_auth_concurrency.py` (722 lines), added 2026-11-05 for R-022 and R-023; split it in two when reached: the fixtures and helpers, then the tests

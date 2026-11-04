@@ -30,17 +30,17 @@ closes when the last stage is done, so an interrupted run is obvious.
   to R-011 grew `tests/test_errors.py` and `tests/test_logging.py`, so
   stage 12 is now about 506 lines; split it when you reach it. Stage 9's
   `app/api/deps.py` gained the user-ID line. `app/core/logging.py` has
-  changed since stage 2 reviewed it at `8522543`, so the next
+  changed since stage 2 reviewed it at `2127a70`, so the next
   `/review new` takes it again, as it will `config.py`, changed in
-  `dd7e444` for R-004 and R-005. `tests/test_config.py` (R-012,
-  `1535a88`) is stage 24.
+  `473f2af` for R-004 and R-005. `tests/test_config.py` (R-012,
+  `fad3630`) is stage 24.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
 ### Application code
 
-- [x] 1. Core errors — `app/core/__init__.py`, `app/core/errors.py` (420 lines) — refactor: none, no rename needed; docs: `0b901d8`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-001 to R-003
-- [x] 2. Core config and logging — `app/core/config.py` (audit only), `app/core/logging.py` (384 lines) — refactor: none in `logging.py`; the two `config.py` renames (R-002's `err`, and `item`) are your edits, in R-006; docs: `8522543`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-004 to R-012
+- [x] 1. Core errors — `app/core/__init__.py`, `app/core/errors.py` (420 lines) — refactor: none, no rename needed; docs: `d5dc7cd`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-001 to R-003
+- [x] 2. Core config and logging — `app/core/config.py` (audit only), `app/core/logging.py` (384 lines) — refactor: none in `logging.py`; the two `config.py` renames (R-002's `err`, and `item`) are your edits, in R-006; docs: `2127a70`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-004 to R-012
 - [ ] 3. Core security and permissions — `app/core/security.py`, `app/core/permissions.py` (377 lines)
 - [ ] 4. Database and migrations — `app/db/__init__.py`, `app/db/base.py`, `app/db/session.py`, `migrations/env.py`, `migrations/versions/feee06ced45e_create_users_table.py`, `migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` (476 lines; migrations audit only)
 - [ ] 5. users: models and repository — `app/modules/users/__init__.py`, `models.py`, `repository.py` (251 lines)

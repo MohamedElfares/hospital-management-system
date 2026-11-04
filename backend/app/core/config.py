@@ -28,6 +28,9 @@ from pydantic import Field
 # String type that hides its value when printed or logged; used for the JWT secret.
 from pydantic import SecretStr
 
+# Provides validation context, including the name of the field currently being validated.
+from pydantic import ValidationInfo
+
 # Decorator that registers custom checks and conversions for individual fields.
 from pydantic import field_validator
 
@@ -78,11 +81,12 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="forbid",
+        hide_input_in_errors=True,
     )
 
     environment: Literal["local", "test", "production"] = "local"
-    database_url: str
-    test_database_url: str | None = None
+    database_url: Annotated[str, Field(repr=False)]
+    test_database_url: Annotated[str | None, Field(repr=False)] = None
     jwt_secret_key: SecretStr
     access_token_expire_minutes: Annotated[int, Field(gt=0)] = 15
     refresh_token_expire_days: Annotated[int, Field(gt=0)] = 7
@@ -93,7 +97,7 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", "test_database_url")
     @classmethod
-    def _check_database_url(cls, value: str | None) -> str | None:
+    def _check_database_url(cls, value: str | None, info: ValidationInfo) -> str | None:
         """Require the PostgreSQL psycopg 3 driver in the database URL.
 
         The whole design depends on PostgreSQL features (partial unique
@@ -106,6 +110,9 @@ class Settings(BaseSettings):
         Args:
             value: The raw ``DATABASE_URL`` or ``TEST_DATABASE_URL`` value,
                 or ``None`` when no test database is configured.
+            info: Pydantic's validation context. ``info.field_name`` says
+                which of the two URLs is being checked, so the message can
+                name it.
 
         Returns:
             The unchanged URL.
@@ -118,7 +125,8 @@ class Settings(BaseSettings):
         if value is None:
             return value
         if not value.startswith("postgresql+psycopg://"):
-            raise ValueError("DATABASE_URL must start with postgresql+psycopg://")
+            field_name = info.field_name.upper()
+            raise ValueError(f"{field_name} must start with postgresql+psycopg://")
         return value
 
     @field_validator("jwt_secret_key")

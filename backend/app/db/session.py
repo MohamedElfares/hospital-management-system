@@ -26,16 +26,19 @@ settings = get_settings()
 
 # pool_pre_ping replaces connections that Neon dropped while its compute was
 # suspended. The pool stays small because the app runs one worker and Neon's
-# free plan limits connections. Forcing the session timezone to UTC makes
-# PostgreSQL return timestamps in UTC, as the API contract requires. The
-# connect timeout makes a request, and the readiness check, fail within
-# seconds when the database is unreachable, instead of waiting for the
-# operating system's TCP timeout.
+# free plan limits connections. hide_parameters keeps a statement's values
+# out of database error messages: the 500 handler logs those messages, and
+# the values can be emails or password hashes (plan §12). Forcing the
+# session timezone to UTC makes PostgreSQL return timestamps in UTC, as the
+# API contract requires. The connect timeout makes a request, and the
+# readiness check, fail within seconds when the database is unreachable,
+# instead of waiting for the operating system's TCP timeout.
 engine = create_engine(
     url=settings.database_url,
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=5,
+    hide_parameters=True,
     connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
 )
 

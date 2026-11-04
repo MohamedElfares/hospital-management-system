@@ -2,10 +2,25 @@ from sqlalchemy import Engine
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.db.session import engine
+
 
 def test_engine_points_at_the_test_database(test_engine: Engine) -> None:
     """The suite connects to the test database, never the development one."""
     assert test_engine.url.database == "hms_test"
+
+
+def test_database_errors_leave_out_the_statement_values() -> None:
+    """The application's engine keeps a statement's values out of its errors.
+
+    SQLAlchemy writes the bound values into the text of every database
+    error unless the engine sets ``hide_parameters``, and the 500 handler
+    logs that text. Without the flag, a failed insert into ``users`` logs
+    the email and the password hash. The flag is read from the engine
+    itself, because a real failing statement would need the development
+    database, which tests never touch.
+    """
+    assert engine.hide_parameters is True
 
 
 def test_a_row_written_in_one_test_is_not_visible_in_the_next(db_session: Session) -> None:

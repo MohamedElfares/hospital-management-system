@@ -14,3 +14,9 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/core/logging.py` | `2127a70` | 2026-11-04 | 1 |
 | `backend/app/core/permissions.py` | `fe8906c` | 2026-11-04 | 1 |
 | `backend/app/core/security.py` | `fe8906c` | 2026-11-04 | 1 |
+| `backend/app/db/__init__.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/app/db/base.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/app/db/session.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/migrations/env.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/migrations/versions/feee06ced45e_create_users_table.py` | `56f211b` | 2026-11-04 | 1 |

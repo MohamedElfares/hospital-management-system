@@ -1,8 +1,12 @@
 """Alembic migration environment for the HMS database.
 
-Alembic runs this file for every migration command. It takes the database
-URL from the application settings, so no credentials live in alembic.ini,
-and it compares the database with Base.metadata so that autogenerate and
+Alembic runs this file for every command that works on the database:
+``upgrade``, ``downgrade``, ``current``, ``check``, and
+``revision --autogenerate`` connect to it, and ``upgrade --sql`` prints the
+SQL instead. Commands that only read the migration files, such as
+``history`` and ``heads``, don't run it. It takes the database URL from the
+application settings, so no credentials live in alembic.ini, and it
+compares the database with Base.metadata so that autogenerate and
 ``alembic check`` see every model.
 """
 
@@ -37,7 +41,8 @@ settings = get_settings()
 # configparser treats "%" as special, so escape it in case the password contains one.
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
-# Set up loggers from alembic.ini.
+# alembic.ini's [loggers] sections make Alembic print each migration it runs;
+# a Config built in Python has no file to read.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -47,16 +52,12 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
+    """Print the migration SQL instead of running it.
 
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
+    ``alembic upgrade head --sql`` uses this mode. Alembic needs only the
+    URL, to choose the SQL dialect, so no connection is opened, and
+    ``literal_binds`` writes values into the SQL instead of placeholders.
+    Use it to review a migration's SQL before applying it to production.
     """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -71,11 +72,12 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    """Connect to the database and run the command against it.
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
+    ``NullPool`` closes the connection when the command ends instead of
+    keeping it in a pool, because the process exits right after. On
+    PostgreSQL all the migrations one command runs share a transaction, so
+    if one fails, none of them is applied.
     """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
@@ -87,7 +89,17 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # Alembic skips server defaults unless asked, so a changed default,
+            # such as must_change_password's, would pass alembic check.
+            compare_server_default=True,
+            # Alembic's default plugins skip CHECK constraints. This opt-in one
+            # compares them by name: it catches one added or removed without a
+            # migration, but not a changed rule, such as a new enum value.
+            autogenerate_plugins=["alembic.autogenerate.*", "alembic.ext.checkconstraint_byname"],
+        )
 
         with context.begin_transaction():
             context.run_migrations()

@@ -31,9 +31,9 @@ closes when the last stage is done, so an interrupted run is obvious.
   stage 12 is now about 506 lines; split it when you reach it. Stage 9's
   `app/api/deps.py` gained the user-ID line. `app/core/logging.py` has
   changed since stage 2 reviewed it at `8522543`, so the next
-  `/review new` takes it again, as it will `config.py` once your R-004
-  and R-005 commit lands. `tests/test_config.py` (R-012) gets its own
-  stage when it is committed.
+  `/review new` takes it again, as it will `config.py`, changed in
+  `dd7e444` for R-004 and R-005. `tests/test_config.py` (R-012,
+  `1535a88`) is stage 24.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -65,3 +65,4 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [ ] 21. auth API tests, part 1 — `tests/test_auth_api.py`: constants, fixtures, helpers, and `POST /auth/login` tests (about 265 lines)
 - [ ] 22. auth API tests, part 2 — `tests/test_auth_api.py`: `GET /auth/me`, `POST /auth/refresh`, and `POST /auth/logout` tests (about 375 lines)
 - [ ] 23. auth API tests, part 3 — `tests/test_auth_api.py`: `POST /auth/change-password` and gated-route tests (about 340 lines)
+- [ ] 24. Settings tests — `tests/test_config.py` (327 lines), added 2026-11-04 for R-012

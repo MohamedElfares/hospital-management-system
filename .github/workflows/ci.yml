@@ -93,8 +93,9 @@ jobs:
         run: uv run alembic upgrade head
 
       # Fails when the models and the migrations disagree, which catches a
-      # migration someone forgot to generate. CHECK constraints, such as an
-      # enum's allowed values, aren't compared (plan §15).
+      # migration someone forgot to generate. CHECK constraints are compared
+      # by name only, so a changed rule, such as a new enum value, isn't
+      # caught (plan §15).
       - name: Check for missing migrations
         run: uv run alembic check
 

@@ -12,6 +12,7 @@ whenever a review settles a term; never rename against this file.
 | `exc` | `err`, `e`, `ex`, `error` | A caught or handled exception. It is Python's and Starlette's own name for one, and it leaves `error` free for error bodies and Pydantic's error dicts (R-002) |
 | `login` in code names: `login`, `last_login_at`, `verify_login_password` | `sign_in`, `signin`, `log_in` | The route is `/auth/login` and the use case is `login`, so names follow them. Docstrings, comments, and messages keep the plan's prose words "sign in" and "sign-in" (run 1, stage 3) |
 | `hasher` for what computes a hash, such as `_password_hasher` | `hash` for the hasher | A `*_hash` name holds a stored value, like `users.password_hash` and `refresh_tokens.token_hash`. The hasher used to be `_password_hash`, so `_password_hash.verify(password, password_hash)` read as two hashes (run 1, stage 3) |
+| `create_<thing>` for a repository function that stores a new row, such as `create_user` | `add` | The repository shape rule lists `create_`, and the name says what is stored. The function only adds the object to the session, and the `INSERT` runs at the next flush, as its docstring says. A service function can share the name, such as the users service's `create_user`, which names the use case; callers write `repository.create_user`, so the two never mix (run 1, stage 5) |
 
 ## Shape rules
 

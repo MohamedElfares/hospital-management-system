@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from app import cli
 from app.core.permissions import Role
-from app.modules.users.repository import get_by_email
+from app.modules.users.repository import get_user_by_email
 
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_FULL_NAME = "super user"
@@ -33,7 +33,7 @@ def test_create_admin_creates_an_admin_and_prints_its_email(
     assert result.exit_code == 0
     assert ADMIN_EMAIL in result.output
 
-    admin = get_by_email(db_session, ADMIN_EMAIL)
+    admin = get_user_by_email(db_session, ADMIN_EMAIL)
 
     assert admin is not None
     assert admin.role is Role.ADMIN
@@ -59,7 +59,7 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     assert result.exit_code == 1
     assert "password: must be 12 to 128 characters." in result.output
     assert "short-pw-11" not in result.output
-    assert get_by_email(db_session, ADMIN_EMAIL) is None
+    assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
 
 def test_create_admin_refuses_when_an_active_admin_exists(
@@ -99,7 +99,7 @@ def test_create_admin_prompts_for_a_missing_email_and_name(
     assert result.exit_code == 0
     assert ADMIN_EMAIL in result.output
 
-    admin = get_by_email(db_session, ADMIN_EMAIL)
+    admin = get_user_by_email(db_session, ADMIN_EMAIL)
 
     assert admin is not None
     assert admin.role is Role.ADMIN

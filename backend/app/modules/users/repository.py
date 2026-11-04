@@ -25,7 +25,7 @@ from app.core.permissions import Role
 from app.modules.users.models import User
 
 
-def get_by_email(session: Session, email: str) -> User | None:
+def get_user_by_email(session: Session, email: str) -> User | None:
     """Find the user with an exact email address.
 
     Emails are stored lowercase, and this function doesn't change the value
@@ -44,7 +44,7 @@ def get_by_email(session: Session, email: str) -> User | None:
     return session.scalar(query)
 
 
-def get_by_id(session: Session, user_id: uuid.UUID) -> User | None:
+def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
     """Find the user with a given primary key.
 
     ``Session.get`` is the primary-key lookup: it first checks the
@@ -63,7 +63,7 @@ def get_by_id(session: Session, user_id: uuid.UUID) -> User | None:
     return session.get(User, user_id)
 
 
-def active_admin_exists(session: Session) -> bool:
+def exists_active_admin(session: Session) -> bool:
     """Tell whether at least one active Admin account exists.
 
     ``create-admin`` uses this to allow a new Admin only when nobody can
@@ -81,7 +81,7 @@ def active_admin_exists(session: Session) -> bool:
     return bool(session.scalar(query))
 
 
-def add(session: Session, user: User) -> None:
+def create_user(session: Session, user: User) -> None:
     """Register a new user with the session.
 
     Nothing is written yet: the row is inserted when the service flushes or

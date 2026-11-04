@@ -70,7 +70,7 @@ def create_user(session: Session, data: UserCreate, *, must_change_password: boo
         ConflictError: If another account already uses the email. Nothing
             is saved in that case.
     """
-    if repository.get_by_email(session, data.email) is not None:
+    if repository.get_user_by_email(session, data.email) is not None:
         raise ConflictError(_EMAIL_TAKEN)
 
     password_hash = hash_password(data.password.get_secret_value())
@@ -82,7 +82,7 @@ def create_user(session: Session, data: UserCreate, *, must_change_password: boo
         must_change_password=must_change_password,
     )
 
-    repository.add(session, user)
+    repository.create_user(session, user)
 
     try:
         session.flush()
@@ -120,7 +120,7 @@ def create_first_admin(session: Session, data: UserCreate) -> User:
         ConflictError: If an active Admin already exists, or the email is
             taken. Nothing is saved in either case.
     """
-    if repository.active_admin_exists(session):
+    if repository.exists_active_admin(session):
         raise ConflictError("An active Admin already exists. Create more Admins through the API.")
 
     admin_data = data.model_copy(update={"role": Role.ADMIN})
@@ -150,7 +150,7 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     """
     normalized = email.strip().lower()
 
-    return repository.get_by_email(session, normalized)
+    return repository.get_user_by_email(session, normalized)
 
 
 def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
@@ -173,4 +173,4 @@ def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
     Returns:
         The matching user, active or not, or None if no user has that id.
     """
-    return repository.get_by_id(session, user_id)
+    return repository.get_user_by_id(session, user_id)

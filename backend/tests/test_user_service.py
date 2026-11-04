@@ -92,12 +92,12 @@ def test_a_duplicate_caught_by_the_database_becomes_a_conflict(
 ) -> None:
     """A duplicate that slips past the email check still becomes a ConflictError.
 
-    ``get_by_email`` is replaced to miss the existing user, as happens when
-    two requests check at the same moment. The database's unique constraint
-    then rejects the insert, and the service must turn that into the same
-    conflict, not an ``IntegrityError``. The existing user is committed, as
-    an earlier request would have done, so the service's rollback can't
-    remove it.
+    ``repository.get_user_by_email`` is replaced to miss the existing user,
+    as happens when two requests check at the same moment. The database's
+    unique constraint then rejects the insert, and the service must turn
+    that into the same conflict, not an ``IntegrityError``. The existing
+    user is committed, as an earlier request would have done, so the
+    service's rollback can't remove it.
     """
     email = "test.new@example.com"
 
@@ -107,7 +107,7 @@ def test_a_duplicate_caught_by_the_database_becomes_a_conflict(
 
     monkeypatch.setattr(
         repository,
-        "get_by_email",
+        "get_user_by_email",
         lambda session, email: None,
     )
 

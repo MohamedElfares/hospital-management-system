@@ -40,6 +40,11 @@ closes when the last stage is done, so an interrupted run is obvious.
   tutorial pages 10 and 12 quote. Those pages stay valid: each one is
   checked against the commit in its `hms-source-commit` tag, as
   `tutorial/README.md` explains, so a later rename never needs a page edit.
+- **`config.py` re-checked (2026-11-04):** R-006 and R-007 were fixed in
+  `7d080c0`, together with R-017, which a full §17 pass over the file
+  found. Its `STATE.md` row now points at `7d080c0`, so the next
+  `/review new` skips it unless it changes again; `logging.py` is still
+  due. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

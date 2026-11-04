@@ -428,20 +428,20 @@ def test_an_unknown_email_still_runs_the_password_check(
 ) -> None:
     """An unknown email still goes through the password check, with no hash.
 
-    ``check_password`` is replaced where the service looks it up, and the
+    ``verify_login_password`` is replaced where the service looks it up, and the
     spy records one call with None: the path that verifies against the
     dummy hash, so an unknown email takes as long as a wrong password. The
     cost of that path is tested in ``test_security.py``.
     """
     calls: list[str | None] = []
-    real_check = service.check_password
+    real_check = service.verify_login_password
 
     def spy(password: str, password_hash: str | None) -> bool:
         """Record the hash being checked, then run the real check."""
         calls.append(password_hash)
         return real_check(password, password_hash)
 
-    monkeypatch.setattr(service, "check_password", spy)
+    monkeypatch.setattr(service, "verify_login_password", spy)
 
     with pytest.raises(AuthenticationError) as exc_info:
         service.login(db_session, "ghost@example.com", PASSWORD)

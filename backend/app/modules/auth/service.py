@@ -65,9 +65,6 @@ from app.core.errors import ErrorCode
 # Error that the API turns into a 403 response; refuses a user with a temporary password.
 from app.core.errors import PermissionDeniedError
 
-# Verifies the password, paying the same cost when the email matches no user.
-from app.core.security import check_password
-
 # Signs the access token returned in the response body.
 from app.core.security import create_access_token
 
@@ -82,6 +79,9 @@ from app.core.security import hash_password
 
 # Hashes the refresh token; only the hash is stored.
 from app.core.security import hash_refresh_token
+
+# Verifies the password, paying the same cost when the email matches no user.
+from app.core.security import verify_login_password
 
 # Checks a password against the stored hash; confirms the current one and rejects reuse.
 from app.core.security import verify_password
@@ -225,10 +225,10 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
     """
     user = get_user_by_email(session, email)
 
-    if not check_password(password, user.password_hash if user else None):
+    if not verify_login_password(password, user.password_hash if user else None):
         raise AuthenticationError(_INVALID_CREDENTIALS)
 
-    # check_password already rejected a missing user; testing for None again
+    # verify_login_password already rejected a missing user; testing for None again
     # lets the type checker know that user is set from here on.
     if user is None or not user.is_active:
         raise AuthenticationError(_INVALID_CREDENTIALS)

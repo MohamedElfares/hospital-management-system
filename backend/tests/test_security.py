@@ -14,7 +14,6 @@ from app.core import security
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.security import _DUMMY_HASH
-from app.core.security import check_password
 from app.core.security import clear_refresh_cookie
 from app.core.security import create_access_token
 from app.core.security import decode_access_token
@@ -22,6 +21,7 @@ from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
 from app.core.security import set_refresh_cookie
+from app.core.security import verify_login_password
 from app.core.security import verify_password
 
 # Written out rather than imported from app.core.security, so a change to the
@@ -412,22 +412,22 @@ def test_different_refresh_tokens_get_different_hashes() -> None:
     assert len(hash_tokens) == 100
 
 
-def test_check_password_accepts_the_right_password() -> None:
+def test_verify_login_password_accepts_the_right_password() -> None:
     """With an existing user, the right password is accepted."""
-    assert check_password(PASSWORD, hash_password(PASSWORD)) is True
+    assert verify_login_password(PASSWORD, hash_password(PASSWORD)) is True
 
 
-def test_check_password_rejects_a_wrong_password() -> None:
+def test_verify_login_password_rejects_a_wrong_password() -> None:
     """With an existing user, a password that doesn't match their hash is rejected."""
-    assert check_password(PASSWORD, hash_password(PASSWORD + "abc")) is False
+    assert verify_login_password(PASSWORD, hash_password(PASSWORD + "abc")) is False
 
 
-def test_check_password_without_a_user_returns_false() -> None:
+def test_verify_login_password_without_a_user_returns_false() -> None:
     """With no matching user, the check always fails."""
-    assert check_password(PASSWORD, None) is False
+    assert verify_login_password(PASSWORD, None) is False
 
 
-def test_check_password_without_a_user_still_checks_the_dummy_hash(
+def test_verify_login_password_without_a_user_still_checks_the_dummy_hash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With no matching user, the password is still verified against the dummy hash.
@@ -448,7 +448,7 @@ def test_check_password_without_a_user_still_checks_the_dummy_hash(
 
     monkeypatch.setattr(security, "verify_password", spy)
 
-    assert check_password(PASSWORD, None) is False
+    assert verify_login_password(PASSWORD, None) is False
     assert calls == [_DUMMY_HASH]
 
 

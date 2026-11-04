@@ -65,7 +65,7 @@ from app.core.errors import AuthenticationError
 logger = logging.getLogger(__name__)
 
 # One hasher for the whole process, so every hash uses the same settings.
-_password_hash = PasswordHash.recommended()
+_password_hasher = PasswordHash.recommended()
 
 # Fixed in code rather than configuration: the algorithm is a security
 # decision, not a per-environment value, and decoding accepts only this one,
@@ -95,7 +95,7 @@ def hash_password(password: str) -> str:
     Returns:
         The encoded hash, about 97 characters long.
     """
-    return _password_hash.hash(password)
+    return _password_hasher.hash(password)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -121,7 +121,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         the hash is in an unsupported format.
     """
     try:
-        return _password_hash.verify(password, password_hash)
+        return _password_hasher.verify(password, password_hash)
     except UnknownHashError:
         logger.warning("Password hash uses an unknown or unsupported format")
         return False
@@ -242,7 +242,7 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def check_password(password: str, password_hash: str | None) -> bool:
+def verify_login_password(password: str, password_hash: str | None) -> bool:
     """Check a sign-in password, taking the same time whether or not the user exists.
 
     When no user matched the email, the caller passes None. The password is

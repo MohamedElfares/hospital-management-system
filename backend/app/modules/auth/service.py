@@ -193,7 +193,9 @@ def _issue_tokens(
 def login(session: Session, email: str, password: str) -> IssuedTokens:
     """Sign a user in with their email and password.
 
-    The email is matched ignoring case and surrounding spaces. The password
+    The email is matched in the form account creation stored it, so case,
+    surrounding spaces, and email-validator's other rewrites don't matter,
+    and text that isn't an address fails like an unknown email. The password
     is checked before the account's ``is_active`` flag, and every failure
     raises the same error with the same message: a wrong password, an
     unknown email, and a deactivated account are indistinguishable. Checking

@@ -1,10 +1,12 @@
-"""Schemas for user accounts: the password rule, input for creating users, and output.
+"""Schemas for user accounts: the email and password rules, account input, and output.
 
 An input schema checks and cleans data before any business rule runs.
 ``UserCreate`` serves every way a staff account is created, the
 ``create-admin`` command now and the staff administration API later
 (IAM-5), so the email and name rules are written once; patient accounts
-come from portal activation instead (plan §8.5). The password rule is the
+come from portal activation instead (plan §8.5). The email rule is the
+``Email`` type, which the users service also applies to the email typed at
+sign-in, so a lookup always meets the stored form. The password rule is the
 ``Password`` type, shared with every schema that sets a password, such as
 the auth module's ``PasswordChange``. Built directly, as ``create-admin``
 builds it, a schema raises Pydantic's ``ValidationError`` for invalid
@@ -18,7 +20,7 @@ password hash and internal flags can't be sent by accident.
 # The UUID type of user IDs; the type of UserRead.id.
 import uuid
 
-# Attaches rules to a type; builds the Password type and the email and name fields.
+# Attaches rules to a type; builds the Email and Password types and the name field.
 from typing import Annotated
 
 # Runs a function on a value after Pydantic's own checks; lowercases emails.
@@ -30,7 +32,7 @@ from pydantic import BaseModel
 # Model settings; lets UserRead read its fields from an ORM object's attributes.
 from pydantic import ConfigDict
 
-# Email address that email-validator checks and normalizes; the type of UserCreate.email.
+# Email address that email-validator checks and normalizes; the base of the Email type.
 from pydantic import EmailStr
 
 # Declares field constraints; sets the password length limits.
@@ -44,6 +46,12 @@ from pydantic import StringConstraints
 
 # The role enum; the type of the role field in both schemas.
 from app.core.permissions import Role
+
+# The one email rule: email-validator's checks and normal form, then
+# lowercase. UserCreate stores an email in this form, and the users service
+# puts the email typed at sign-in through the same rule, so the two can
+# never disagree about how an address is written.
+Email = Annotated[EmailStr, AfterValidator(str.lower)]
 
 # Plan §8.1: 12 to 128 characters and no composition rules (NIST SP 800-63B).
 # Pydantic counts characters, not bytes. The maximum bounds the input, as
@@ -65,15 +73,18 @@ Password = Annotated[
 class UserCreate(BaseModel):
     """Validated input for creating one user account.
 
-    ``EmailStr`` checks the address with email-validator and returns its
-    normalized form: surrounding spaces dropped, Unicode in NFC form, and
-    the domain mapped to its standard form, so full-width letters there
-    become ASCII. The address is then lowercased, which satisfies the
-    database's lowercase CHECK. The full name is stripped of surrounding
-    spaces, and a name of only spaces is rejected. The password is kept
-    exactly as typed, spaces included, because changing it would lock the
-    user out. That is why the model has no ``str_strip_whitespace``
-    setting: it would strip the ``SecretStr`` password too.
+    The email follows the shared ``Email`` rule. ``EmailStr`` checks the
+    address with email-validator and returns its normalized form:
+    surrounding spaces dropped, Unicode in NFC form, and the domain mapped
+    to its standard form, so full-width letters there become ASCII. The
+    address is then lowercased, which satisfies the database's lowercase
+    CHECK. Sign-in applies the same rule to the email it is given, so the
+    account is found however its address was typed. The full name is
+    stripped of surrounding spaces, and a name of only spaces is rejected.
+    The password is kept exactly as typed, spaces included, because
+    changing it would lock the user out. That is why the model has no
+    ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
+    password too.
 
     The password follows the shared ``Password`` rule of 12 to 128
     characters with no composition rules (NIST SP 800-63B), the same rule
@@ -90,7 +101,7 @@ class UserCreate(BaseModel):
         role: The new user's role.
     """
 
-    email: Annotated[EmailStr, AfterValidator(str.lower)]
+    email: Email
     full_name: Annotated[
         str,
         StringConstraints(

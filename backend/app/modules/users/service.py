@@ -14,6 +14,12 @@ them in their own way.
 # The UUID type of user IDs; annotates the ID passed to the lookup.
 import uuid
 
+# Applies a type's validation outside a model; runs the Email rule on sign-in text.
+from pydantic import TypeAdapter
+
+# Raised when text fails the Email rule; such text can't belong to any account.
+from pydantic import ValidationError
+
 # Raised on flush when a constraint rejects the row; caught to report a duplicate email.
 from sqlalchemy.exc import IntegrityError
 
@@ -35,6 +41,9 @@ from app.modules.users import repository
 # The users table's ORM model; the new account is built from it.
 from app.modules.users.models import User
 
+# The email rule UserCreate stores addresses with; the lookup applies it to typed text.
+from app.modules.users.schemas import Email
+
 # Validated input for a new account.
 from app.modules.users.schemas import UserCreate
 
@@ -42,6 +51,10 @@ from app.modules.users.schemas import UserCreate
 # insert and the unique constraint when two requests race, because to the
 # caller they are the same conflict.
 _EMAIL_TAKEN = "A user with this email already exists."
+
+# Built once, because building a TypeAdapter compiles its validator, and
+# every sign-in uses it.
+_email_adapter = TypeAdapter(Email)
 
 
 def create_user(session: Session, data: UserCreate, *, must_change_password: bool) -> User:
@@ -136,12 +149,23 @@ def create_first_admin(session: Session, data: UserCreate) -> User:
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
-    """Find a user by email, ignoring case and surrounding spaces.
+    """Find a user by email, however the address was typed.
 
     This is how other modules look users up, since only this module may use
-    the users repository. Emails are stored lowercase, so the input is
-    stripped and lowercased first; sign-in passes the raw form value, and
-    ``" Admin@Example.COM "`` must find ``admin@example.com``.
+    the users repository. Sign-in passes the raw form value, so the text
+    first goes through the ``Email`` rule that ``UserCreate`` stores
+    addresses with: ``" Admin@Example.COM "`` becomes ``admin@example.com``,
+    and an address typed with full-width letters or a decomposed accent
+    becomes the form that was stored. Matching the stored form exactly is
+    what lets the repository use the unique index on ``email``.
+
+    Text that isn't a valid address returns None without a query. No account
+    can have such an email, because every stored one passed the same rule,
+    and some of that text can't even be sent: PostgreSQL refuses a NUL
+    character, and the query would fail instead of finding nobody. Sign-in
+    then fails the way it does for an unknown email. A later email-validator
+    release that rejected addresses it used to accept would lock their
+    accounts out, so read its changelog before upgrading it.
 
     Inactive users are returned too. Deciding what deactivation means is
     the caller's job: sign-in must check the password before it looks at
@@ -153,12 +177,15 @@ def get_user_by_email(session: Session, email: str) -> User | None:
         email: The email as the user typed it.
 
     Returns:
-        The matching user, active or not, or None if no user has that
-        email.
+        The matching user, active or not, or None if the text isn't a valid
+        address or no user has that email.
     """
-    normalized = email.strip().lower()
+    try:
+        normalized_email = _email_adapter.validate_python(email)
+    except ValidationError:
+        return None
 
-    return repository.get_user_by_email(session, normalized)
+    return repository.get_user_by_email(session, normalized_email)
 
 
 def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:

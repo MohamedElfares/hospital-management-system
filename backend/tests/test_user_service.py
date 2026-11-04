@@ -1,3 +1,4 @@
+import unicodedata
 import uuid
 
 import pytest
@@ -220,6 +221,67 @@ def test_get_user_by_email_ignores_case_and_surrounding_spaces(db_session: Sessi
     result = get_user_by_email(db_session, " Test@examPle.COM  ")
 
     assert result is user
+
+
+@pytest.mark.parametrize(
+    "typed_email",
+    [
+        pytest.param("Test@ＥＸＡＭＰＬＥ.com", id="full-width-domain"),
+        pytest.param(unicodedata.normalize("NFD", "José@example.com"), id="decomposed-accent"),
+    ],
+)
+def test_get_user_by_email_finds_an_address_that_user_create_rewrote(
+    db_session: Session,
+    typed_email: str,
+) -> None:
+    """Text that ``UserCreate`` rewrote before storing still finds its account.
+
+    email-validator turns full-width letters in the domain into ASCII and a
+    decomposed accent into a single character. The first assertion shows
+    the stored form differs from the text merely stripped and lowercased,
+    so only the shared ``Email`` rule can make the lookup match.
+    """
+    stored_email = make_user_create(email=typed_email).email
+    user = make_user(email=stored_email)
+
+    db_session.add(user)
+    db_session.flush()
+
+    assert stored_email != typed_email.strip().lower()
+    assert get_user_by_email(db_session, typed_email) is user
+
+
+@pytest.mark.parametrize(
+    "typed_text",
+    [
+        pytest.param("test\x00@example.com", id="nul-character"),
+        pytest.param("test", id="no-at-sign"),
+        pytest.param("", id="empty"),
+    ],
+)
+def test_get_user_by_email_returns_none_for_text_that_is_not_an_address(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    typed_text: str,
+) -> None:
+    """Text that isn't an address returns None, and the database is never asked.
+
+    No account can have such an email, because every stored one passed the
+    same rule. The NUL case is the one that matters most: PostgreSQL
+    refuses that character, so a query would fail with an error instead of
+    finding nobody. The repository is replaced with a spy that records every
+    lookup, so an empty record proves no query ran.
+    """
+    lookups: list[str] = []
+
+    def record_lookup(session: Session, email: str) -> None:
+        """Record the email the service asked for, instead of querying."""
+        lookups.append(email)
+
+    monkeypatch.setattr(repository, "get_user_by_email", record_lookup)
+
+    assert get_user_by_email(db_session, typed_text) is None
+    assert lookups == []
 
 
 def test_get_user_by_email_returns_none_for_an_unknown_email(db_session: Session) -> None:

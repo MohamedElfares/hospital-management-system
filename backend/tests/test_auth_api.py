@@ -225,6 +225,29 @@ def test_wrong_credentials_return_the_standard_401(user: User, client: TestClien
     assert "set-cookie" not in response.headers
 
 
+def test_login_with_a_nul_in_the_email_returns_the_standard_401(
+    user: User,
+    client: TestClient,
+) -> None:
+    """An email holding a NUL character gets the same 401 as an unknown email.
+
+    PostgreSQL refuses that character, so the text must be turned away
+    before any query; otherwise the request ends in a 500. The rest of the
+    email and the password are the real user's, so the NUL alone decides
+    the outcome.
+    """
+    response = client.post(
+        LOGIN_URL,
+        data={"username": f"\x00{user.email}", "password": PASSWORD},
+    )
+    error = response.json()["error"]
+
+    assert response.status_code == 401
+    assert error["code"] == ErrorCode.AUTHENTICATION_FAILED
+    assert error["message"] == "Incorrect email or password."
+    assert "set-cookie" not in response.headers
+
+
 def test_login_without_a_username_is_a_validation_error(client: TestClient) -> None:
     """A form without a username gets a 422 that names the missing field.
 

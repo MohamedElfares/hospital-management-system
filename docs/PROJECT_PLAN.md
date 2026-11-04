@@ -125,7 +125,7 @@ From Phase 3 onward, each phase delivers its backend and its screens together.
 
 - Customer Service role: ticket inbox, assignment, replies, internal notes, and resolve, close, and reopen actions.
 - Patients open tickets and reply from the portal; Customer Service can open a ticket on a patient's behalf.
-- Manager role: operational reports with charts (appointments, no-shows, pharmacy, tickets) and administration of non-admin staff accounts.
+- Manager role: operational reports with charts (appointments, no-shows, pharmacy, tickets) and administration of staff accounts except Admin and Manager.
 
 ### Optional ideas (not planned)
 
@@ -146,7 +146,7 @@ These stay in the backlog. To build one, plan it as a new phase after Phase 5.
 | **Pharmacist** | Branch pharmacy | 1 | Medicine catalog, branch stock, and dispensing; transfers (Phase 3) |
 | **Patient** | Patient | 4 | Own appointments, visit summaries, prescriptions, and tickets |
 | **Customer Service** | Patient support | 5 | Tickets; reads patient contact details and appointments |
-| **Manager** | Hospital management | 5 | Aggregated operational reports; manages non-admin staff accounts. **No access to medical records.** |
+| **Manager** | Hospital management | 5 | Aggregated operational reports; manages staff accounts except Admin and Manager. **No access to medical records.** |
 
 **Design rules**
 
@@ -320,7 +320,7 @@ Each story becomes one GitHub issue titled with its ID, for example `APT-1: Book
 | TKT-4 | Customer Service | Reply to patients and add internal notes |
 | TKT-5 | Customer Service | Resolve, close, and reopen tickets |
 | MGR-1 | Manager | View appointment, pharmacy, and ticket reports |
-| MGR-2 | Manager | Manage non-admin staff accounts |
+| MGR-2 | Manager | Manage staff accounts except Admin and Manager |
 
 ### Acceptance criteria for the highest-risk stories
 

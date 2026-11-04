@@ -122,3 +122,38 @@ def test_request_log_line_has_the_plan_fields_and_no_query_string(
         r"status=200 duration_ms=\d+\.\d",
         lines[0],
     )
+
+
+@pytest.mark.parametrize(
+    ("requested_path", "logged_path"),
+    [
+        pytest.param("/health/x%1B%5B2K", "/health/x%1B%5B2K", id="terminal-escape-code"),
+        pytest.param("/health/x%0By", "/health/x%0By", id="vertical-tab"),
+        pytest.param("/health/x%C2%85y", "/health/x%C2%85y", id="next-line-character"),
+        pytest.param("/health/x%20status=200", "/health/x%20status%3D200", id="faked-field"),
+    ],
+)
+def test_request_log_line_escapes_the_path(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    requested_path: str,
+    logged_path: str,
+) -> None:
+    """The path is logged percent-encoded, so a client can't write raw control characters.
+
+    The server decodes the path before the application sees it, so ``%1B``
+    arrives as a real escape character, which can rewrite the screen of
+    whoever reads the log in a terminal, and ``%20`` as a space, which can
+    fake a ``key=value`` field of its own. Starlette already drops line
+    breaks and tabs from the path. Each line must stay printable, with the
+    path in its encoded form.
+    """
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        response = client.get(requested_path)
+
+    lines = _request_log_lines(caplog)
+
+    assert response.status_code == 404
+    assert len(lines) == 1
+    assert f" path={logged_path} status=404 " in lines[0]
+    assert lines[0].isprintable()

@@ -26,6 +26,9 @@ from collections.abc import Callable
 # Per-request variable, so concurrent requests never see each other's ID.
 from contextvars import ContextVar
 
+# Percent-encodes the path for the log line, so its control characters and spaces stay inert.
+from urllib.parse import quote
+
 # The incoming request; the middleware reads headers and stores the ID on its state.
 from fastapi import Request
 
@@ -86,6 +89,13 @@ async def request_context_middleware(
     ``duration_ms`` runs from the moment this middleware receives the
     request until the application starts sending the response.
 
+    The path is percent-encoded again before it is written, because the
+    server hands it over decoded. A client could otherwise put control
+    characters into the log, such as a terminal escape code that rewrites
+    the screen of whoever reads it, or a space that fakes another
+    ``key=value`` field. Starlette already drops line breaks and tabs, and
+    an ordinary path such as ``/api/v1/auth/me`` is logged unchanged.
+
     The line's ``user_id`` field is always ``None``. Plan §12 asks for the
     signed-in user's ID, but nothing passes the user from the authentication
     dependency to this middleware yet.
@@ -116,12 +126,13 @@ async def request_context_middleware(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         duration = (time.perf_counter() - start) * 1000
+        escaped_path = quote(request.url.path, safe="/")
         logger.info(
             "request_id=%s user_id=%s method=%s path=%s status=%s duration_ms=%.1f",
             request_id,
             None,
             request.method,
-            request.url.path,
+            escaped_path,
             response.status_code,
             duration,
         )

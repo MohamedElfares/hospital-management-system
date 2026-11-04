@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -7,21 +10,24 @@ from concurrent.futures import Future
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from factories import make_refresh_token
 from factories import make_user
 from sqlalchemy import Engine
+from sqlalchemy import create_engine
 from sqlalchemy import delete
 from sqlalchemy import func
+from sqlalchemy import make_url
 from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import get_settings
 from app.core.errors import AuthenticationError
 from app.core.errors import BadRequestError
-from app.core.permissions import Role
 from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
@@ -82,8 +88,83 @@ class _Pause:
             raise TimeoutError("the test never released the held request")
 
 
+def _run_migrations(database_url: str) -> None:
+    """Bring a database's schema up to date with ``alembic upgrade head``.
+
+    It runs in a subprocess, as the ``apply_migrations`` fixture runs it for
+    the test database, because ``migrations/env.py`` reads ``DATABASE_URL``,
+    and an in-process call would migrate the development database instead.
+
+    Args:
+        database_url: SQLAlchemy URL of the database to migrate.
+
+    Raises:
+        Failed: pytest's failure, with Alembic's error output, if the
+            migration fails.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=os.environ | {"DATABASE_URL": database_url},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        pytest.fail(f"Alembic migration failed:\n{result.stderr}", pytrace=False)
+
+
+@pytest.fixture(scope="module")
+def race_engine() -> Iterator[Engine]:
+    """Create a database for these tests alone, migrate it, and drop it afterwards.
+
+    These tests commit real rows, which every connection to their database
+    can see. In the shared test database, another test run going at the
+    same moment would see them too, and its tests that count every row of
+    a table would fail. A database of their own, named after this process,
+    keeps the runs apart: no other run sees these rows, and only this
+    module's requests ever wait for a lock in it. It is created next to the
+    test database, through the server's ``postgres`` database, migrated as
+    the test database is, and dropped at the end with ``FORCE``, which
+    closes any connection still open to it, even when the migration fails.
+
+    Yields:
+        An engine connected to the new database.
+    """
+    test_database_url = get_settings().test_database_url
+
+    if test_database_url is None:
+        pytest.fail("TEST_DATABASE_URL is not set", pytrace=False)
+
+    test_url = make_url(test_database_url)
+    race_url = test_url.set(database=f"{test_url.database}_race_{os.getpid()}")
+    server = create_engine(test_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    database_name = server.dialect.identifier_preparer.quote(str(race_url.database))
+
+    with server.connect() as connection:
+        connection.execute(text(f"DROP DATABASE IF EXISTS {database_name} WITH (FORCE)"))
+        connection.execute(text(f"CREATE DATABASE {database_name}"))
+
+    engine = create_engine(
+        race_url,
+        connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
+    )
+
+    try:
+        _run_migrations(race_url.render_as_string(hide_password=False))
+        yield engine
+    finally:
+        engine.dispose()
+
+        with server.connect() as connection:
+            connection.execute(text(f"DROP DATABASE IF EXISTS {database_name} WITH (FORCE)"))
+
+        server.dispose()
+
+
 @pytest.fixture
-def session_factory(test_engine: Engine, apply_migrations: None) -> sessionmaker[Session]:
+def session_factory(race_engine: Engine) -> sessionmaker[Session]:
     """Make sessions that commit for real, each on its own connection.
 
     A row lock only matters between two transactions, so these tests can't
@@ -94,26 +175,23 @@ def session_factory(test_engine: Engine, apply_migrations: None) -> sessionmaker
     ``expire_on_commit=False`` matches the application's sessions.
 
     Args:
-        test_engine: Engine for the test database, shared by the run.
-        apply_migrations: Not used directly; naming it makes the schema
-            exist first.
+        race_engine: Engine for the database these tests have to themselves.
 
     Returns:
-        A factory whose sessions run on the test database.
+        A factory whose sessions run on that database.
     """
-    return sessionmaker(bind=test_engine, expire_on_commit=False)
+    return sessionmaker(bind=race_engine, expire_on_commit=False)
 
 
 @pytest.fixture
 def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
     """Commit a user every connection can see, then delete it and its tokens.
 
-    The user is a Doctor whose password is ``PASSWORD``, not the factory's
-    Admin: if the cleanup ever failed, a leftover active Admin would change
-    what the ``create-admin`` tests find. Deleting the user deletes its
-    refresh tokens through ``ON DELETE CASCADE``. ``lock_timeout`` makes the
-    cleanup fail after a few seconds, rather than hang, if a thread that
-    never finished still holds a lock.
+    The user's password is ``PASSWORD``. Deleting the user deletes its
+    refresh tokens through ``ON DELETE CASCADE``, so the next test starts
+    from an empty database. ``lock_timeout`` makes the cleanup fail after a
+    few seconds, rather than hang, if a thread that never finished still
+    holds a lock.
 
     Args:
         session_factory: Makes the sessions that commit and clean up.
@@ -122,11 +200,7 @@ def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
         The committed user, detached, with its attributes loaded.
     """
     with session_factory() as session:
-        user = make_user(
-            email="concurrency@example.com",
-            password_hash=hash_password(PASSWORD),
-            role=Role.DOCTOR,
-        )
+        user = make_user(email="concurrency@example.com", password_hash=hash_password(PASSWORD))
         session.add(user)
         session.commit()
 
@@ -315,18 +389,19 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
 
 def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
-    """Return once a statement on the test database is waiting for a lock.
+    """Return once a statement in the race database is waiting for a lock.
 
     PostgreSQL lists every session in ``pg_stat_activity``, and a statement
     blocked by another transaction's lock shows ``wait_event_type = 'Lock'``.
-    Only this test's requests use the database while it runs, so that is
-    the competing request. A sleep would only guess: on a slow run the held
+    Only the running test's requests use that database, and the held one is
+    paused in Python, not in the database, so a waiting statement is the
+    competing request's. A sleep would only guess: on a slow run the held
     request could be released before the competing one reached the lock,
     and the test would no longer race them. The polls run in autocommit
     mode, each in a transaction of its own.
 
     Args:
-        engine: Engine for the test database.
+        engine: Engine for the race database.
 
     Raises:
         Failed: pytest's failure, if nothing waits within
@@ -367,7 +442,7 @@ def _race(
     the test.
 
     Args:
-        engine: Engine for the test database, for the lock check.
+        engine: Engine for the race database, for the lock check.
         pause: Where the held request stops.
         held: The request that takes its locks first.
         competing: The request that must wait for them.
@@ -394,7 +469,7 @@ def _race(
 
 def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     monkeypatch: pytest.MonkeyPatch,
-    test_engine: Engine,
+    race_engine: Engine,
     session_factory: sessionmaker[Session],
     committed_user: User,
 ) -> None:
@@ -412,7 +487,7 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     pause = _pause_before_issuing_tokens(monkeypatch)
 
     held_future, competing_future = _race(
-        test_engine,
+        race_engine,
         pause,
         held=lambda: _refresh_in_new_session(session_factory, raw_token),
         competing=lambda: _refresh_in_new_session(session_factory, raw_token),
@@ -428,7 +503,7 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
 
 def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     monkeypatch: pytest.MonkeyPatch,
-    test_engine: Engine,
+    race_engine: Engine,
     session_factory: sessionmaker[Session],
     committed_user: User,
 ) -> None:
@@ -446,7 +521,7 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     pause = _pause_after_the_token_lookup(monkeypatch)
 
     held_future, competing_future = _race(
-        test_engine,
+        race_engine,
         pause,
         held=lambda: _sign_out_in_new_session(session_factory, committed_user, raw_token),
         competing=lambda: _refresh_in_new_session(session_factory, raw_token),
@@ -476,7 +551,7 @@ HELD_REFRESH_PAUSES = [
 def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
-    test_engine: Engine,
+    race_engine: Engine,
     session_factory: sessionmaker[Session],
     committed_user: User,
 ) -> None:
@@ -501,7 +576,7 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
-        test_engine,
+        race_engine,
         pause,
         held=lambda: _refresh_in_new_session(session_factory, thief_raw_token),
         competing=lambda: _refresh_in_new_session(session_factory, stolen_raw_token),
@@ -524,7 +599,7 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
 def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
-    test_engine: Engine,
+    race_engine: Engine,
     session_factory: sessionmaker[Session],
     committed_user: User,
 ) -> None:
@@ -542,7 +617,7 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
-        test_engine,
+        race_engine,
         pause,
         held=lambda: _refresh_in_new_session(session_factory, other_device_raw_token),
         competing=lambda: _change_password_in_new_session(session_factory, committed_user),

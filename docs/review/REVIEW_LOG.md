@@ -51,6 +51,18 @@ closes when the last stage is done, so an interrupted run is obvious.
   length (about 51 ms for 128 characters and 53 ms for a million), so
   stage 7 should correct that sentence, as stage 6 corrected the same
   claim in the `PASSWORD_MAX_LENGTH` comment.
+- **Stage 6's findings fixed (2026-11-05):** R-018 (`263c771`), R-019
+  (`46bf282`), and R-020 (`8f6eb9f`), written at your request, one commit
+  each. They change `users/schemas.py` and `users/service.py` after
+  stage 6 reviewed them at `75ec621`, and `app/db/session.py` after
+  stage 4 (`56f211b`), so the next `/review new` takes those files again.
+  The `login` docstring in `auth/service.py` changed too, before stage 8
+  reaches it. New tests landed in `test_database.py` (stage 12),
+  `test_user_schemas.py` (stage 14), `test_user_service.py` and
+  `test_cli.py` (stage 15), and `test_auth_api.py` (stage 21), so those
+  stages grow a little. Each commit passes Ruff and the suite on its own,
+  run like CI in a clean worktree: 287, 288, then 296 tests. R-021, the
+  `create-admin` example's `.test` address, is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

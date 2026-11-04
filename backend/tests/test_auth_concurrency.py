@@ -319,6 +319,29 @@ def _change_password_in_new_session(
         return service.change_password(session, signed_in_user, data)
 
 
+def _delete_user_in_new_session(
+    session_factory: sessionmaker[Session],
+    user: User,
+    pause: _Pause,
+) -> None:
+    """Delete a user in a session of its own, stopping before the commit.
+
+    The ``DELETE`` locks the user's row, and ``ON DELETE CASCADE`` removes
+    the user's refresh tokens in the same statement, so a request held at
+    ``pause`` holds that lock with both deletions not yet committed.
+
+    Args:
+        session_factory: Makes the request's session.
+        user: The user to delete.
+        pause: Where the request stops, between the ``DELETE`` and the
+            commit.
+    """
+    with session_factory() as session:
+        session.execute(delete(User).where(User.id == user.id))
+        pause.wait_here()
+        session.commit()
+
+
 def _token_id(session_factory: sessionmaker[Session], raw_token: str) -> uuid.UUID:
     """Return the primary key of the refresh token a raw value belongs to.
 
@@ -667,3 +690,33 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
     assert stored_user is not None
     assert verify_password(NEW_PASSWORD, stored_user.password_hash)
+
+
+def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
+    race_engine: Engine,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A refresh gets the usual refusal when its user is deleted while it waits.
+
+    The app never deletes users, but tests do. The deletion is held after
+    its ``DELETE``, with the user's row locked. The refresh still finds the
+    token's user, because the deletion isn't committed, and then has to
+    wait for that lock. Once the deletion commits, the refresh finds
+    neither the user nor the token, which the cascade removed, and must
+    raise the usual error rather than fail on the missing token.
+    """
+    raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = _Pause()
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _delete_user_in_new_session(session_factory, committed_user, pause),
+        competing=lambda: _refresh_in_new_session(session_factory, raw_token),
+    )
+
+    assert held_future.result() is None
+
+    with pytest.raises(AuthenticationError):
+        competing_future.result()

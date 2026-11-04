@@ -1,14 +1,16 @@
 """Database queries for refresh tokens.
 
-The repository is the only layer that queries the ``refresh_tokens`` table.
-It never commits: the auth service owns the transaction, calls these
-functions, and commits once per use case, so a sign-in saves its token and
-the user's last sign-in time together or not at all. Other modules must go
-through the auth service, never through this module.
+Every query on the ``refresh_tokens`` table lives here. The service still
+changes the rows it has loaded, such as setting ``revoked_at`` when it
+rotates a token, and the session writes those changes when it flushes.
+Nothing here commits: the auth service owns the transaction, calls these
+functions, and commits once per use case, so a sign-in saves its token
+and the user's last sign-in time together or not at all. Other modules
+must go through the auth service, never through this module.
 
-Lookups return tokens whatever their state, revoked and expired included:
-deciding what a revoked token means, such as a sign of theft, is the
-service's job, and it can only do that if it sees the token.
+The lookup returns tokens whatever their state, revoked and expired
+included: deciding what a revoked token means, such as a sign of theft,
+is the service's job, and it can only do that if it sees the token.
 """
 
 # The UUID type of user ids; annotates whose tokens are revoked.
@@ -31,11 +33,12 @@ from app.modules.auth.models import RefreshToken
 
 
 def create_refresh_token(session: Session, token: RefreshToken) -> None:
-    """Register a new refresh token with the session.
+    """Add a new refresh token to the session, without writing it yet.
 
-    Nothing is written yet: the row is inserted when the service flushes or
-    commits, which is where constraint violations such as a duplicate hash
-    or an unknown user surface.
+    The ``INSERT`` runs at the session's next flush: when the service calls
+    ``flush()`` or ``commit()``, or when autoflush runs before the next
+    query. That is also where a constraint violation, such as a duplicate
+    hash or an unknown user, surfaces.
 
     Args:
         session: The open database session.
@@ -51,13 +54,16 @@ def get_refresh_token_by_hash(session: Session, token_hash: str) -> RefreshToken
     The row is read with ``SELECT ... FOR UPDATE``, so it stays locked until
     the service commits or rolls back. Two refreshes sent at the same moment
     with the same cookie therefore run one after the other: the second waits
-    here, then reads the row as the first left it, already revoked. Without
-    the lock both could see the token as unused and rotate it, turning one
-    token into two valid ones and slipping past reuse detection.
+    here, then reads the row as the first left it, already rotated, so the
+    service treats it as reuse and ends every session of the user. ADR-0004
+    accepts that and asks the web app to send one refresh at a time.
+    Without the lock both could see the token as unused and rotate it,
+    turning one token into two working sessions with no alarm. Sign-out
+    reads through here too, so it waits for a refresh of the same token.
 
     Revoked and expired tokens are returned too, because the service must
     see a revoked token to detect reuse. The hash is unique, so at most one
-    row matches, and its index makes the lookup fast.
+    row matches, and the unique constraint's index serves the lookup.
 
     Args:
         session: The open database session. The lock lasts until it
@@ -80,14 +86,24 @@ def revoke_all_refresh_tokens_for_user(
 
     Used whenever all of a user's sessions must end at once: when a rotated
     token is reused, on password change, and later on deactivation. One
-    ``UPDATE`` covers any number of tokens. Tokens that are already revoked
-    keep their original time, so the record of when each one was rotated
-    or revoked is never overwritten. The service passes the time, so every
-    timestamp in one use case is the same. Nothing is committed.
+    ``UPDATE`` covers any number of tokens, and nothing is committed.
+    Tokens that are already revoked keep their original time, so the
+    record of when each one was rotated or revoked is never overwritten.
+    The service passes the time, so one use case works from one moment:
+    after a password change, the revocations and the new session's expiry
+    come from the same clock reading.
 
-    The statement changes the database directly. Objects this session has
-    already loaded may still show old values, so callers that read them
-    afterwards should query again or expire them first.
+    The ``UPDATE`` sees the tokens committed when it starts. If a refresh
+    of another of the user's tokens holds that row's lock at that moment,
+    the statement waits for it, then skips the row, which that refresh has
+    just revoked, and misses the token the refresh issued, so that session
+    survives.
+
+    The statement runs in the database, and SQLAlchemy then updates only
+    the attributes this session has loaded: a token read by a query shows
+    the new ``revoked_at``, but one this session created without a
+    ``revoked_at`` value still reads None. Callers that read a token
+    afterwards should query it again or expire it first.
 
     Args:
         session: The open database session.

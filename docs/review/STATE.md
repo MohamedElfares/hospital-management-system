@@ -12,3 +12,5 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/core/config.py` | `2127a70` | 2026-11-04 | 1 |
 | `backend/app/core/errors.py` | `d5dc7cd` | 2026-11-04 | 1 |
 | `backend/app/core/logging.py` | `2127a70` | 2026-11-04 | 1 |
+| `backend/app/core/permissions.py` | `fe8906c` | 2026-11-04 | 1 |
+| `backend/app/core/security.py` | `fe8906c` | 2026-11-04 | 1 |

@@ -3,9 +3,10 @@
 ``configure_logging`` decides, once at startup, which log records are
 written and what each line looks like. ``request_context_middleware`` gives
 every request an ID, returns it in the ``X-Request-ID`` header, and writes
-one ``key=value`` log line per request with the method, path, status, and
-duration (plan §12, Observability). The same ID appears in error bodies and
-in the log, so a failed request a user reports can be found in the logs.
+one ``key=value`` log line per request with that ID, the signed-in user's
+ID, the method, path, status, and duration (plan §12, Observability). The
+same ID appears in error bodies and in the log, so a failed request a user
+reports can be found in the logs.
 """
 
 # Standard logging; creates this module's logger and configures output.
@@ -96,9 +97,12 @@ async def request_context_middleware(
     ``key=value`` field. Starlette already drops line breaks and tabs, and
     an ordinary path such as ``/api/v1/auth/me`` is logged unchanged.
 
-    The line's ``user_id`` field is always ``None``. Plan §12 asks for the
-    signed-in user's ID, but nothing passes the user from the authentication
-    dependency to this middleware yet.
+    ``user_id`` is the signed-in user's ID, which the authentication
+    dependency in ``app.api.deps`` puts on ``request.state`` while the route
+    runs, so this middleware reads it only after the route has finished. It
+    is ``None`` when the request carried no valid token. A user the route
+    refuses after signing them in, such as one with a pending password
+    change, is still named.
 
     The context variable is reset in ``finally``, so one request's ID never
     leaks into later work. When the route raises an unexpected exception,
@@ -127,10 +131,11 @@ async def request_context_middleware(
         response.headers["X-Request-ID"] = request_id
         duration = (time.perf_counter() - start) * 1000
         escaped_path = quote(request.url.path, safe="/")
+        user_id = getattr(request.state, "user_id", None)
         logger.info(
             "request_id=%s user_id=%s method=%s path=%s status=%s duration_ms=%.1f",
             request_id,
-            None,
+            user_id,
             request.method,
             escaped_path,
             response.status_code,

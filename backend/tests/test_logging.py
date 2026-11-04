@@ -3,11 +3,72 @@ import re
 import uuid
 
 import pytest
+from factories import make_user
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser
 from app.core.logging import _resolve_request_id
+from app.core.security import create_access_token
+from app.modules.users.models import User
 
+GATED_URL = "/api/v1/test/gated"
+ME_URL = "/api/v1/auth/me"
 REQUEST_ID = "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
+
+
+@pytest.fixture
+def user(db_session: Session) -> User:
+    """Save an active user for the signed-in requests.
+
+    The tests sign the user's access token directly, so the password never
+    matters and ``make_user``'s default hash is enough. The user is
+    flushed, not committed, so the test's rollback removes it.
+
+    Args:
+        db_session: The test's session.
+
+    Returns:
+        The saved user.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    return user
+
+
+@pytest.fixture
+def gated_route(app: FastAPI) -> None:
+    """Add a route at ``GATED_URL`` that uses the ordinary ``CurrentUser``.
+
+    Every route that exists today skips the password-change gate, so the
+    test of a user the gate refuses needs one that applies it. It is added
+    to this test's own application only, so it never leaks into another
+    test.
+
+    Args:
+        app: The application built for this test.
+    """
+
+    def gated(user: CurrentUser) -> dict[str, str]:
+        """Return the caller's ID, proving the route ran for that user."""
+        return {"user_id": str(user.id)}
+
+    app.add_api_route(GATED_URL, gated, methods=["GET"])
+
+
+def _auth_header(user: User) -> dict[str, str]:
+    """Build an Authorization header with a fresh access token for the user.
+
+    Args:
+        user: The saved user the token should name.
+
+    Returns:
+        The headers to pass to the test client.
+    """
+    return {"Authorization": f"Bearer {create_access_token(user.id)}"}
 
 
 def _request_log_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -157,3 +218,92 @@ def test_request_log_line_escapes_the_path(
     assert len(lines) == 1
     assert f" path={logged_path} status=404 " in lines[0]
     assert lines[0].isprintable()
+
+
+def test_request_log_line_names_the_signed_in_user(
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A request with a valid access token is logged with that user's ID.
+
+    Plan §12 asks for the user ID, so a problem someone reports can be
+    traced to the requests they made. ``/auth/me`` is the plainest route
+    that needs a signed-in user.
+    """
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        response = client.get(ME_URL, headers=_auth_header(user))
+
+    lines = _request_log_lines(caplog)
+
+    assert response.status_code == 200
+    assert len(lines) == 1
+    assert f" user_id={user.id} " in lines[0]
+
+
+def test_request_log_line_has_no_user_for_a_rejected_token(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A request whose access token is refused is logged with no user ID.
+
+    The 401 means nobody was signed in, so the line must not name anyone.
+    """
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        response = client.get(ME_URL, headers={"Authorization": "Bearer not-a-token"})
+
+    lines = _request_log_lines(caplog)
+
+    assert response.status_code == 401
+    assert len(lines) == 1
+    assert " user_id=None " in lines[0]
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_request_log_line_names_a_user_the_password_change_gate_refuses(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A signed-in user refused with a 403 is still named in the log line.
+
+    The token and the account are checked before the password-change gate,
+    so the caller is known even though the route turns them away, and the
+    log shows who was refused.
+    """
+    user.must_change_password = True
+    db_session.flush()
+
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        response = client.get(GATED_URL, headers=_auth_header(user))
+
+    lines = _request_log_lines(caplog)
+
+    assert response.status_code == 403
+    assert len(lines) == 1
+    assert f" user_id={user.id} " in lines[0]
+
+
+def test_request_log_line_does_not_carry_a_user_into_the_next_request(
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """After a signed-in request, an anonymous one on the same client names nobody.
+
+    The user ID belongs to one request. Kept anywhere that outlives it, such
+    as a module variable, it would label the next caller's line with
+    someone else's ID.
+    """
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        signed_in_response = client.get(ME_URL, headers=_auth_header(user))
+        anonymous_response = client.get("/health/live")
+
+    lines = _request_log_lines(caplog)
+
+    assert signed_in_response.status_code == 200
+    assert anonymous_response.status_code == 200
+    assert len(lines) == 2
+    assert f" user_id={user.id} " in lines[0]
+    assert " user_id=None " in lines[1]

@@ -54,8 +54,9 @@ Behind those endpoints:
 - **One error format** for every failure, including the ones FastAPI and Starlette raise
   themselves: `{"error": {"code", "message", "details", "request_id"}}`.
 - **A request ID** on every request, returned in the `X-Request-ID` header, included in
-  error bodies, and written in one log line per request with the method, path, status and
-  duration — so a failure a user reports can be found in the logs.
+  error bodies, and written in one log line per request with the signed-in user's ID, the
+  method, path, status and duration, but never the query string — so a failure a user
+  reports can be found in the logs.
 - **A database layer** that gives every future table a UUID primary key and timezone-aware
   UTC timestamps, with Alembic wired to the models.
 - **User accounts.** A `users` table whose rules hold even for writes that skip the

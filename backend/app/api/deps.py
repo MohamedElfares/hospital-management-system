@@ -3,10 +3,11 @@
 A route that needs the signed-in user asks for ``CurrentUser``, and FastAPI
 runs the chain before the route body: read the bearer token from the
 ``Authorization`` header, open the request's database session, ask the auth
-service which active user the token belongs to, and refuse that user while
-a password change is pending. This module only connects HTTP to the
-service; every rule about who counts as signed in lives in
-``app.modules.auth.service``, where it can be tested without HTTP.
+service which active user the token belongs to, note that user's ID for the
+request's log line, and refuse that user while a password change is
+pending. This module only connects HTTP to the service; every rule about
+who counts as signed in lives in ``app.modules.auth.service``, where it can
+be tested without HTTP.
 
 The password-change gate is on by default: ``CurrentUser`` applies it, so a
 new route can't forget it. The few routes the change itself needs opt out
@@ -21,6 +22,9 @@ from typing import Annotated
 
 # Asks FastAPI to run a dependency and pass its result to the route.
 from fastapi import Depends
+
+# The incoming request; the signed-in user's ID goes on its state for the request log.
+from fastapi import Request
 
 # Reads the bearer token from the Authorization header and documents it in OpenAPI.
 from fastapi.security import OAuth2PasswordBearer
@@ -44,6 +48,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 def get_current_user_allowing_password_change(
+    request: Request,
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
@@ -55,12 +60,20 @@ def get_current_user_allowing_password_change(
     session used here is the same one the route receives: the user belongs
     to that session and can be used in the route's own queries.
 
+    Once the user is known, their ID goes on ``request.state``, where the
+    request-logging middleware reads it after the route has run, so the
+    request's log line names the caller (plan §12). It is set here, before
+    the password-change gate, so a user the gate refuses is still named. A
+    context variable would not work: this function runs in its own copy of
+    the request's context, so a value set here never reaches the middleware.
+
     This is the base of the chain and skips the password-change gate. Only
     the routes a user with a temporary password still needs use it
     directly: reading their own account, signing out, and changing the
     password. Every other route gets the gate through ``get_current_user``.
 
     Args:
+        request: The incoming request; the user's ID is stored on its state.
         token: The bearer token from the ``Authorization`` header. It can be
             empty when the header is just ``Bearer``.
         db: The request's database session.
@@ -71,9 +84,13 @@ def get_current_user_allowing_password_change(
     Raises:
         AuthenticationError: From the service, if the token is invalid or
             expired or its user is missing or deactivated. The handler turns
-            it into a 401 with code ``AUTHENTICATION_FAILED``.
+            it into a 401 with code ``AUTHENTICATION_FAILED``. The user's ID
+            is not stored in that case, so the log line names nobody.
     """
-    return service.get_authenticated_user(db, token)
+    user = service.get_authenticated_user(db, token)
+    request.state.user_id = user.id
+
+    return user
 
 
 def get_current_user(

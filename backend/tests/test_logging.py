@@ -1,8 +1,31 @@
+import logging
+import re
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.logging import _resolve_request_id
+
+REQUEST_ID = "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
+
+
+def _request_log_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the lines the request middleware logged during the test.
+
+    Only records from ``app.core.logging`` count: the test client logs every
+    request too, with its full URL, so its lines must never be mistaken for
+    the application's. Tests make the request inside
+    ``caplog.at_level(logging.INFO, logger="app.core.logging")``, so the
+    lines are recorded even when ``LOG_LEVEL`` is set higher.
+
+    Args:
+        caplog: pytest's log capture for the running test.
+
+    Returns:
+        The middleware's messages, in the order they were logged.
+    """
+    return [record.getMessage() for record in caplog.records if record.name == "app.core.logging"]
 
 
 @pytest.mark.parametrize(
@@ -70,3 +93,32 @@ def test_generates_an_id_when_clients_sends_fake_uuid_value(header_value: str | 
     """
     resolved = _resolve_request_id(header_value)
     assert uuid.UUID(resolved)
+
+
+def test_request_log_line_has_the_plan_fields_and_no_query_string(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A request is logged as one line with the plan's fields, without its query string.
+
+    Plan §12 asks for the request ID, user ID, method, path, status, and
+    duration, so a request a user reports can be found, and the query
+    string stays out because it can carry patient names or phone numbers.
+    The whole line must match, so a missing field and a leaked parameter
+    both fail. No token is sent, so the user ID is ``None``.
+    """
+    with caplog.at_level(logging.INFO, logger="app.core.logging"):
+        response = client.get(
+            "/health/live?name=Jane&phone=0501234567",
+            headers={"X-Request-ID": REQUEST_ID},
+        )
+
+    lines = _request_log_lines(caplog)
+
+    assert response.status_code == 200
+    assert len(lines) == 1
+    assert re.fullmatch(
+        rf"request_id={REQUEST_ID} user_id=None method=GET path=/health/live "
+        r"status=200 duration_ms=\d+\.\d",
+        lines[0],
+    )

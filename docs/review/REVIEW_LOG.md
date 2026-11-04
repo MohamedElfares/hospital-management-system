@@ -20,13 +20,19 @@ closes when the last stage is done, so an interrupted run is obvious.
 - **API check:** there is no committed `openapi.json` yet, so a stage that
   touches a router or schema exports the schema before and after its
   changes and diffs the two.
+- **Recurring finding (stage 2):** R-003, R-011, and R-012 are the same
+  kind: a guard for secrets, personal data, or configuration that no test
+  runs. Proposed line for `CLAUDE.md` under "Backend tests", yours to
+  accept or reject: "Every guard that keeps secrets or personal data out of
+  responses and logs, or stops startup on a bad setting, gets a test that
+  fails when the guard is removed."
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
 ### Application code
 
 - [x] 1. Core errors — `app/core/__init__.py`, `app/core/errors.py` (420 lines) — refactor: none, no rename needed; docs: `0b901d8`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-001 to R-003
-- [ ] 2. Core config and logging — `app/core/config.py` (audit only), `app/core/logging.py` (384 lines)
+- [x] 2. Core config and logging — `app/core/config.py` (audit only), `app/core/logging.py` (384 lines) — refactor: none in `logging.py`; the two `config.py` renames (R-002's `err`, and `item`) are your edits, in R-006; docs: `8522543`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-004 to R-012
 - [ ] 3. Core security and permissions — `app/core/security.py`, `app/core/permissions.py` (377 lines)
 - [ ] 4. Database and migrations — `app/db/__init__.py`, `app/db/base.py`, `app/db/session.py`, `migrations/env.py`, `migrations/versions/feee06ced45e_create_users_table.py`, `migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` (476 lines; migrations audit only)
 - [ ] 5. users: models and repository — `app/modules/users/__init__.py`, `models.py`, `repository.py` (251 lines)

@@ -232,7 +232,8 @@ def _token_row(db_session: Session, raw_token: str) -> RefreshToken:
     ``populate_existing`` makes the query overwrite any copy of the row the
     session already holds, so the test sees the values in the database
     rather than a stale object. Without it, a bulk UPDATE such as
-    ``revoke_all_for_user`` could leave an earlier copy showing old values.
+    ``revoke_all_refresh_tokens_for_user`` could leave an earlier copy
+    showing old values.
 
     Args:
         db_session: The test's database session.

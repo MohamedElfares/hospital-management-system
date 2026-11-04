@@ -12,18 +12,18 @@ from app.modules.auth.models import RefreshToken
 
 
 def test_an_added_refresh_token_is_saved_on_flush(db_session: Session) -> None:
-    """A token passed to ``add`` is inserted when the session flushes.
+    """A token passed to ``create_refresh_token`` is inserted when the session flushes.
 
     A query by its hash returns the very same object, so the row in the
-    table is this token and not merely some match. ``add`` itself doesn't
-    flush or commit; the test flushes, as the service will.
+    table is this token and not merely some match. ``create_refresh_token``
+    itself doesn't flush or commit; the test flushes, as the service will.
     """
     user = make_user()
     db_session.add(user)
     db_session.flush()
 
     token = make_refresh_token(user.id)
-    repository.add(db_session, token)
+    repository.create_refresh_token(db_session, token)
     db_session.flush()
 
     result = db_session.scalar(
@@ -53,7 +53,7 @@ def test_a_token_can_be_found_by_its_hash(db_session: Session) -> None:
     db_session.add(target_token)
     db_session.flush()
 
-    found_token = repository.get_by_hash(db_session, target_token.token_hash)
+    found_token = repository.get_refresh_token_by_hash(db_session, target_token.token_hash)
 
     assert found_token is not None
     assert found_token.id == target_token.id
@@ -70,7 +70,7 @@ def test_an_unknown_hash_finds_no_token(db_session: Session) -> None:
     db_session.add(existing_token)
     db_session.flush()
 
-    found_token = repository.get_by_hash(
+    found_token = repository.get_refresh_token_by_hash(
         db_session,
         "unknown",
     )
@@ -94,14 +94,16 @@ def test_a_revoked_token_is_still_found_by_its_hash(db_session: Session) -> None
     db_session.add(revoked_token)
     db_session.flush()
 
-    found_token = repository.get_by_hash(db_session, revoked_token.token_hash)
+    found_token = repository.get_refresh_token_by_hash(db_session, revoked_token.token_hash)
 
     assert found_token is not None
     assert found_token.id == revoked_token.id
     assert found_token.revoked_at == now
 
 
-def test_revoke_all_revokes_every_active_token_of_the_user(db_session: Session) -> None:
+def test_revoke_all_refresh_tokens_revokes_every_active_token_of_the_user(
+    db_session: Session,
+) -> None:
     """Every unrevoked token of the user is revoked with exactly the given time.
 
     The tokens are read back with a new query, because the UPDATE changes
@@ -121,7 +123,7 @@ def test_revoke_all_revokes_every_active_token_of_the_user(db_session: Session) 
     db_session.add(second_token)
     db_session.flush()
 
-    repository.revoke_all_for_user(db_session, user.id, revoked_at=now)
+    repository.revoke_all_refresh_tokens_for_user(db_session, user.id, revoked_at=now)
 
     user_tokens = (
         db_session.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))
@@ -134,7 +136,7 @@ def test_revoke_all_revokes_every_active_token_of_the_user(db_session: Session) 
         assert token.revoked_at == now
 
 
-def test_revoke_all_leaves_other_users_tokens_alone(db_session: Session) -> None:
+def test_revoke_all_refresh_tokens_leaves_other_users_tokens_alone(db_session: Session) -> None:
     """Revoking one user's tokens leaves another user's token unrevoked.
 
     A missing user filter would end every session in the hospital at
@@ -155,7 +157,7 @@ def test_revoke_all_leaves_other_users_tokens_alone(db_session: Session) -> None
     db_session.add(revoked_user_token)
     db_session.flush()
 
-    repository.revoke_all_for_user(db_session, revoked_user.id, now)
+    repository.revoke_all_refresh_tokens_for_user(db_session, revoked_user.id, now)
 
     untouched_token = db_session.execute(
         select(RefreshToken).where(RefreshToken.user_id == other_user.id)
@@ -164,7 +166,9 @@ def test_revoke_all_leaves_other_users_tokens_alone(db_session: Session) -> None
     assert untouched_token.revoked_at is None
 
 
-def test_revoke_all_keeps_the_time_of_already_revoked_tokens(db_session: Session) -> None:
+def test_revoke_all_refresh_tokens_keeps_the_time_of_already_revoked_tokens(
+    db_session: Session,
+) -> None:
     """A token revoked earlier keeps its original revocation time.
 
     The token is saved already revoked, then revoked again five days
@@ -181,7 +185,7 @@ def test_revoke_all_keeps_the_time_of_already_revoked_tokens(db_session: Session
     db_session.add(make_refresh_token(user.id, revoked_at=now))
     db_session.flush()
 
-    repository.revoke_all_for_user(db_session, user.id, revoked_at=later)
+    repository.revoke_all_refresh_tokens_for_user(db_session, user.id, revoked_at=later)
 
     kept_token = db_session.execute(
         select(RefreshToken).where(RefreshToken.user_id == user.id)

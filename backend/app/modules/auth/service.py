@@ -178,7 +178,7 @@ def _issue_tokens(
         expires_at=expires_at,
     )
 
-    repository.add(session, refresh_token_row)
+    repository.create_refresh_token(session, refresh_token_row)
 
     # Keywords, because both fields are strings: swapped positions would put
     # the raw refresh token in the response body.
@@ -300,7 +300,9 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     if not raw_refresh_token:
         raise AuthenticationError(_INVALID_TOKEN)
 
-    presented_token = repository.get_by_hash(session, hash_refresh_token(raw_refresh_token))
+    presented_token = repository.get_refresh_token_by_hash(
+        session, hash_refresh_token(raw_refresh_token)
+    )
 
     if presented_token is None:
         raise AuthenticationError(_INVALID_TOKEN)
@@ -323,7 +325,7 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
             presented_token.user_id,
             presented_token.id,
         )
-        repository.revoke_all_for_user(session, presented_token.user_id, now)
+        repository.revoke_all_refresh_tokens_for_user(session, presented_token.user_id, now)
 
         # TODO(1.3): audit the reuse and the mass revocation (plan §8.6)
 
@@ -387,7 +389,9 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
     if not raw_refresh_token:
         return
 
-    presented_token = repository.get_by_hash(session, hash_refresh_token(raw_refresh_token))
+    presented_token = repository.get_refresh_token_by_hash(
+        session, hash_refresh_token(raw_refresh_token)
+    )
 
     # Signing out ends only the caller's own session, so a stolen cookie
     # can't be used with another account to end someone else's. A revoked
@@ -537,7 +541,7 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
 
     # Revoke before issuing: the bulk UPDATE would otherwise also revoke the
     # new token, which autoflush has already written to the table.
-    repository.revoke_all_for_user(session, user.id, now)
+    repository.revoke_all_refresh_tokens_for_user(session, user.id, now)
 
     issued_tokens, _ = _issue_tokens(session, user, expires_at)
 

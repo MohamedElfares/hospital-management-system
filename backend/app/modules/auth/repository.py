@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.modules.auth.models import RefreshToken
 
 
-def add(session: Session, token: RefreshToken) -> None:
+def create_refresh_token(session: Session, token: RefreshToken) -> None:
     """Register a new refresh token with the session.
 
     Nothing is written yet: the row is inserted when the service flushes or
@@ -45,7 +45,7 @@ def add(session: Session, token: RefreshToken) -> None:
     session.add(token)
 
 
-def get_by_hash(session: Session, token_hash: str) -> RefreshToken | None:
+def get_refresh_token_by_hash(session: Session, token_hash: str) -> RefreshToken | None:
     """Find the refresh token with a given hash and lock its row.
 
     The row is read with ``SELECT ... FOR UPDATE``, so it stays locked until
@@ -73,7 +73,9 @@ def get_by_hash(session: Session, token_hash: str) -> RefreshToken | None:
     return session.scalar(statement)
 
 
-def revoke_all_for_user(session: Session, user_id: uuid.UUID, revoked_at: datetime) -> None:
+def revoke_all_refresh_tokens_for_user(
+    session: Session, user_id: uuid.UUID, revoked_at: datetime
+) -> None:
     """Revoke every refresh token of one user that isn't revoked yet.
 
     Used whenever all of a user's sessions must end at once: when a rotated

@@ -520,7 +520,7 @@ erDiagram
 - **Forced password change:** while `must_change_password` is set, every endpoint except `/auth/me`, `/auth/refresh`, `/auth/change-password`, and `/auth/logout` returns `403 PASSWORD_CHANGE_REQUIRED`. Refresh stays open so the web app can restore the session after a reload and show the change-password screen.
 - **Rate limiting:** login and portal activation are limited per IP address and per account. The limiter is in memory, which is correct for a single instance; ADR-0004 notes that several instances would need a shared store such as Redis. Over the limit, the API returns `429 RATE_LIMITED`.
 - **In the web app:** the access token lives in memory only, never in `localStorage`. After a page reload, the app calls `/auth/refresh`; on a `401`, it refreshes once and retries the request.
-- **CSRF protection:** the web app and the API share one origin, and the refresh cookie is `SameSite=Strict`, so other websites can't make the browser send it. No CORS origins are configured in production.
+- **CSRF protection:** the web app and the API share one origin, and the refresh cookie is `SameSite=Strict`, so other websites can't make the browser send it. The API installs no CORS middleware, so browsers don't let other websites read its responses.
 
 ### 8.2 Preventing double-booking
 
@@ -955,7 +955,7 @@ Check every item before each release.
 - [ ] Activation codes are random, hashed, single-use, expiring, and locked after 5 failed attempts
 - [ ] All SQL goes through SQLAlchemy with bound parameters
 - [ ] Inputs have limits: string lengths, numeric ranges, and a page-size cap
-- [ ] Production runs on one origin with no CORS origins configured
+- [ ] Production runs on one origin, and the API installs no CORS middleware
 - [ ] Security headers are set, including a Content-Security-Policy for web app pages
 - [ ] Secrets live only in environment variables; `.env` is git-ignored and blocked from Claude Code; `.env.example` is committed
 - [ ] Production error responses never include stack traces
@@ -1153,13 +1153,13 @@ You create these settings in `backend/.env` and load them in `backend/app/core/c
 
 | Variable | Example | Notes |
 |---|---|---|
-| `ENVIRONMENT` | `local`, `test`, or `production` | Controls error detail and the cookie's `Secure` flag |
+| `ENVIRONMENT` | `local`, `test`, or `production` | Controls the refresh cookie's `Secure` flag. Error responses are generic in every environment; the traceback goes to the log |
 | `DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms` | Must start with `postgresql+psycopg://` (the settings validator checks it). In production, use Neon's connection string with its `postgresql://` prefix changed to `postgresql+psycopg://`, keeping `sslmode=require` |
+| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`; the suite refuses to run without it rather than falling back to `DATABASE_URL` |
 | `JWT_SECRET_KEY` | *(64 hex characters)* | At least 32 characters and different in every environment; generate with `uv run python -c "import secrets; print(secrets.token_hex(32))"` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | |
 | `HOSPITAL_TIMEZONE` | `Europe/London` | IANA timezone name used for "today" and slot rules |
-| `CORS_ORIGINS` | *(empty)* | Comma-separated; stays empty because the web app and API share one origin |
 | `LOG_LEVEL` | `INFO` | |
 | `DEMO_MODE` | `true` in production | Turns on demo-account protection |
 | `WEB_DIST_DIR` | *(empty locally)* | Phase 2: folder of the built web app inside the container; empty turns serving off |

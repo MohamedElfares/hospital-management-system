@@ -62,6 +62,30 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
 
+def test_create_admin_rejects_a_control_character_in_the_name(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A NUL typed at the name prompt is refused as invalid input, and nothing is saved.
+
+    PostgreSQL can't store NUL, so a name holding one must be refused by
+    validation, with the field named, rather than end the command with a
+    database error. A command-line option can't carry NUL, so the name
+    comes through the prompt.
+    """
+    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["create-admin", "--email", ADMIN_EMAIL],
+        input="Ana\x00Smith\nPassword@1331\nPassword@1331\n",
+    )
+
+    assert result.exit_code == 1
+    assert "full_name: Value error, must not contain control characters" in result.output
+    assert get_user_by_email(db_session, ADMIN_EMAIL) is None
+
+
 def test_create_admin_refuses_when_an_active_admin_exists(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,

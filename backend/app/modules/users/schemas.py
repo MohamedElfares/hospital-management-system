@@ -17,13 +17,16 @@ The output schema decides which fields of a user ever leave the API, so the
 password hash and internal flags can't be sent by accident.
 """
 
+# Unicode character categories; finds control characters in the full name.
+import unicodedata
+
 # The UUID type of user IDs; the type of UserRead.id.
 import uuid
 
 # Attaches rules to a type; builds the Email and Password types and the name field.
 from typing import Annotated
 
-# Runs a function on a value after Pydantic's own checks; lowercases emails.
+# Runs a function on a value after Pydantic's own checks; lowercases emails, checks names.
 from pydantic import AfterValidator
 
 # Base class for Pydantic models that validate their fields on creation.
@@ -70,6 +73,35 @@ Password = Annotated[
 ]
 
 
+def _reject_control_characters(text: str) -> str:
+    """Refuse text that holds a control character.
+
+    A full name is one line of display text, so no control character
+    belongs in it. PostgreSQL can't store NUL at all, so without this check
+    a name holding one would fail the insert with a database error, and
+    tabs, line breaks, or terminal escape codes would break the screens
+    that show the name. Only Unicode's control category, ``Cc``, is
+    refused: U+0000 to U+001F and U+007F to U+009F. Invisible formatting
+    characters stay allowed, because some scripts need them inside names,
+    such as the zero-width non-joiner in Persian.
+
+    Args:
+        text: The value after Pydantic has stripped surrounding whitespace,
+            so a trailing line break is already gone.
+
+    Returns:
+        The value, unchanged.
+
+    Raises:
+        ValueError: If the value holds a control character. Pydantic
+            reports it as a validation error on the field.
+    """
+    if any(unicodedata.category(character) == "Cc" for character in text):
+        raise ValueError("must not contain control characters, such as tabs or line breaks")
+
+    return text
+
+
 class UserCreate(BaseModel):
     """Validated input for creating one user account.
 
@@ -80,10 +112,11 @@ class UserCreate(BaseModel):
     address is then lowercased, which satisfies the database's lowercase
     CHECK. Sign-in applies the same rule to the email it is given, so the
     account is found however its address was typed. The full name is
-    stripped of surrounding spaces, and a name of only spaces is rejected.
-    The password is kept exactly as typed, spaces included, because
-    changing it would lock the user out. That is why the model has no
-    ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
+    stripped of surrounding spaces, and a name of only spaces, or one that
+    holds a control character such as NUL, is rejected before it reaches
+    the database. The password is kept exactly as typed, spaces included,
+    because changing it would lock the user out. That is why the model has
+    no ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
     password too.
 
     The password follows the shared ``Password`` rule of 12 to 128
@@ -96,7 +129,8 @@ class UserCreate(BaseModel):
 
     Attributes:
         email: Sign-in email, validated, normalized, and lowercased.
-        full_name: Display name, 1 to 255 characters after stripping.
+        full_name: Display name, 1 to 255 characters after stripping, with
+            no control characters.
         password: Plain password to hash, 12 to 128 characters.
         role: The new user's role.
     """
@@ -109,6 +143,7 @@ class UserCreate(BaseModel):
             min_length=1,
             max_length=255,
         ),
+        AfterValidator(_reject_control_characters),
     ]
     password: Password
     role: Role

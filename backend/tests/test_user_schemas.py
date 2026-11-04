@@ -85,6 +85,49 @@ def test_an_invalid_name_is_rejected(full_name: str) -> None:
     assert exc_info.value.errors()[0]["loc"] == ("full_name",)
 
 
+@pytest.mark.parametrize(
+    "full_name",
+    [
+        pytest.param("Ana\x00Smith", id="nul"),
+        pytest.param("Ana\tSmith", id="tab"),
+        pytest.param("Ana\nSmith", id="line-break"),
+        pytest.param("Ana\x1b[31mSmith", id="escape-code"),
+        pytest.param("Ana\x7fSmith", id="delete"),
+        pytest.param("Ana\x85Smith", id="next-line"),
+    ],
+)
+def test_a_name_with_a_control_character_is_rejected(full_name: str) -> None:
+    """A control character inside the name fails on ``full_name``.
+
+    NUL is the case that matters most, because PostgreSQL can't store it;
+    the others are common C0 controls, DEL, and a C1 control. Each sits
+    between two letters, where stripping can't remove it, and the message
+    shows the control-character check refused the name, not another rule.
+    """
+    data = valid_data(full_name=full_name)
+    with pytest.raises(ValidationError) as exc_info:
+        UserCreate(**data)
+
+    error = exc_info.value.errors()[0]
+
+    assert error["loc"] == ("full_name",)
+    assert "must not contain control characters" in error["msg"]
+
+
+def test_a_name_with_a_zero_width_non_joiner_is_accepted() -> None:
+    """An invisible formatting character in the name is kept as given.
+
+    The zero-width non-joiner is a formatting character, not a control
+    character, and some scripts, Persian among them, need it inside names.
+    The check must refuse control characters only.
+    """
+    full_name = "Ana‌Smith"
+    data = valid_data(full_name=full_name)
+    user = UserCreate(**data)
+
+    assert user.full_name == full_name
+
+
 def test_the_password_is_kept_exactly_as_typed() -> None:
     """Spaces around the password are kept.
 

@@ -173,7 +173,7 @@ uv sync
 uv run alembic upgrade head
 
 # 5. Create the first Admin (asks for the password twice, hidden)
-uv run python -m app.cli create-admin --email admin@hospital.test --full-name "Ada Admin"
+uv run python -m app.cli create-admin --email admin@example.com --full-name "Ada Admin"
 
 # 6. Run the API
 uv run fastapi dev app/main.py

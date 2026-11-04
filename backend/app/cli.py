@@ -8,7 +8,7 @@ running it requires the database credentials, which is what makes
 ``export-openapi`` join it in Milestone 1.7.
 
 Example:
-    ``uv run python -m app.cli create-admin --email admin@hospital.test --full-name "Ada Admin"``
+    ``uv run python -m app.cli create-admin --email admin@example.com --full-name "Ada Admin"``
 """
 
 # Attaches Typer option settings to a parameter's type.

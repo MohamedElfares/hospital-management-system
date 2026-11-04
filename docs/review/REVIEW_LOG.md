@@ -62,7 +62,8 @@ closes when the last stage is done, so an interrupted run is obvious.
   `test_cli.py` (stage 15), and `test_auth_api.py` (stage 21), so those
   stages grow a little. Each commit passes Ruff and the suite on its own,
   run like CI in a clean worktree: 287, 288, then 296 tests. R-021, the
-  `create-admin` example's `.test` address, is open.
+  `create-admin` example's `.test` address, found while fixing R-018, was
+  fixed in `7e2eaed`. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

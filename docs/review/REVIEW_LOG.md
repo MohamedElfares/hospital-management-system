@@ -25,7 +25,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
 ### Application code
 
-- [ ] 1. Core errors — `app/core/__init__.py`, `app/core/errors.py` (420 lines)
+- [x] 1. Core errors — `app/core/__init__.py`, `app/core/errors.py` (420 lines) — refactor: none, no rename needed; docs: `0b901d8`; Ruff clean, 245 passed; no router or schema touched, so no OpenAPI diff; findings R-001 to R-003
 - [ ] 2. Core config and logging — `app/core/config.py` (audit only), `app/core/logging.py` (384 lines)
 - [ ] 3. Core security and permissions — `app/core/security.py`, `app/core/permissions.py` (377 lines)
 - [ ] 4. Database and migrations — `app/db/__init__.py`, `app/db/base.py`, `app/db/session.py`, `migrations/env.py`, `migrations/versions/feee06ced45e_create_users_table.py`, `migrations/versions/3da0f6bf8dd1_create_refresh_tokens_table.py` (476 lines; migrations audit only)

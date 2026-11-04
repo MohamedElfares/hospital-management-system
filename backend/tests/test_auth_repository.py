@@ -5,6 +5,7 @@ from datetime import timedelta
 from factories import make_refresh_token
 from factories import make_user
 from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.modules.auth import repository
@@ -99,6 +100,76 @@ def test_a_revoked_token_is_still_found_by_its_hash(db_session: Session) -> None
     assert found_token is not None
     assert found_token.id == revoked_token.id
     assert found_token.revoked_at == now
+
+
+def test_a_locked_token_lookup_reads_the_row_as_it_is_now(db_session: Session) -> None:
+    """The locking lookup replaces a copy of the token the session already holds.
+
+    The copy is read back first, so it holds every column, as a token
+    loaded by a query does; a column the session never loaded would be
+    filled in fresh anyway and prove nothing. The token is then revoked in
+    the database through plain SQL, which leaves that copy unrevoked. The
+    lookup must still report it revoked: a lock is only worth taking if
+    the row read under it is the one the database holds, or a refresh
+    could rotate a token that a sign-out had just revoked.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    token = make_refresh_token(user.id)
+    db_session.add(token)
+    db_session.flush()
+    db_session.refresh(token)
+
+    db_session.execute(
+        text("UPDATE refresh_tokens SET revoked_at = now() WHERE id = :id"),
+        {"id": token.id},
+    )
+
+    found_token = repository.get_refresh_token_by_hash(db_session, token.token_hash)
+
+    assert found_token is token
+    assert token.revoked_at is not None
+
+
+def test_the_user_of_a_token_is_found_by_its_hash(db_session: Session) -> None:
+    """The owner lookup returns the user of the token with that hash, revoked or not.
+
+    The decoy belongs to another user and is saved first, so a lookup that
+    ignored the hash would return the wrong user. The target token is
+    revoked, because refresh needs its user to lock even when the token
+    turns out to be a stolen copy.
+    """
+    decoy_user = make_user(email="other-user@example.com")
+    user = make_user()
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+
+    decoy_token = make_refresh_token(decoy_user.id)
+    target_token = make_refresh_token(user.id, revoked_at=datetime.now(UTC))
+
+    db_session.add(decoy_token)
+    db_session.add(target_token)
+    db_session.flush()
+
+    user_id = repository.get_refresh_token_user_id_by_hash(db_session, target_token.token_hash)
+
+    assert user_id == user.id
+
+
+def test_an_unknown_hash_finds_no_user_id(db_session: Session) -> None:
+    """A hash that no token has returns None, even with a token in the table."""
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    db_session.add(make_refresh_token(user.id))
+    db_session.flush()
+
+    assert repository.get_refresh_token_user_id_by_hash(db_session, "unknown") is None
 
 
 def test_revoke_all_refresh_tokens_revokes_every_active_token_of_the_user(

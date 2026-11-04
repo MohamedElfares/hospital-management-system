@@ -10,7 +10,9 @@ that the router turns into a response and a cookie.
 Refresh rotates the session: each refresh token works once, and using it
 replaces it with a new one that keeps the original expiry. A token that is
 presented again after being replaced means a copy exists, so every session
-of that user is ended.
+of that user is ended. Refresh and a password change both lock the user's
+row first, so a refresh never overlaps with a revocation of all of that
+user's tokens.
 
 Signing out revokes only the refresh token of the device signing out, and
 never fails, so signing out twice is harmless.
@@ -86,7 +88,7 @@ from app.core.security import verify_login_password
 # Checks a password against the stored hash; confirms the current one and rejects reuse.
 from app.core.security import verify_password
 
-# Saves refresh token rows without committing.
+# Refresh token queries: finds, locks, saves, and revokes rows without committing.
 from app.modules.auth import repository
 
 # The refresh_tokens table's ORM model.
@@ -103,6 +105,9 @@ from app.modules.users.service import get_user_by_email
 
 # Users service lookup by id; loads the account an access token names.
 from app.modules.users.service import get_user_by_id
+
+# Users service lookup that locks the account's row; puts refreshes and password changes in turn.
+from app.modules.users.service import get_user_by_id_for_update
 
 # One message for every failure, so no reply hints at which check failed.
 _INVALID_CREDENTIALS = "Incorrect email or password."
@@ -259,9 +264,18 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     presented token, links it to its replacement through
     ``replaced_by_id``, and issues a new access token and refresh token.
     The new refresh token keeps the old one's expiry, so refreshing never
-    extends a session past the fixed window that began at sign-in. The
-    presented row is locked while it is read, so two requests with the
-    same token can't both rotate it.
+    extends a session past the fixed window that began at sign-in.
+
+    Two row locks keep concurrent requests apart, always taken in the same
+    order: the user's row, then the token's. A password change locks the
+    user's row first too, so no revocation of all the user's tokens can run
+    while this refresh is between its locks and its commit, and the token
+    it issues can't escape one. Two refreshes with the same cookie run one after the other too,
+    and the second finds the token rotated and raises the alarm, which
+    ADR-0004 accepts. The token's own lock does the same for a sign-out of
+    that token. Taking them in the other order would let the alarm and a
+    refresh of another token wait for each other, which PostgreSQL ends by
+    aborting one of them.
 
     Only a rotated token presented again counts as reuse: it was already
     exchanged, so whoever sends it kept a copy, and the server can't tell
@@ -300,10 +314,20 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     if not raw_refresh_token:
         raise AuthenticationError(_INVALID_TOKEN)
 
-    presented_token = repository.get_refresh_token_by_hash(
-        session, hash_refresh_token(raw_refresh_token)
-    )
+    token_hash = hash_refresh_token(raw_refresh_token)
 
+    # The user's row first, then the token's, the order a password change
+    # locks in too. A token's user never changes, so it can be read before
+    # any lock is held.
+    user_id = repository.get_refresh_token_user_id_by_hash(session, token_hash)
+
+    if user_id is None:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    user = get_user_by_id_for_update(session, user_id)
+    presented_token = repository.get_refresh_token_by_hash(session, token_hash)
+
+    # Deleting the user before its lock was granted deletes the token too.
     if presented_token is None:
         raise AuthenticationError(_INVALID_TOKEN)
 
@@ -339,8 +363,6 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
 
     # Deactivation also revokes every token (plan §8.1); checking the account
     # here means a token that escaped that still can't start a new session.
-    user = get_user_by_id(session, presented_token.user_id)
-
     if user is None or not user.is_active:
         raise AuthenticationError(_INVALID_TOKEN)
 
@@ -511,9 +533,16 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     ``ACCESS_TOKEN_EXPIRE_MINUTES``. The sign-in time is left alone, since
     this isn't a sign-in. Everything is committed together.
 
+    The user's row is locked before anything is checked, as ``refresh``
+    locks it, so a refresh on another device can't slip a new token past
+    the revocation. The lock also reloads ``user``, so the current password
+    is checked against the hash as it is now, even if another password
+    change committed after this request loaded the account.
+
     Args:
         session: The open database session. This function commits it.
-        user: The signed-in user, from the access token.
+        user: The signed-in user, from the access token, loaded in this
+            session.
         data: The current and new passwords, the new one already checked
             against the password rule. Neither is logged or stored.
 
@@ -526,6 +555,10 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     """
     current_password = data.current_password.get_secret_value()
     new_password = data.new_password.get_secret_value()
+
+    # The same lock refresh takes first, so the two run in turn (see refresh).
+    # It reloads user in place, because user belongs to this session.
+    get_user_by_id_for_update(session, user.id)
 
     if not verify_password(current_password, user.password_hash):
         raise BadRequestError("Current password is incorrect.")

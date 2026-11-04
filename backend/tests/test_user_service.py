@@ -17,6 +17,7 @@ from app.modules.users.service import create_first_admin
 from app.modules.users.service import create_user
 from app.modules.users.service import get_user_by_email
 from app.modules.users.service import get_user_by_id
+from app.modules.users.service import get_user_by_id_for_update
 
 EMAIL = "test@example.com"
 PASSWORD = "Password@1331"
@@ -368,4 +369,42 @@ def test_get_user_by_id_returns_inactive_users_too(db_session: Session) -> None:
 
     assert result is not None
     assert result.id == user.id
+    assert result.is_active is False
+
+
+def test_get_user_by_id_for_update_finds_an_existing_user(db_session: Session) -> None:
+    """The service's locking lookup finds a saved user by id, not the decoy beside it.
+
+    The decoy is added first, and the session is emptied, so the result
+    comes from the database and belongs to the id that was asked for.
+    """
+    decoy_user = make_user(email="other@example.com")
+    user = make_user()
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    result = get_user_by_id_for_update(db_session, user.id)
+
+    assert result is not None
+    assert result.id == user.id
+
+
+def test_get_user_by_id_for_update_returns_inactive_users_too(db_session: Session) -> None:
+    """A deactivated user is still found by the locking lookup, flag and all.
+
+    Refresh locks the account before it checks ``is_active``, so the lookup
+    must return the inactive row and leave the refusal to its caller.
+    """
+    user = make_user(is_active=False)
+
+    db_session.add(user)
+    db_session.flush()
+    db_session.expunge_all()
+
+    result = get_user_by_id_for_update(db_session, user.id)
+
+    assert result is not None
     assert result.is_active is False

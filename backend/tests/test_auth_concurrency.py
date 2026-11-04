@@ -1,9 +1,12 @@
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from collections.abc import Iterator
 from concurrent.futures import Future
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC
+from datetime import datetime
 
 import pytest
 from factories import make_refresh_token
@@ -17,17 +20,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
 from app.core.errors import AuthenticationError
+from app.core.errors import BadRequestError
 from app.core.permissions import Role
 from app.core.security import generate_refresh_token
 from app.core.security import hash_password
 from app.core.security import hash_refresh_token
+from app.core.security import verify_password
 from app.modules.auth import repository
 from app.modules.auth import service
 from app.modules.auth.models import RefreshToken
+from app.modules.auth.schemas import PasswordChange
 from app.modules.auth.service import IssuedTokens
 from app.modules.users.models import User
 
 PASSWORD = "Correct-Password-1"
+NEW_PASSWORD = "New-Password-123"
 
 # The longest any wait in these tests may take. A lock that is missing or
 # never released makes a test fail after this long instead of hanging.
@@ -211,6 +218,49 @@ def _sign_out_in_new_session(
     """
     with session_factory() as session:
         service.logout(session, user, raw_token)
+
+
+def _change_password_in_new_session(
+    session_factory: sessionmaker[Session],
+    user: User,
+) -> IssuedTokens:
+    """Change a user's password in a session of its own, as one request would.
+
+    The user is loaded in the request's session first, as the
+    authentication dependency loads the signed-in user, and the password
+    goes from ``PASSWORD`` to ``NEW_PASSWORD``.
+
+    Args:
+        session_factory: Makes the request's session.
+        user: The user whose password changes.
+
+    Returns:
+        The tokens of the new session the change starts.
+    """
+    with session_factory() as session:
+        signed_in_user = session.get(User, user.id)
+        assert signed_in_user is not None
+        data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+
+        return service.change_password(session, signed_in_user, data)
+
+
+def _token_id(session_factory: sessionmaker[Session], raw_token: str) -> uuid.UUID:
+    """Return the primary key of the refresh token a raw value belongs to.
+
+    Args:
+        session_factory: Makes the session that reads the row.
+        raw_token: The raw refresh token.
+
+    Returns:
+        The token row's ``id``.
+    """
+    statement = select(RefreshToken.id).where(
+        RefreshToken.token_hash == hash_refresh_token(raw_token)
+    )
+
+    with session_factory() as session:
+        return session.execute(statement).scalar_one()
 
 
 def _pause_before_issuing_tokens(monkeypatch: pytest.MonkeyPatch) -> _Pause:
@@ -409,3 +459,136 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
 
     assert _count_tokens(session_factory, committed_user, is_usable=False) == 1
     assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+
+
+# Where the held refresh in the next two tests stops: after all its checks,
+# or right after it has locked the token. A refresh that locked the token
+# before the user would hold only the token at the second point, and it and
+# the competing request would then wait for each other until PostgreSQL
+# aborted one, so the second point is what pins the order of the two locks.
+HELD_REFRESH_PAUSES = [
+    pytest.param(_pause_before_issuing_tokens, id="held-before-issuing-tokens"),
+    pytest.param(_pause_after_the_token_lookup, id="held-after-locking-the-token"),
+]
+
+
+@pytest.mark.parametrize("pause_held_refresh", HELD_REFRESH_PAUSES)
+def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
+    pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
+    monkeypatch: pytest.MonkeyPatch,
+    test_engine: Engine,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """The reuse alarm also ends a session that a refresh is issuing at that moment.
+
+    A thief refreshes with the replacement of a stolen token, and that
+    refresh is held with its locks taken. The real user then presents the
+    stolen token, which was already rotated, so the alarm goes off. The
+    alarm has to wait for the held refresh, then revoke the token that
+    refresh issued along with the rest, so the thief's new session ends
+    with the others. Before the fix the alarm's revocation saw only the
+    tokens committed when it started, and the thief kept a session that
+    went on refreshing.
+    """
+    thief_raw_token = _commit_refresh_token(session_factory, committed_user)
+    stolen_raw_token = _commit_refresh_token(
+        session_factory,
+        committed_user,
+        revoked_at=datetime.now(UTC),
+        replaced_by_id=_token_id(session_factory, thief_raw_token),
+    )
+    pause = pause_held_refresh(monkeypatch)
+
+    held_future, competing_future = _race(
+        test_engine,
+        pause,
+        held=lambda: _refresh_in_new_session(session_factory, thief_raw_token),
+        competing=lambda: _refresh_in_new_session(session_factory, stolen_raw_token),
+    )
+
+    thief_tokens = held_future.result()
+
+    assert isinstance(thief_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError):
+        competing_future.result()
+
+    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+
+    with pytest.raises(AuthenticationError):
+        _refresh_in_new_session(session_factory, thief_tokens.refresh_token)
+
+
+@pytest.mark.parametrize("pause_held_refresh", HELD_REFRESH_PAUSES)
+def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
+    pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
+    monkeypatch: pytest.MonkeyPatch,
+    test_engine: Engine,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A password change also ends a session another device is refreshing at that moment.
+
+    The other device's refresh is held with its locks taken, and the user
+    changes the password on this device. The change has to wait for the
+    held refresh, then revoke the token that refresh issued along with the
+    rest, while this device keeps the new session the change started.
+    Before the fix the change's revocation saw only the tokens committed
+    when it started, and the other device stayed signed in after the
+    password change.
+    """
+    other_device_raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = pause_held_refresh(monkeypatch)
+
+    held_future, competing_future = _race(
+        test_engine,
+        pause,
+        held=lambda: _refresh_in_new_session(session_factory, other_device_raw_token),
+        competing=lambda: _change_password_in_new_session(session_factory, committed_user),
+    )
+
+    other_device_tokens = held_future.result()
+    this_device_tokens = competing_future.result()
+
+    assert isinstance(other_device_tokens, IssuedTokens)
+    assert isinstance(this_device_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError):
+        _refresh_in_new_session(session_factory, other_device_tokens.refresh_token)
+
+    assert isinstance(
+        _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
+        IssuedTokens,
+    )
+
+
+def test_a_password_change_is_checked_against_a_change_committed_after_loading(
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A password change is checked against the stored hash as it is now.
+
+    This request loads the user first, as its authentication does. Another
+    device then changes the password from ``PASSWORD`` and commits before
+    this request continues with the same old password. It must be refused,
+    because the stored password is no longer the one it gives. Checked
+    against the copy it loaded at the start, it would succeed and silently
+    overwrite the other device's change.
+    """
+    with session_factory() as session:
+        signed_in_user = session.get(User, committed_user.id)
+        assert signed_in_user is not None
+
+        _change_password_in_new_session(session_factory, committed_user)
+
+        data = PasswordChange(current_password=PASSWORD, new_password="Third-Password-1")
+
+        with pytest.raises(BadRequestError):
+            service.change_password(session, signed_in_user, data)
+
+    with session_factory() as session:
+        stored_user = session.get(User, committed_user.id)
+
+    assert stored_user is not None
+    assert verify_password(NEW_PASSWORD, stored_user.password_hash)

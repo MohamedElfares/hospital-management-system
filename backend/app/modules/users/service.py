@@ -193,9 +193,8 @@ def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
 
     This is how other modules load an account they already have an ID
     for, since only this module may use the users repository: auth uses it
-    to load the user an access token names, and the owner of a refresh
-    token. A UUID has no case or spacing to normalize, so the ID is passed
-    through unchanged.
+    to load the user an access token names. A UUID has no case or spacing
+    to normalize, so the ID is passed through unchanged.
 
     Inactive users are returned too. Deciding what deactivation means is
     the caller's job: auth rejects them, while staff administration must
@@ -210,3 +209,28 @@ def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
         The matching user, active or not, or None if no user has that ID.
     """
     return repository.get_user_by_id(session, user_id)
+
+
+def get_user_by_id_for_update(session: Session, user_id: uuid.UUID) -> User | None:
+    """Find a user by ID and lock the account's row until the transaction ends.
+
+    Auth calls this before it rotates a refresh token or revokes all of a
+    user's tokens, so that two such changes to one user's sessions, such as
+    a refresh on one device and a password change on another, run one after
+    the other instead of overlapping. The row is read as the database holds it now,
+    even if this session loaded the user earlier, so the caller sees a
+    change that another request has just committed, such as a new password
+    hash.
+
+    Inactive users are returned too, as by ``get_user_by_id``. Nothing is
+    written or committed: the lock ends when the caller's transaction does.
+
+    Args:
+        session: The open database session. The lock lasts until it
+            commits or rolls back.
+        user_id: The ID of the user to load and lock.
+
+    Returns:
+        The matching user, active or not, or None if no user has that ID.
+    """
+    return repository.get_user_by_id_for_update(session, user_id)

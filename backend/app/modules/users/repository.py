@@ -65,6 +65,39 @@ def get_user_by_id(session: Session, user_id: uuid.UUID) -> User | None:
     return session.get(User, user_id)
 
 
+def get_user_by_id_for_update(session: Session, user_id: uuid.UUID) -> User | None:
+    """Find the user with a given primary key, lock the row, and read it fresh.
+
+    The row is read with ``SELECT ... FOR NO KEY UPDATE``, so it stays
+    locked until the caller's transaction commits or rolls back: another
+    transaction that locks the row the same way, or updates it, waits until
+    then. That is the lock an ``UPDATE`` of a user's ordinary columns takes,
+    so it doesn't block inserting a row that refers to the user, such as a
+    refresh token, whose foreign key check needs only a weaker share lock.
+
+    Unlike ``get_user_by_id``, this always queries the database.
+    ``populate_existing`` overwrites a copy the session already holds;
+    without it, the session would return that copy with the values it had
+    before the lock, even after another transaction changed the row.
+    Inactive users are returned too; filtering is the caller's decision.
+
+    Args:
+        session: The open database session. The lock lasts until it
+            commits or rolls back.
+        user_id: The primary key to look up.
+
+    Returns:
+        The matching user, as the database holds it now, or None if no
+        account has this id.
+    """
+    return session.get(
+        User,
+        user_id,
+        with_for_update={"key_share": True},
+        populate_existing=True,
+    )
+
+
 def exists_active_admin(session: Session) -> bool:
     """Tell whether at least one active Admin account exists.
 

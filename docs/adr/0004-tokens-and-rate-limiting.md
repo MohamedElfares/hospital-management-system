@@ -50,6 +50,13 @@ their password at least once a week, which suits a system holding sensitive data
   failed request is rolled back.
 - The token's row is read with `SELECT ... FOR UPDATE`, which locks it until the request
   finishes.
+- *Added 2026-11-05 (review run 1, R-022):* before the token's row, refresh locks the
+  **user's** row (`SELECT ... FOR NO KEY UPDATE`), and a password change locks the user's
+  row first too. Revoking every token is one `UPDATE`, which sees only the tokens committed
+  when it starts, so without the user lock a refresh that was halfway through when the
+  alarm or a password change ran kept the new token it issued. The two locks are always
+  taken in that order: the other order lets two requests wait for each other until
+  PostgreSQL aborts one of them.
 
 **Why:** when a used token comes back, the server can't tell the real user from a thief,
 so ending every session is the only safe answer: the real user signs in again, and the
@@ -144,6 +151,9 @@ but an extra service this single-instance deployment doesn't need yet.
   `change_password`.
 - `backend/app/modules/auth/repository.py`: `get_by_hash` (the row lock) and
   `revoke_all_for_user`.
+- `backend/app/modules/users/service.py`: `get_user_by_id_for_update` (the user's row
+  lock).
 - `backend/app/core/security.py`: the access token and the refresh cookie.
 - Tests in `backend/tests/test_auth_service.py` and `backend/tests/test_auth_api.py`,
-  including `test_another_device_refreshing_after_a_change_keeps_this_session`.
+  including `test_another_device_refreshing_after_a_change_keeps_this_session`, and the
+  race tests in `backend/tests/test_auth_concurrency.py`.

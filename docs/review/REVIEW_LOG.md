@@ -82,7 +82,12 @@ closes when the last stage is done, so an interrupted run is obvious.
   `tests/test_auth_concurrency.py` is stage 25. Each commit passes Ruff
   and the suite on its own, run like CI in a clean worktree: 298, 311,
   311, 311, then 312 tests, with coverage at 99.56%. R-025, a sign-in
-  racing a password change, found while fixing R-022, is open.
+  racing a password change, found while fixing R-022, was fixed in
+  `965e10e` at your request, with the lock taken after the password
+  check rather than before it as first recommended, so that failed
+  sign-ins never wait for each other; 317 tests, coverage 99.56%. It
+  changes `auth/repository.py` and `users/service.py` again and grows
+  `tests/test_auth_concurrency.py`. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -115,4 +120,4 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [ ] 22. auth API tests, part 2 — `tests/test_auth_api.py`: `GET /auth/me`, `POST /auth/refresh`, and `POST /auth/logout` tests (about 375 lines)
 - [ ] 23. auth API tests, part 3 — `tests/test_auth_api.py`: `POST /auth/change-password` and gated-route tests (about 340 lines)
 - [ ] 24. Settings tests — `tests/test_config.py` (327 lines), added 2026-11-04 for R-012
-- [ ] 25. auth concurrency tests — `tests/test_auth_concurrency.py` (722 lines), added 2026-11-05 for R-022 and R-023; split it in two when reached: the fixtures and helpers, then the tests
+- [ ] 25. auth concurrency tests — `tests/test_auth_concurrency.py` (893 lines), added 2026-11-05 for R-022, R-023, and R-025; split it in three when reached: the fixtures and helpers, the refresh and sign-out races, then the password change and sign-in races

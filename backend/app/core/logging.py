@@ -17,10 +17,10 @@ import time
 # Generates new request IDs and validates the ones clients send.
 import uuid
 
-# Type of call_next: a function whose result is awaited.
+# Type of call_next's result, which the middleware awaits to get the response.
 from collections.abc import Awaitable
 
-# Type of call_next: something that can be called like a function.
+# Type of call_next: the function that runs the rest of the application.
 from collections.abc import Callable
 
 # Per-request variable, so concurrent requests never see each other's ID.
@@ -34,8 +34,9 @@ from fastapi import Response
 
 logger = logging.getLogger(__name__)
 
-# Holds the current request's ID for code that has no access to the request,
-# such as services and log helpers. Each concurrent request sees its own value.
+# The current request's ID, for code that never receives the request, such as a
+# service writing a warning. Requests that run at the same time each see only
+# their own ID, and outside a request the value is None.
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
@@ -82,7 +83,12 @@ async def request_context_middleware(
     handlers read it, and ``request_id_var``, for code that doesn't receive
     the request. The log line contains the path but never the query string,
     because query parameters can carry patient names or phone numbers.
-    ``user_id`` is ``None`` until authentication exists (Milestone 1.2).
+    ``duration_ms`` runs from the moment this middleware receives the
+    request until the application starts sending the response.
+
+    The line's ``user_id`` field is always ``None``. Plan §12 asks for the
+    signed-in user's ID, but nothing passes the user from the authentication
+    dependency to this middleware yet.
 
     The context variable is reset in ``finally``, so one request's ID never
     leaks into later work. When the route raises an unexpected exception,
@@ -129,14 +135,21 @@ def configure_logging(level: str) -> None:
     """Configure how every log record in the application is written.
 
     Without this, Python's fallback prints only warnings and errors, so the
-    per-request INFO lines would silently disappear. Each line gets a
-    timestamp, level, and logger name in front of the message. ``force=True``
-    replaces any earlier configuration, so calling this again, for example
-    in tests, never adds a second handler that would print every line twice.
+    per-request INFO lines would silently disappear. It sets up the root
+    logger, which receives the records of every module's
+    ``logging.getLogger(__name__)`` logger. Each line gets a timestamp,
+    level, and logger name in front of the message. ``force=True`` replaces
+    any earlier configuration, so calling this again, for example in tests,
+    never adds a second handler that would print every line twice.
 
     Args:
         level: Minimum level to write, such as ``"INFO"``; normally
             ``Settings.log_level``.
+
+    Raises:
+        ValueError: If ``level`` isn't a level name that ``logging`` knows.
+            ``Settings.log_level`` accepts only known names, so this happens
+            only when the function is called directly with another value.
 
     Example:
         ``configure_logging(get_settings().log_level)``

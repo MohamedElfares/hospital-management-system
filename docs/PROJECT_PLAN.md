@@ -1176,7 +1176,7 @@ Runs on every pull request and every push to `main`.
 | `api-contract` | 2 | Export the OpenAPI schema, regenerate the client types, and fail if anything changed |
 | `e2e` | 2 | Start the app and database with Docker Compose, seed demo data, and run Playwright |
 
-`alembic check` fails when the models and migrations don't match, which catches a forgotten migration.
+`alembic check` fails when the models and migrations don't match, which catches a forgotten migration. It never compares CHECK constraints, including the one that lists a string enum's allowed values, so changing one, for example adding an enum value, needs a migration written by hand and a test that the migrated test database enforces it.
 
 ### Continuous deployment
 

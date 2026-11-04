@@ -783,11 +783,14 @@ hospital-management-system/
 | `401` | Not authenticated, or the token is invalid or expired |
 | `403` | Authenticated but missing the permission, or a password change is required |
 | `404` | Doesn't exist, or is outside the user's scope |
+| `405` | The path exists, but not for this HTTP method |
 | `409` | Business conflict: slot taken, invalid state change, insufficient stock |
 | `422` | Validation error |
 | `429` | Too many requests |
+| `500` | Unexpected server error, reported with a generic message only |
+| `503` | A dependency is unavailable, for example the readiness check can't reach the database |
 
-Standard error codes: `VALIDATION_ERROR`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`, `PASSWORD_CHANGE_REQUIRED`, `NOT_FOUND`, `INVALID_STATUS_TRANSITION`, `APPOINTMENT_SLOT_TAKEN`, `INSUFFICIENT_STOCK`, `ACTIVATION_FAILED`, `RATE_LIMITED`.
+Standard error codes: `VALIDATION_ERROR`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`, `PASSWORD_CHANGE_REQUIRED`, `NOT_FOUND`, `INVALID_STATUS_TRANSITION`, `APPOINTMENT_SLOT_TAKEN`, `INSUFFICIENT_STOCK`, `ACTIVATION_FAILED`, `RATE_LIMITED`. The API also sends five generic codes: `BAD_REQUEST` (400) and `CONFLICT` (409) when no more specific code applies, `METHOD_NOT_ALLOWED` (405), `INTERNAL_ERROR` (500), and `SERVICE_UNAVAILABLE` (503). `ErrorCode` in `backend/app/core/errors.py` is the full list.
 
 **OpenAPI:** every route has a summary, a module tag, a response model, and its documented error responses, and the main request bodies include examples.
 

@@ -35,22 +35,24 @@ naming it as a parameter; nothing is imported from that file.
 | `get_test_db` | test | A stand-in for `get_db` that hands requests and CLI commands the test's session, ended the way the application ends one |
 | `test_engine` | session | The engine for the test database, disposed of at the end of the run |
 | `apply_migrations` | session | `alembic upgrade head` against the test database, in a subprocess |
-| `db_session` | test | A session inside a transaction that is rolled back when the test ends |
+| `db_session` | test | A session from the application's `SessionLocal`, inside a transaction that is rolled back when the test ends |
 
 ## How isolation works
 
 Each test that touches the database runs inside one transaction:
 
 1. `db_session` opens a connection and begins a transaction.
-2. The session joins it with `join_transaction_mode="create_savepoint"`, so a `commit()`
-   in application code releases a savepoint instead of ending the transaction.
+2. The session, built by the application's `SessionLocal` so it has the same options, joins
+   it with `join_transaction_mode="create_savepoint"`, so a `commit()` in application code
+   releases a savepoint instead of ending the transaction.
 3. After the test, the transaction is rolled back — rows, schema changes and all.
 
 Requests and CLI commands get that same session through `get_test_db`, which ends it the
 way the application ends a real one:
 
 - Before the request or command, it commits what the test set up, as that data would
-  already be in the database.
+  already be in the database, and expires the test's objects, so the code reads them back
+  from the database, as a new session would.
 - Afterwards, whether the code succeeded or failed, it rolls back whatever the code didn't
   commit, as closing a real session does.
 

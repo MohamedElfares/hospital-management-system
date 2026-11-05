@@ -47,11 +47,14 @@ from sqlalchemy import Engine
 # Builds that engine from the test database URL.
 from sqlalchemy import create_engine
 
-# Unit of work the tests share with the application's dependency.
+# Type of the session the fixtures hand to the tests and the code under test.
 from sqlalchemy.orm import Session
 
 # Supplies the test database URL.
 from app.core.config import get_settings
+
+# The application's session factory; db_session is built with its options.
+from app.db.session import SessionLocal
 
 # The dependency the client fixture replaces with the test's session.
 from app.db.session import get_db
@@ -128,6 +131,14 @@ def get_test_db(db_session: Session) -> Callable[[], Iterator[Session]]:
     commit and the rollback stop at the test's savepoint, so the test's
     transaction stays open until ``db_session`` rolls all of it back.
 
+    After the commit, the stand-in also expires every object the session
+    holds. A new session starts empty and loads what it needs from the
+    database, while this one still holds the test's objects, which its
+    commit leaves as they are (``expire_on_commit=False``). Without the
+    expiry, the code would read them as they are in memory: a time the
+    test gave in Dubai time would reach a request as +04:00, where the
+    database returns UTC.
+
     ``client`` installs the stand-in as the override for ``get_db``. A CLI
     test wraps it with ``contextlib.contextmanager`` and puts the result in
     place of ``SessionLocal``, so ``with SessionLocal() as session`` still
@@ -141,12 +152,13 @@ def get_test_db(db_session: Session) -> Callable[[], Iterator[Session]]:
     """
 
     def hand_out_the_test_session() -> Iterator[Session]:
-        """Commit the test's setup, yield the session, then roll back.
+        """Commit and expire the test's setup, yield the session, then roll back.
 
         Yields:
             The test's session, for one request or command.
         """
         db_session.commit()
+        db_session.expire_all()
         try:
             yield db_session
         finally:
@@ -271,10 +283,12 @@ def db_session(test_engine: Engine, apply_migrations: None) -> Iterator[Session]
     sees a missing ``commit()`` only after calling ``db_session.rollback()``
     itself, as ``test_the_logout_revocation_is_committed`` does.
 
-    This is also a plain ``Session``, which expires every object on commit
-    and reloads it from the database, where the application's
-    ``SessionLocal`` sets ``expire_on_commit=False`` and keeps the values
-    in memory.
+    The session is built by the application's ``SessionLocal``, bound to the
+    test's connection instead of the engine, so it has the application's
+    options. ``expire_on_commit=False`` keeps an object's values after a
+    commit, so a service that commits and then returns an object hands the
+    router the values it set, as it does in production. An option added to
+    ``SessionLocal`` later reaches the tests too.
 
     Args:
         test_engine: Engine for the test database, shared by the run.
@@ -286,7 +300,7 @@ def db_session(test_engine: Engine, apply_migrations: None) -> Iterator[Session]
     """
     connection = test_engine.connect()
     transaction = connection.begin()
-    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    session = SessionLocal(bind=connection, join_transaction_mode="create_savepoint")
 
     yield session
 

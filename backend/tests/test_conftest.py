@@ -2,7 +2,9 @@ import uuid
 from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import pytest
 from factories import make_user
@@ -14,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError
+from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.modules.users.models import User
 
@@ -26,10 +29,13 @@ UNCOMMITTED_EMAIL = "uncommitted@example.com"
 FAILED_EMAIL = "failed@example.com"
 SETUP_EMAIL = "setup@example.com"
 
+# 17:00 UTC, given in the hospital's default time zone.
+DUBAI_SIGN_IN = datetime(2026, 11, 5, 21, 0, tzinfo=ZoneInfo("Asia/Dubai"))
+
 
 @pytest.fixture
 def user_routes(app: FastAPI) -> None:
-    """Add routes that save a user in three ways, and one that looks a user up.
+    """Add routes that save a user in three ways, and two that read a user back.
 
     Each saving route stands for a service: one that commits, one that
     forgets to, and one that fails after it flushed. They are added to this
@@ -59,10 +65,19 @@ def user_routes(app: FastAPI) -> None:
         """Say whether the request's session finds the user with ``user_id``."""
         return {"found": db.get(User, user_id) is not None}
 
+    def read_last_login(
+        user_id: uuid.UUID,
+        db: Annotated[Session, Depends(get_db)],
+    ) -> dict[str, str]:
+        """Return the user's sign-in time exactly as the request's session reads it."""
+        user = db.get(User, user_id)
+        return {"last_login_at": user.last_login_at.isoformat()}
+
     app.add_api_route(COMMIT_URL, commit_a_user, methods=["POST"], status_code=204)
     app.add_api_route(FLUSH_URL, flush_a_user, methods=["POST"], status_code=204)
     app.add_api_route(FAIL_URL, flush_a_user_then_fail, methods=["POST"], status_code=204)
     app.add_api_route("/api/v1/test/users/{user_id}", find_user, methods=["GET"])
+    app.add_api_route("/api/v1/test/users/{user_id}/last-login", read_last_login, methods=["GET"])
 
 
 def _count_users(db_session: Session, email: str) -> int | None:
@@ -156,3 +171,58 @@ def test_a_command_loses_the_work_it_never_commits(
         session.flush()
 
     assert _count_users(db_session, UNCOMMITTED_EMAIL) == 0
+
+
+def test_the_test_session_is_built_by_the_applications_session_factory(
+    db_session: Session,
+) -> None:
+    """The test session comes from ``SessionLocal``, so it has every option the application's has.
+
+    An option added to ``SessionLocal`` later then reaches the tests too,
+    instead of the tests quietly running with SQLAlchemy's defaults.
+    """
+    assert isinstance(db_session, SessionLocal.class_)
+
+
+def test_the_test_session_keeps_the_values_it_was_given_after_a_commit(
+    db_session: Session,
+) -> None:
+    """A committed object keeps the values it was given, as in the application's sessions.
+
+    ``SessionLocal`` sets ``expire_on_commit=False``, so a service that
+    commits and then returns an object hands the router the values it set.
+    A sign-in time given in Dubai time therefore still reads +04:00 after
+    the commit, instead of coming back from the database as UTC.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+    user.last_login_at = DUBAI_SIGN_IN
+
+    db_session.commit()
+
+    assert user.last_login_at.isoformat() == "2026-11-05T21:00:00+04:00"
+
+
+@pytest.mark.usefixtures("user_routes")
+def test_a_request_reads_the_tests_setup_from_the_database(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    """A request reads the test's setup as the database returns it, as a new session would.
+
+    The test gives a user a sign-in time in Dubai time. The database keeps
+    the instant and returns it in UTC, so a production request, with a
+    session of its own, would read the UTC value. The stand-in expires the
+    test's objects before the request, so the request reads that value
+    too, rather than the test's object as it is in memory.
+    """
+    user = make_user(email=SETUP_EMAIL)
+    db_session.add(user)
+    db_session.flush()
+    user.last_login_at = DUBAI_SIGN_IN
+
+    response = client.get(f"/api/v1/test/users/{user.id}/last-login")
+
+    assert response.status_code == 200
+    assert response.json() == {"last_login_at": "2026-11-05T17:00:00+00:00"}

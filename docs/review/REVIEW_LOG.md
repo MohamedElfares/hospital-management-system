@@ -96,7 +96,11 @@ closes when the last stage is done, so an interrupted run is obvious.
   revokes all of a user's, locks the user's row with
   `get_user_by_id_for_update` before it writes, and re-checks on the
   locked row anything it read before the lock, such as `is_active` or
-  the password hash."
+  the password hash." Accepted on 2026-11-05 (you asked me to fix the
+  findings with my recommendations and best practices) and added to
+  `CLAUDE.md` under "Conventions", word for word. With R-026 fixed,
+  sign-in, refresh, and the password change all follow it; sign-out
+  revokes single tokens, so the rule doesn't cover it.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

@@ -171,6 +171,7 @@ Migrations are mine: never run `alembic revision`, and ask before running `alemb
 - Enums stored as strings with `Enum(..., native_enum=False)`. Money as `Decimal` in `NUMERIC(12, 2)` columns.
 - No hard deletes for clinical, pharmacy, or ticket data; change status instead. Users are deactivated, not deleted.
 - Rules that must survive concurrent requests go in the database: unique and partial indexes, CHECK constraints, foreign keys, and row locks.
+- A service that issues refresh tokens, or revokes all of a user's, locks the user's row with `get_user_by_id_for_update` before it writes, and re-checks on the locked row anything it read before the lock, such as `is_active` or the password hash.
 - Index every foreign key and search column. Avoid N+1 queries with `selectinload`.
 - API under `/api/v1`, with plural kebab-case resources. State changes use action endpoints such as `POST /appointments/{id}/check-in`.
 - Status codes: 400 can't be processed, 401 unauthenticated, 403 missing permission, 404 not found or outside the user's scope, 409 business conflict, 422 validation error, 429 rate limited.

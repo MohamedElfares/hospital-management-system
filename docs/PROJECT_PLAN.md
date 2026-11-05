@@ -723,7 +723,7 @@ hospital-management-system/
 | Package manager | uv | Fast and lockfile-based |
 | Lint and format | Ruff and pre-commit | One fast tool, run before every commit and in CI |
 | CLI | Typer | `create-admin`, `seed-demo`, and `export-openapi` commands |
-| Tests | pytest, pytest-cov, FastAPI TestClient, Faker | Standard Python testing, with realistic fake data |
+| Tests | pytest, pytest-cov, FastAPI TestClient | Standard Python testing, with coverage, and HTTP requests that need no running server |
 
 ### Frontend
 
@@ -1000,7 +1000,7 @@ Check every item before each release.
 
 - Tests run against PostgreSQL, never SQLite, because the design depends on partial indexes, row locks, and sequences.
 - Each test runs inside an outer transaction that is rolled back afterward, using SQLAlchemy's "join a session into an external transaction" pattern (`join_transaction_mode="create_savepoint"`), so services can still call `commit()`. The test's session is built by the application's `SessionLocal`, so it has the same options. API and CLI tests get that session the way a request or a command gets one: what the test set up is committed first, and whatever the code didn't commit is rolled back when it ends, so a forgotten `commit()` fails a test.
-- Factory fixtures create users with any role, patients, medicines, batches, and branches, with Faker data.
+- Factory functions in `tests/factories.py` build valid users of any role, and patients, medicines, batches, and branches as their modules arrive. Their defaults are fixed and readable, with random values only where a unique column needs them, such as a refresh token's hash, so failures are easy to read and every run is the same. A test overrides only the field it is about.
 - **Authorization matrix test:** a parametrized test sends a request to each protected endpoint as each role and checks for `403` wherever §6 denies access.
 - **Route guard test:** fails if any route isn't marked Public, Authenticated, or permission-protected.
 - **Isolation tests:** two patients, two doctors, and two branches confirm every record-level rule in §6.

@@ -8,7 +8,12 @@ with no row has never been reviewed and is always in scope.
 
 | File | Reviewed at commit | Date | Run |
 |---|---|---|---|
+| `backend/app/__init__.py` | `9c56300` | 2026-11-05 | 1 |
+| `backend/app/api/__init__.py` | `9c56300` | 2026-11-05 | 1 |
 | `backend/app/api/deps.py` | `9e21ddb` | 2026-11-05 | 1 |
+| `backend/app/api/health.py` | `9c56300` | 2026-11-05 | 1 |
+| `backend/app/api/router.py` | `9c56300` | 2026-11-05 | 1 |
+| `backend/app/cli.py` | `9c56300` | 2026-11-05 | 1 |
 | `backend/app/core/__init__.py` | `d5dc7cd` | 2026-11-04 | 1 |
 | `backend/app/core/config.py` | `7d080c0` | 2026-11-04 | 1 |
 | `backend/app/core/errors.py` | `d5dc7cd` | 2026-11-04 | 1 |
@@ -18,6 +23,8 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/db/__init__.py` | `56f211b` | 2026-11-04 | 1 |
 | `backend/app/db/base.py` | `56f211b` | 2026-11-04 | 1 |
 | `backend/app/db/session.py` | `56f211b` | 2026-11-04 | 1 |
+| `backend/app/main.py` | `9c56300` | 2026-11-05 | 1 |
+| `backend/app/modules/__init__.py` | `9c56300` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/__init__.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/models.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/repository.py` | `b7d1692` | 2026-11-05 | 1 |

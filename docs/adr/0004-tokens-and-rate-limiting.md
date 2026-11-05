@@ -88,9 +88,10 @@ testing the password change exposed a bug. A user changed their password on a la
 a phone still held its old cookie, which the change had revoked. The phone refreshed in the
 background, the old rule took that for theft, and the laptop's brand-new session was
 revoked too. Only a rotated token proves that a copy exists; a token the server ended on
-purpose is already dead, so refusing it quietly loses nothing. As a bonus, after an alarm
-revokes everything, a thief retrying the same token gets quiet 401s instead of an alarm on
-every attempt.
+purpose is already dead, so refusing it quietly loses nothing. As a bonus, the tokens an
+alarm revokes get quiet 401s afterwards, so a thief who refreshed first and keeps retrying
+their token raises no further alarms; a rotated token still raises one every time it comes
+back.
 
 ### 4. In-memory rate limiting
 

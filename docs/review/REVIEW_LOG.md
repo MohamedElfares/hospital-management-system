@@ -171,7 +171,27 @@ closes when the last stage is done, so an interrupted run is obvious.
   `test_create_admin_creates_an_admin_and_prints_its_email` says the
   command saves the Admin, but through `nullcontext(db_session)` it can't
   see whether the command committed (R-039); if R-039 is still open then,
-  its docstring should say what the test can see.
+  its docstring should say what the test can see. The stage 15 item is
+  done, in `8c2512b`: the test now fails when the command doesn't commit,
+  and its docstring says why.
+- **Stage 11's findings fixed (2026-11-06):** R-039 (`8c2512b`), R-040
+  (`5cb442c`), and R-041 (`9a9df67`), written at your request ("fix the
+  findings with recommendations with best practices"), one commit each,
+  in dependency order: the session boundary first, then the session
+  options, which build on it, then the plan and the dependency. Every new
+  test was also run against planted defects, such as a stand-in that
+  rolls back without `finally` or a session not built by `SessionLocal`,
+  and each defect failed a test. R-040 went one step beyond its
+  recommendation: `get_test_db` expires the test's objects after its
+  first commit, so a request reads the test's setup from the database.
+  `9210b27` corrected `tests/README.md`'s claim that the suite refuses to
+  run without `TEST_DATABASE_URL`, which stage 11 had corrected in
+  `conftest.py`. The fixes change `tests/conftest.py` after stage 11
+  reviewed it at `a459df1`, so the next `/review new` takes it again;
+  `tests/test_cli.py` changed before stage 15 reaches it, and the new
+  `tests/test_conftest.py` joins stage 12. Each commit passes Ruff and the
+  suite on its own, run like CI in a clean worktree: 339, 344, 347, then
+  347 tests, with coverage at 99.58%. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -191,7 +211,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 ### Tests
 
 - [x] 11. Test setup — `tests/conftest.py`, `tests/factories.py` (324 lines when planned, 403 after the docs) — refactor: `ba00ba5` (`apply_migrations`' `result` → `upgrade`, the finished `alembic upgrade head` run, per the shape rule); docs: `a459df1`; Ruff clean, 339 passed, both commits also run like CI in a clean worktree (coverage 99.58%); no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked in probes on the test database, in fresh runs, and in the installed SQLAlchemy 2.1.1, pytest 9.1.1, pwdlib 0.3.1, and Faker 40.40.0 (the savepoint statements and what a rollback undoes, a run without `TEST_DATABASE_URL`, the whole suite against an unreachable `DATABASE_URL`, the import mode that makes `factories` importable, `caplog` after `create_app`, the time to build an engine and to connect, a built user's database defaults, every Argon2 variant passing `verify_password`, the `user_id` call forms, and `TestClient` re-raising an error), and with mutants that skip each of the six service commits; findings R-039 to R-041
-- [ ] 12. Platform tests — `tests/test_database.py`, `tests/test_errors.py`, `tests/test_logging.py`, `tests/test_health.py`, `tests/test_package_layout.py` (added 2026-11-05 for R-032) (232 lines when planned)
+- [ ] 12. Platform tests — `tests/test_database.py`, `tests/test_errors.py`, `tests/test_logging.py`, `tests/test_health.py`, `tests/test_package_layout.py` (added 2026-11-05 for R-032), `tests/test_conftest.py` (added 2026-11-06 for R-039 and R-040) (232 lines when planned)
 - [ ] 13. Security tests — `tests/test_security.py` (509 lines)
 - [ ] 14. users tests: model and schemas — `tests/test_user_model.py`, `tests/test_user_schemas.py` (349 lines)
 - [ ] 15. users tests: service and CLI — `tests/test_user_service.py`, `tests/test_cli.py` (414 lines)

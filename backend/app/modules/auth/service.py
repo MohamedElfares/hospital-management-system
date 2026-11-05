@@ -41,6 +41,9 @@ import logging
 # Immutable record type for the tokens a sign-in, refresh, or password change returns.
 from dataclasses import dataclass
 
+# Per-field dataclass options; keeps both tokens out of IssuedTokens' generated repr.
+from dataclasses import field
+
 # UTC time zone; sign-in, expiry, and revocation times are always in UTC.
 from datetime import UTC
 
@@ -136,6 +139,12 @@ class IssuedTokens:
     access token in the body and the refresh token in the cookie. It is
     frozen so neither token can be changed after it is issued.
 
+    Both fields are left out of the generated ``repr``, which ``str()``,
+    f-strings, and a log call's ``%s`` fall back to. Printing or logging
+    an instance by mistake therefore shows ``IssuedTokens()`` and never a
+    credential, as ``SecretStr`` keeps the passwords of a password change
+    out of sight.
+
     Attributes:
         access_token: The signed JWT for the ``Authorization: Bearer``
             header, returned in the response body.
@@ -144,8 +153,8 @@ class IssuedTokens:
             database holds only its hash.
     """
 
-    access_token: str
-    refresh_token: str
+    access_token: str = field(repr=False)
+    refresh_token: str = field(repr=False)
 
 
 def _issue_tokens(

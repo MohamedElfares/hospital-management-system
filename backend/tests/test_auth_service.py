@@ -306,6 +306,24 @@ def test_login_stores_only_the_hash_of_the_refresh_token(db_session: Session, us
     assert token.user_id == user.id
 
 
+def test_the_repr_of_issued_tokens_shows_neither_token() -> None:
+    """Printing or logging the tokens a sign-in returns shows neither of them.
+
+    ``str()``, f-strings, and a log call's ``%s`` all fall back to
+    ``repr``, so a stray print or log line would otherwise write both
+    credentials out in full, and a refresh token works for days.
+    """
+    issued_tokens = service.IssuedTokens(
+        access_token=create_access_token(uuid.uuid4()),
+        refresh_token=generate_refresh_token(),
+    )
+
+    shown = repr(issued_tokens)
+
+    assert issued_tokens.access_token not in shown
+    assert issued_tokens.refresh_token not in shown
+
+
 def test_login_sets_the_refresh_token_to_expire_after_the_configured_days(
     db_session: Session,
     user: User,

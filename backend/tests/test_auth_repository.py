@@ -55,7 +55,9 @@ def test_a_token_can_be_found_by_its_hash(db_session: Session) -> None:
     db_session.add(target_token)
     db_session.flush()
 
-    found_token = repository.get_refresh_token_by_hash(db_session, target_token.token_hash)
+    found_token = repository.get_refresh_token_by_hash_for_update(
+        db_session, target_token.token_hash
+    )
 
     assert found_token is not None
     assert found_token.id == target_token.id
@@ -72,7 +74,7 @@ def test_an_unknown_hash_finds_no_token(db_session: Session) -> None:
     db_session.add(existing_token)
     db_session.flush()
 
-    found_token = repository.get_refresh_token_by_hash(
+    found_token = repository.get_refresh_token_by_hash_for_update(
         db_session,
         "unknown",
     )
@@ -96,7 +98,9 @@ def test_a_revoked_token_is_still_found_by_its_hash(db_session: Session) -> None
     db_session.add(revoked_token)
     db_session.flush()
 
-    found_token = repository.get_refresh_token_by_hash(db_session, revoked_token.token_hash)
+    found_token = repository.get_refresh_token_by_hash_for_update(
+        db_session, revoked_token.token_hash
+    )
 
     assert found_token is not None
     assert found_token.id == revoked_token.id
@@ -128,7 +132,7 @@ def test_a_locked_token_lookup_reads_the_row_as_it_is_now(db_session: Session) -
         {"id": token.id},
     )
 
-    found_token = repository.get_refresh_token_by_hash(db_session, token.token_hash)
+    found_token = repository.get_refresh_token_by_hash_for_update(db_session, token.token_hash)
 
     assert found_token is token
     assert token.revoked_at is not None

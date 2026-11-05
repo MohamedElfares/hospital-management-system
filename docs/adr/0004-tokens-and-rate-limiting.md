@@ -160,9 +160,9 @@ but an extra service this single-instance deployment doesn't need yet.
 - Plan §8.1 (authentication rules) and §11 (the auth endpoints).
 - `backend/app/modules/auth/service.py`: `login`, `refresh`, `logout` and
   `change_password`.
-- `backend/app/modules/auth/repository.py`: `get_refresh_token_by_hash` (the row lock),
-  `get_refresh_token_by_id_for_update` (the replacement's lock at sign-out), and
-  `revoke_all_refresh_tokens_for_user`.
+- `backend/app/modules/auth/repository.py`: `get_refresh_token_by_hash_for_update`
+  (the row lock), `get_refresh_token_by_id_for_update` (the replacement's lock at
+  sign-out), and `revoke_all_refresh_tokens_for_user`.
 - `backend/app/modules/users/service.py`: `get_user_by_id_for_update` (the user's row
   lock).
 - `backend/app/core/security.py`: the access token and the refresh cookie.

@@ -365,7 +365,7 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
         raise AuthenticationError(_INVALID_TOKEN)
 
     user = get_user_by_id_for_update(session, user_id)
-    presented_token = repository.get_refresh_token_by_hash(session, token_hash)
+    presented_token = repository.get_refresh_token_by_hash_for_update(session, token_hash)
 
     # Deleting the user before its lock was granted deletes the token too.
     if presented_token is None:
@@ -466,7 +466,7 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
     if not raw_refresh_token:
         return
 
-    presented_token = repository.get_refresh_token_by_hash(
+    presented_token = repository.get_refresh_token_by_hash_for_update(
         session, hash_refresh_token(raw_refresh_token)
     )
 

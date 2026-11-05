@@ -54,7 +54,8 @@ def get_refresh_token_user_id_by_hash(session: Session, token_hash: str) -> uuid
     Refresh calls this first, to learn whose row to lock before it locks
     the token itself. A token's user never changes, so the answer can't go
     stale while that lock is awaited. Only the ``user_id`` column is read:
-    the token is read again, locked, by ``get_refresh_token_by_hash``.
+    the token is read again, locked, by
+    ``get_refresh_token_by_hash_for_update``.
 
     Args:
         session: The open database session.
@@ -69,7 +70,7 @@ def get_refresh_token_user_id_by_hash(session: Session, token_hash: str) -> uuid
     return session.scalar(statement)
 
 
-def get_refresh_token_by_hash(session: Session, token_hash: str) -> RefreshToken | None:
+def get_refresh_token_by_hash_for_update(session: Session, token_hash: str) -> RefreshToken | None:
     """Find the refresh token with a given hash, lock its row, and read it fresh.
 
     The row is read with ``SELECT ... FOR UPDATE``, so it stays locked until
@@ -113,11 +114,11 @@ def get_refresh_token_by_id_for_update(
     Sign-out calls this for the token that replaced the one in the cookie,
     when a refresh rotated that one while the sign-out waited for its lock.
     The row is read with ``SELECT ... FOR UPDATE``, as
-    ``get_refresh_token_by_hash`` reads the cookie's own token, so a
-    refresh of the replacement waits until the sign-out has revoked it,
-    then finds it revoked. The lock lasts until the caller's transaction
-    ends. ``populate_existing`` makes the result show the row as it is
-    once locked, even when the session already holds a copy.
+    ``get_refresh_token_by_hash_for_update`` reads the cookie's own token,
+    so a refresh of the replacement waits until the sign-out has revoked
+    it, then finds it revoked. The lock lasts until the caller's
+    transaction ends. ``populate_existing`` makes the result show the row
+    as it is once locked, even when the session already holds a copy.
 
     Revoked and expired tokens are returned too: the caller decides what
     a token's state means. The primary key's index serves the lookup.

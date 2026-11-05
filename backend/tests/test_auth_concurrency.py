@@ -431,7 +431,7 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
         The pause the held request will stop at.
     """
     pause = _Pause()
-    real_lookup = repository.get_refresh_token_by_hash
+    real_lookup = repository.get_refresh_token_by_hash_for_update
 
     def lookup_then_pause(session: Session, token_hash: str) -> RefreshToken | None:
         """Look the token up as usual, then stop the held request."""
@@ -439,7 +439,7 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
         pause.wait_here()
         return token
 
-    monkeypatch.setattr(repository, "get_refresh_token_by_hash", lookup_then_pause)
+    monkeypatch.setattr(repository, "get_refresh_token_by_hash_for_update", lookup_then_pause)
     return pause
 
 

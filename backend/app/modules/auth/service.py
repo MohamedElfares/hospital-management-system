@@ -11,8 +11,9 @@ Refresh rotates the session: each refresh token works once, and using it
 replaces it with a new one that keeps the original expiry. A token that is
 presented again after being replaced means a copy exists, so every session
 of that user is ended. Sign-in, refresh, and a password change lock the
-user's row before they issue or revoke tokens, so no session is ever
-being started while all of that user's tokens are revoked.
+user's row before they issue or revoke tokens, so they take turns: no
+token is ever issued while all of that user's tokens are being revoked,
+where the revocation would miss it.
 
 Signing out revokes only the refresh token of the device signing out, and
 never fails, so signing out twice is harmless.
@@ -24,8 +25,8 @@ the change.
 On every later request, it turns the access token back into the user who
 sent it, reading the account from the database so a deactivation takes
 effect at once rather than when the token expires. A user who must still
-replace a temporary password is then refused everywhere except the routes
-the change itself needs.
+replace a temporary password is then refused everywhere except the few
+routes they need until they do, such as the password change itself.
 
 Every failed sign-in looks the same from outside: the same error, the same
 message, and roughly the same time, so the API never reveals which emails
@@ -37,16 +38,16 @@ reason.
 # Standard logging; records refresh token reuse as a security warning.
 import logging
 
-# Immutable record type for the tokens a sign-in or refresh returns.
+# Immutable record type for the tokens a sign-in, refresh, or password change returns.
 from dataclasses import dataclass
 
-# UTC time zone; sign-in times and token expiries are always in UTC.
+# UTC time zone; sign-in, expiry, and revocation times are always in UTC.
 from datetime import UTC
 
-# Current time for last_login_at and the refresh token's expiry.
+# Current time for sign-in, expiry, and revocation times; also the type of an expiry.
 from datetime import datetime
 
-# Adds the configured refresh token lifetime to the sign-in time.
+# Adds the configured refresh token lifetime to the current time when a session starts.
 from datetime import timedelta
 
 # The database session passed in by the caller; this module commits it.
@@ -55,7 +56,7 @@ from sqlalchemy.orm import Session
 # Cached settings; supplies the refresh token lifetime.
 from app.core.config import get_settings
 
-# Error that the API turns into a 401 response; raised for every failed sign-in.
+# Error that the API turns into a 401 response; raised for a failed sign-in or a rejected token.
 from app.core.errors import AuthenticationError
 
 # Error that the API turns into a 400 response; raised when a password change is refused.
@@ -79,7 +80,7 @@ from app.core.security import generate_refresh_token
 # Hashes the new password with Argon2id; only the hash is stored.
 from app.core.security import hash_password
 
-# Hashes the refresh token; only the hash is stored.
+# Hashes a refresh token; the hash is stored for a new token and finds a presented one.
 from app.core.security import hash_refresh_token
 
 # Verifies the password, paying the same cost when the email matches no user.
@@ -91,7 +92,7 @@ from app.core.security import verify_password
 # Refresh token queries: finds, locks, saves, and revokes rows without committing.
 from app.modules.auth import repository
 
-# The refresh_tokens table's ORM model.
+# The refresh_tokens table's ORM model; each new token's row is built from it.
 from app.modules.auth.models import RefreshToken
 
 # Validated input for a password change: the current and the new password.
@@ -100,7 +101,7 @@ from app.modules.auth.schemas import PasswordChange
 # The users table's ORM model; the type of the signed-in user.
 from app.modules.users.models import User
 
-# Users service lookup; other modules may not use the users repository.
+# Users service lookup by email, for sign-in; other modules may not use the users repository.
 from app.modules.users.service import get_user_by_email
 
 # Users service lookup by id; loads the account an access token names.
@@ -109,12 +110,13 @@ from app.modules.users.service import get_user_by_id
 # Users service lookup that locks the account's row, so session changes take turns.
 from app.modules.users.service import get_user_by_id_for_update
 
-# One message for every failure, so no reply hints at which check failed.
+# One message for every failed sign-in, so no reply hints at which check failed.
 _INVALID_CREDENTIALS = "Incorrect email or password."
 
 # Same text decode_access_token uses, so a missing or deactivated account
-# looks exactly like an expired token. Tests pin both to one literal, so
-# the two copies can't drift apart unnoticed.
+# looks exactly like an expired token; refresh uses it for every rejected
+# refresh token too. Tests pin both copies to one literal, so they can't
+# drift apart unnoticed.
 _INVALID_TOKEN = "Invalid or expired token."
 
 # Tells the user what to do next; the web app relies on the error code, not this text.
@@ -126,13 +128,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IssuedTokens:
-    """The tokens issued by a sign-in or a refresh.
+    """The tokens issued by a sign-in, a refresh, or a password change.
 
-    Sign-in and refresh end the same way, with a new access token and a new
-    refresh token, so they return the same type. This is internal data
-    passed from the service to the router, not a response schema: the
-    router puts the access token in the body and the refresh token in the
-    cookie. It is frozen so neither token can be changed after it is issued.
+    All three end the same way, with a new access token and a new refresh
+    token, so they return the same type. This is internal data passed from
+    the service to the router, not a response schema: the router puts the
+    access token in the body and the refresh token in the cookie. It is
+    frozen so neither token can be changed after it is issued.
 
     Attributes:
         access_token: The signed JWT for the ``Authorization: Bearer``
@@ -153,17 +155,17 @@ def _issue_tokens(
 ) -> tuple[IssuedTokens, RefreshToken]:
     """Create a new access token and refresh token for a user.
 
-    This is the part sign-in and refresh share. A random refresh token is
-    generated, and a row holding only its SHA-256 hash is added to the
-    session; the raw value is returned once, for the cookie, and never
-    stored. The access token is signed for the same user.
+    This is the part sign-in, refresh, and a password change share. A
+    random refresh token is generated, and a row holding only its SHA-256
+    hash is added to the session; the raw value is returned once, for the
+    cookie, and never stored. The access token is signed for the same user.
 
-    The caller chooses the expiry, because the two cases differ: sign-in
-    starts a new window of ``REFRESH_TOKEN_EXPIRE_DAYS``, while refresh
-    keeps the old token's expiry, so refreshing never extends a session.
-    Nothing is committed: each caller commits once at the end of its own
-    use case, so a refresh can never save the new token without also
-    revoking the old one. The row has no id until the session flushes.
+    The caller chooses the expiry, because the cases differ: sign-in and a
+    password change start a new window of ``REFRESH_TOKEN_EXPIRE_DAYS``,
+    while refresh keeps the old token's expiry, so refreshing never extends
+    a session. Nothing is committed: each caller commits once at the end of
+    its own use case, so a refresh can never save the new token without
+    also revoking the old one. The row has no id until the session flushes.
 
     Args:
         session: The open database session. The new row is added to it
@@ -217,15 +219,15 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
 
     Once the password has passed, the account's row is locked, as refresh
     and a password change lock it, and read again before the session is
-    issued. If the account changed during the check, because its password
-    was changed or it was deactivated or deleted, the sign-in fails like any
-    other, so the old password can't start a session that the password
-    change should have ended. A password change that comes later waits for
-    the lock and then revokes this session with the rest. The lock is taken
-    only after the check: a failed sign-in never takes it, so two failed
-    attempts on an existing account don't wait for each other, and that
-    can't reveal which emails exist, since attempts on an unknown email
-    never wait either.
+    issued. If the account changed after it was first read, because its
+    password was changed or it was deactivated or deleted, the sign-in fails
+    like any other, so the old password can't start a session that the
+    password change should have ended. A password change that comes later
+    waits for the lock and then revokes this session with the rest. Only a
+    correct password for an active account takes the lock. A wrong one
+    never does, so failed attempts on an existing account never wait for
+    each other; if they did, the wait would reveal that the account exists,
+    since attempts on an unknown email never wait.
 
     Args:
         session: The open database session. This function commits it on
@@ -240,8 +242,8 @@ def login(session: Session, email: str, password: str) -> IssuedTokens:
     Raises:
         AuthenticationError: If the email matches no user, the password is
             wrong, or the account is deactivated, or if the account changed
-            while the password was checked. The message is the same in every
-            case.
+            between being read and being locked. The message is the same in
+            every case.
     """
     user = get_user_by_email(session, email)
 
@@ -286,19 +288,20 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     presented token, links it to its replacement through
     ``replaced_by_id``, and issues a new access token and refresh token.
     The new refresh token keeps the old one's expiry, so refreshing never
-    extends a session past the fixed window that began at sign-in.
+    extends a session past the fixed window that began when the session
+    started, at sign-in or at a password change.
 
     Two row locks keep concurrent requests apart, always taken in the same
-    order: the user's row, then the token's. A password change locks the
-    user's row first too, as does a sign-in once its password has passed,
-    so no revocation of all the user's tokens can run while this refresh is
-    between its locks and its commit, and the token it issues can't escape
-    one. Two refreshes with the same cookie run one after the other too,
-    and the second finds the token rotated and raises the alarm, which
-    ADR-0004 accepts. The token's own lock does the same for a sign-out of
-    that token. Taking them in the other order would let the alarm and a
-    refresh of another token wait for each other, which PostgreSQL ends by
-    aborting one of them.
+    order: the user's row, then the token's. The reuse alarm and a password
+    change hold the same user lock while they revoke all of the user's
+    tokens, so neither can run while this refresh is between its locks and
+    its commit, and the token it issues can't escape them. Two refreshes
+    with the same cookie run one after the other too, and the second finds
+    the token rotated and raises the alarm, which ADR-0004 accepts. The
+    token's own lock does the same for a sign-out of that token. Taking
+    them in the other order would let the alarm and a refresh of another
+    token wait for each other, which PostgreSQL ends by aborting one of
+    them.
 
     Only a rotated token presented again counts as reuse: it was already
     exchanged, so whoever sends it kept a copy, and the server can't tell
@@ -312,11 +315,13 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     reuse would sign out the device that made the change.
 
     The web app calls this after a page reload, when the access token held
-    in memory is gone, and whenever an access token expires. An expired
-    token is only refused, with no alarm, since running out is normal. A
-    pending password change doesn't block refresh, so the web app can
-    restore the session after a reload and show the change-password screen.
-    Refresh is not a sign-in, so ``last_login_at`` is left alone.
+    in memory is gone, and whenever an access token expires. A token that
+    simply ran out is refused with no alarm, since running out is normal;
+    a rotated one raises the alarm however old it is, because reuse is
+    checked first. A pending password change doesn't block refresh, so the
+    web app can restore the session after a reload and show the
+    change-password screen. Refresh is not a sign-in, so ``last_login_at``
+    is left alone.
 
     Every failure raises the same error with the same message, so the
     reply never says which check failed.
@@ -331,8 +336,10 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
         The new access token and refresh token.
 
     Raises:
-        AuthenticationError: If the token is missing, unknown, revoked,
-            or expired, or its owner is missing or deactivated.
+        AuthenticationError: If the token is missing, unknown, revoked, or
+            expired, or its owner is missing or deactivated. The message is
+            the same in every case. A rotated token presented again first
+            ends every session of its user, and that is committed.
     """
     if not raw_refresh_token:
         raise AuthenticationError(_INVALID_TOKEN)
@@ -396,7 +403,8 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
         presented_token.expires_at,
     )
 
-    # The new row gets its id on insert; flush so the link below isn't None.
+    # The new row's id is generated when it is flushed; flush now so the
+    # link below isn't None.
     session.flush()
 
     presented_token.revoked_at = now
@@ -413,15 +421,22 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
     The refresh token from this browser's cookie is revoked, so the device
     can never refresh again. Only that one session ends: the user's other
     devices stay signed in. The token is revoked without a
-    ``replaced_by_id``, which tells a sign-out apart from a rotation when
-    the table is investigated later. The access token can't be revoked,
-    since it is checked by signature and not looked up; the web app drops
-    it from memory, and it expires within ``ACCESS_TOKEN_EXPIRE_MINUTES``.
+    ``replaced_by_id``, so if it comes back, refresh refuses it quietly,
+    without the reuse alarm, and the table tells a sign-out apart from a
+    rotation. The access token can't be revoked, since it is checked by
+    signature and not looked up; the web app drops it from memory, and it
+    expires within ``ACCESS_TOKEN_EXPIRE_MINUTES``.
 
     Sign-out never fails. A missing cookie, an unknown token, a token that
     is already revoked, and another user's token all leave the database
     unchanged, and the router still clears the cookie, so signing out twice
     gives the same result as signing out once.
+
+    The token's row is locked while it is read, so a sign-out and a refresh
+    of the same token run one after the other. A refresh that comes second
+    finds the token revoked and is refused. One that comes first has
+    already rotated the token, so the sign-out changes nothing, and the new
+    token that refresh issued keeps working.
 
     Args:
         session: The open database session. This function commits it only
@@ -460,12 +475,12 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
 def get_authenticated_user(session: Session, access_token: str) -> User:
     """Return the active user an access token belongs to.
 
-    Three checks run in order. The token is decoded first, which needs no
+    It works in three steps. The token is decoded first, which needs no
     database, so a forged, expired, or garbage token is rejected before it
     costs a query. Then the user it names is loaded. Finally, the account
     must exist and be active.
 
-    The database is read on every call even though the token is signed,
+    The database is read on every request even though the token is signed,
     because a signature only proves who the user was when the token was
     issued. An access token stays valid for its whole lifetime, so without
     this read a deactivated user could keep working until it expired; with
@@ -482,8 +497,9 @@ def get_authenticated_user(session: Session, access_token: str) -> User:
     This function deliberately ignores ``must_change_password``: the
     current-user endpoint must keep working while a password change is
     pending. The gate is ``ensure_password_change_not_pending``, which
-    every route except the few the change needs applies through
-    ``CurrentUser``.
+    routes get through ``CurrentUser``, the default for any route that
+    needs a signed-in user; only ``/auth/me``, ``/auth/logout``, and
+    ``/auth/change-password`` skip it.
 
     Args:
         session: The open database session. Only read, never committed.
@@ -512,9 +528,12 @@ def ensure_password_change_not_pending(user: User) -> None:
 
     A new account, or one whose password an administrator reset, gets a
     temporary password and ``must_change_password`` set. Until the user
-    chooses their own password, every endpoint except the few that the
-    change itself needs refuses them (plan §8.1), so a temporary password
-    that was shared or written down can't be used for real work.
+    chooses their own password, every route that needs a signed-in user
+    refuses them, so a temporary password that was shared or written down
+    can't be used for real work. The exceptions are the routes they still
+    need (plan §8.1): ``/auth/me``, ``/auth/logout``, and
+    ``/auth/change-password`` skip this check, and ``/auth/refresh`` needs
+    no access token at all.
 
     The check runs after the access token and the account have been
     accepted, so a bad token or a deactivated account still gets a 401;
@@ -548,7 +567,7 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
 
     On success the new hash replaces the old one and
     ``must_change_password`` is cleared, which lifts the forced-change
-    gate. Every refresh token the user holds is revoked, ending their
+    gate. Every refresh token the user still holds is revoked, ending their
     sessions on all devices, including any held by someone who knew the
     old password (plan §8.1). The caller gets a new session with a fresh
     refresh window, so the device that made the change stays signed in.
@@ -556,11 +575,12 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     ``ACCESS_TOKEN_EXPIRE_MINUTES``. The sign-in time is left alone, since
     this isn't a sign-in. Everything is committed together.
 
-    The user's row is locked before anything is checked, as ``refresh``
-    locks it, so a refresh on another device can't slip a new token past
-    the revocation. The lock also reloads ``user``, so the current password
-    is checked against the hash as it is now, even if another password
-    change committed after this request loaded the account.
+    The user's row is locked before anything is checked, as refresh and a
+    sign-in lock it, so neither a refresh on another device nor a sign-in
+    with the old password can slip a new token past the revocation. The
+    lock also reloads ``user``, so the current password is checked against
+    the hash as it is now, even if another password change committed after
+    this request loaded the account.
 
     Args:
         session: The open database session. This function commits it.

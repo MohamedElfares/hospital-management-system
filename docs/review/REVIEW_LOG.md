@@ -88,6 +88,15 @@ closes when the last stage is done, so an interrupted run is obvious.
   sign-ins never wait for each other; 317 tests, coverage 99.56%. It
   changes `auth/repository.py` and `users/service.py` again and grows
   `tests/test_auth_concurrency.py`. No finding is open.
+- **Recurring finding (stage 8):** R-022, R-025, and R-026 are the same
+  kind: a use case that changes a user's sessions decided on account
+  state that another request could change before its commit. Proposed
+  line for `CLAUDE.md` under "Conventions", after the row-locks line,
+  yours to accept or reject: "A service that issues refresh tokens, or
+  revokes all of a user's, locks the user's row with
+  `get_user_by_id_for_update` before it writes, and re-checks on the
+  locked row anything it read before the lock, such as `is_active` or
+  the password hash."
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -100,7 +109,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [x] 5. users: models and repository — `app/modules/users/__init__.py`, `models.py`, `repository.py` (251 lines) — refactor: `217dbac` (`get_by_email` → `get_user_by_email`, `get_by_id` → `get_user_by_id`, `active_admin_exists` → `exists_active_admin`, and `add` → `create_user`, per the repository shape rule; it reaches `users/service.py`, `tests/test_cli.py`, `tests/test_user_repository.py`, and `tests/test_user_service.py`, including a `monkeypatch` target string; `NAMING.md` gained the `create_<thing>` row); docs: `8cee6f1`; Ruff clean, 281 passed; no router or schema touched, so no OpenAPI diff; claims checked with `EXPLAIN` and SQL probes on `hms_test`; no findings
 - [x] 6. users: schemas and service — `app/modules/users/schemas.py`, `service.py` (299 lines) — refactor: none, no rename needed (`data` stays, your choice of my recommendation, now a `NAMING.md` row); docs: `75ec621`; Ruff clean, 281 passed; OpenAPI exported before and after: the only difference is `UserRead`'s description, which is its docstring; claims checked with probes on `hms_test` and the installed Pydantic, email-validator, and SQLAlchemy; findings R-018 to R-020
 - [x] 7. auth: models, repository, and schemas — `app/modules/auth/__init__.py`, `models.py`, `repository.py`, `schemas.py` (274 lines) — refactor: `e0db329` (`add` → `create_refresh_token`, `get_by_hash` → `get_refresh_token_by_hash`, and `revoke_all_for_user` → `revoke_all_refresh_tokens_for_user`, the last your choice of my recommendation; it reaches `auth/service.py`, `tests/test_auth_repository.py`, whose three `test_revoke_all_*` names follow, and a `tests/test_auth_service.py` docstring; `NAMING.md` gained the `get_<thing>_by_hash` and `revoke_all_<things>_for_<owner>` rows); docs: `b7d1692`, with the `PasswordChange` correction carried from stage 6; Ruff clean, 296 passed; OpenAPI exported before and after: only `TokenResponse`'s and `PasswordChange`'s descriptions differ, which are their docstrings; claims checked with probes on scratch databases (the row lock between two connections, `EXPLAIN`, what loaded objects show after the bulk `UPDATE`) and in the installed SQLAlchemy, FastAPI, and Pydantic; findings R-022 to R-024
-- [ ] 8. auth: service — `app/modules/auth/service.py` (546 lines)
+- [x] 8. auth: service — `app/modules/auth/service.py` (546 lines when planned, 608 after the R-022 and R-025 fixes) — refactor: none, no rename needed (`refresh` and `logout` follow their routes, as `NAMING.md`'s `login` row does); docs: `605ac3b`; Ruff clean, 317 passed; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked against the race tests and with probes on a scratch database (a rotated token raises the alarm every time, even expired; a sign-out meeting a refresh in flight; `repr` of `IssuedTokens`); findings R-026 to R-029
 - [ ] 9. auth: router and request dependencies — `app/modules/auth/router.py`, `app/api/deps.py` (428 lines)
 - [ ] 10. App, health, and CLI — `app/__init__.py`, `app/main.py`, `app/modules/__init__.py`, `app/api/router.py`, `app/api/health.py`, `app/cli.py` (320 lines)
 

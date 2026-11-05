@@ -1,9 +1,12 @@
-"""Health check endpoints used by Render, Docker, and monitoring.
+"""Health check endpoints for the hosting platform and for monitoring.
 
-Two public routes answer two different questions. ``/health/live`` says the
+Two routes answer two different questions. ``/health/live`` says the
 process is running; ``/health/ready`` says it can serve requests, which
-means the database answers. They sit outside ``/api/v1``, because a
-monitoring system should not have to follow the API's versioning.
+means the database answers. Plan §16 sets Render's health check path to
+``/health/ready``. Both routes are public, as plan §11 lists them, so they
+declare no authentication dependency. They sit outside ``/api/v1``,
+because a monitoring system should not have to follow the API's
+versioning.
 """
 
 # Attaches the dependency to the session parameter's type.
@@ -40,7 +43,7 @@ class HealthStatus(BaseModel):
     """Body of a successful health check.
 
     The response deliberately carries nothing else: these routes are public,
-    so version numbers, hostnames, or database details would tell an
+    so software versions, hostnames, or database details would tell an
     attacker about the deployment for no operational gain.
 
     Attributes:
@@ -81,11 +84,14 @@ def live() -> dict[str, str]:
 def ready(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
     """Report that the application can serve requests right now.
 
-    Render points its health check here (plan §16), so this decides whether
-    a deployment receives traffic. The check runs ``SELECT 1``: the cheapest
-    statement that still proves a connection can be taken from the pool and
-    used. Only SQLAlchemy errors are treated as "not ready"; any other
-    exception is a bug and becomes a 500, so real faults stay visible.
+    Plan §16 sets Render's health check path to this route. Render sends a
+    new deployment traffic only once this answers 200, and an instance that
+    keeps failing it stops receiving traffic and is then restarted, so a
+    failure here must mean that requests can't be served. The check runs
+    ``SELECT 1``: the cheapest statement that still proves a connection can
+    be taken from the pool and used. Only SQLAlchemy errors count as "not
+    ready"; any other exception is a bug and becomes a 500, so real faults
+    stay visible.
 
     Args:
         db: Session for this request, from the application's pool.
@@ -95,8 +101,10 @@ def ready(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
 
     Raises:
         ServiceUnavailableError: If the database can't be reached. The
-            handler turns it into a 503, and the driver's message stays in
-            the log rather than in the response.
+            handler turns it into a 503 with a fixed message, so the
+            driver's message, which names the database host and user, stays
+            out of this public response. Nothing logs that message either:
+            the request's log line shows only the 503.
     """
     try:
         db.execute(select(1))

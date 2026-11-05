@@ -2,9 +2,11 @@
 
 pytest loads this file automatically, so tests use the fixtures below by
 naming them as parameters and never import anything from here. The
-application fixtures are built per test, so one test's dependency
-overrides can never affect another; the engine and the migrations are done
-once per run, because they are expensive and hold no per-test state.
+application fixtures are built per test, so a change one test makes to its
+application, such as a dependency override, can never reach another. The
+engine and the migrations are set up once per run: they hold no per-test
+state, and one engine's pool spares each test the cost of opening a new
+connection.
 
 Everything a test does through ``client`` or ``db_session`` happens inside
 one transaction against the database named by ``TEST_DATABASE_URL``, and
@@ -36,7 +38,7 @@ from fastapi import FastAPI
 # Sends requests through the application without starting a server.
 from fastapi.testclient import TestClient
 
-# Type of the connection pool the test database fixtures share.
+# Type of the engine the database fixtures share; it holds the connection pool.
 from sqlalchemy import Engine
 
 # Builds that engine from the test database URL.
@@ -51,7 +53,7 @@ from app.core.config import get_settings
 # The dependency the client fixture replaces with the test's session.
 from app.db.session import get_db
 
-# The application factory under test.
+# The application factory, called once per test.
 from app.main import create_app
 
 
@@ -59,8 +61,15 @@ from app.main import create_app
 def app() -> FastAPI:
     """Build a fresh application for one test.
 
-    Each test gets its own instance, so a dependency override or any other
-    change made by one test cannot leak into the next one.
+    Each test gets its own instance, so a change a test makes to it, such
+    as a dependency override or an added route, can't leak into the next
+    test. Tests take the application from this fixture instead of calling
+    ``create_app`` themselves: ``create_app`` reconfigures logging with
+    ``force=True``, which removes every handler on the root logger,
+    ``caplog``'s among them. pytest attaches that handler again at the
+    start of each test phase, so this fixture, which runs while the test is
+    set up, leaves the test body's log records captured, while a call
+    inside the test body leaves ``caplog`` empty from then on.
 
     Returns:
         A fully configured application, as the running server would use.
@@ -77,7 +86,15 @@ def client(app: FastAPI, db_session: Session) -> TestClient:
     ``get_db`` is replaced by the test's own session, so a request writes
     into the same transaction the test can query afterwards, and everything
     is rolled back when the test ends. The override returns that session
-    without closing it, because the fixture owns its lifecycle.
+    without closing it, because ``db_session`` closes it after the test.
+
+    Nothing ends the session when a request ends, as the ``with`` block in
+    ``get_db`` does, so work a request flushed but never committed stays
+    visible to the test; ``db_session`` says how a test checks a commit.
+    An unexpected exception reaches the test as the exception itself rather
+    than as the 500 response, because ``TestClient`` re-raises it by
+    default; a test of the 500 body builds its own client with
+    ``raise_server_exceptions=False``, as ``tests/test_errors.py`` does.
 
     A test that also asks for ``app`` gets the same instance this client is
     bound to, so it can override further dependencies itself.
@@ -98,13 +115,25 @@ def test_engine() -> Iterator[Engine]:
     """Provide the engine for the test database, once per test run.
 
     Tests must never touch the development database, so the URL comes from
-    ``TEST_DATABASE_URL`` alone and the run stops when it is missing rather
-    than falling back to ``DATABASE_URL``. An engine is expensive to build
-    and carries no per-test state, so one is shared by the whole session and
-    disposed of at the end, closing its pooled connections.
+    ``TEST_DATABASE_URL`` alone, with no fallback to ``DATABASE_URL``. When
+    it is missing, every test that needs the database errors with that
+    message, while the tests that don't need one still run. One engine
+    serves the whole run so that its pool keeps connections open between
+    tests: building an engine is cheap, but opening a connection takes
+    about 20 ms against the local database, where reusing a pooled one
+    takes under 1 ms. Disposing of the engine at the end closes them.
+
+    The pool and connection settings are the application engine's, from
+    ``app/db/session.py``: PostgreSQL returns timestamps in UTC, as it does
+    for the application, and an unreachable database fails within seconds.
+    ``hide_parameters`` is deliberately left off, so a failing statement
+    shows its values in the test output; test data holds no real secrets.
 
     Yields:
         The engine connected to the test database.
+
+    Raises:
+        pytest.fail.Exception: If ``TEST_DATABASE_URL`` isn't set.
     """
     settings = get_settings()
     database_url = settings.test_database_url
@@ -129,12 +158,23 @@ def test_engine() -> Iterator[Engine]:
 def apply_migrations() -> None:
     """Bring the test database's schema up to date, once per test run.
 
-    Tests run against the schema Alembic produces, not one built from the
-    models, so a migration that drifts from the models is caught here rather
-    than in production, where ``entrypoint.sh`` runs the same command. It
-    runs in a subprocess with ``DATABASE_URL`` pointing at the test
-    database, because ``migrations/env.py`` reads that setting: an in-process
-    call would migrate the development database instead.
+    Tests run against the schema the migrations build, not one created from
+    the models, so a migration that leaves out a column or a constraint the
+    code relies on fails the tests that use it instead of requests in
+    production, and one that can't run at all fails here before the
+    production container meets it: plan §16 has ``entrypoint.sh`` run the
+    same ``alembic upgrade head`` at startup. Drift that no test exercises,
+    such as a missing index, is left to ``alembic check`` in CI.
+
+    Alembic runs in a subprocess with ``DATABASE_URL`` set to the test
+    database, because ``migrations/env.py`` takes its URL from
+    ``get_settings().database_url``. In this process that cached value is
+    the development database's, so an in-process call would migrate the
+    development database instead.
+
+    Raises:
+        pytest.fail.Exception: If ``TEST_DATABASE_URL`` isn't set, or the
+            migration fails, with Alembic's error output in the message.
     """
     settings = get_settings()
     database_url = settings.test_database_url
@@ -168,10 +208,24 @@ def db_session(test_engine: Engine, apply_migrations: None) -> Iterator[Session]
     The fixture opens its own connection and starts a transaction on it, so
     everything the test writes lives inside that transaction and disappears
     when it is rolled back. ``join_transaction_mode="create_savepoint"``
-    turns a service's ``commit()`` into the release of a savepoint instead
-    of a real commit, so application code can commit normally and the outer
-    rollback still erases it. Each test therefore starts from the same
-    state, whatever the previous one wrote, without deleting rows by hand.
+    runs the session inside a savepoint: a service's ``commit()`` releases
+    the savepoint instead of committing, and its ``rollback()`` returns to
+    it, so application code commits and rolls back as usual while the outer
+    rollback still erases everything. Each test therefore starts with the
+    same rows, whatever the previous one wrote, without deleting anything
+    by hand. Sequences are the exception, because PostgreSQL never rolls
+    them back.
+
+    Three things differ from a request's session. A service's
+    ``rollback()`` also undoes what the test added since its last commit,
+    so a test whose service rolls back commits its setup first, as an
+    earlier request would have. Work a service flushed but never committed
+    stays visible, so a test sees a missing ``commit()`` only after calling
+    ``db_session.rollback()`` itself, as
+    ``test_the_logout_revocation_is_committed`` does. And this is a plain
+    ``Session``, which expires every object on commit and reloads it from
+    the database, where the application's ``SessionLocal`` sets
+    ``expire_on_commit=False`` and keeps the values in memory.
 
     Args:
         test_engine: Engine for the test database, shared by the run.

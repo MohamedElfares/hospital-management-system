@@ -145,7 +145,7 @@ def apply_migrations() -> None:
     environment = os.environ | {"DATABASE_URL": database_url}
     backend_dir = Path(__file__).resolve().parents[1]
 
-    result = subprocess.run(
+    upgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=backend_dir,
         env=environment,
@@ -154,9 +154,9 @@ def apply_migrations() -> None:
         text=True,
     )
 
-    if result.returncode != 0:
+    if upgrade.returncode != 0:
         pytest.fail(
-            f"Alembic migration failed:\n{result.stderr}",
+            f"Alembic migration failed:\n{upgrade.stderr}",
             pytrace=False,
         )
 

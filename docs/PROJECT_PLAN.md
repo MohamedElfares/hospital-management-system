@@ -649,8 +649,8 @@ hospital-management-system/
 │   │   │   ├── errors.py          # Domain exceptions and error codes
 │   │   │   ├── logging.py         # Log setup and request-ID middleware
 │   │   │   └── pagination.py
-│   │   ├── db/                    # Declarative base, mixins, session
-│   │   ├── api/                   # deps.py (get_db, get_current_user, require_permission), router.py
+│   │   ├── db/                    # Declarative base, mixins, session, and get_db
+│   │   ├── api/                   # deps.py (get_current_user, require_permission), router.py, health.py
 │   │   └── modules/
 │   │       ├── auth/              # router.py, schemas.py, service.py, repository.py, models.py
 │   │       ├── users/             # Users and staff profiles

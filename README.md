@@ -190,7 +190,7 @@ has to be replaced; the database URLs match the Compose file.
 
 ```bash
 cd backend
-uv run pytest                 # 245 tests
+uv run pytest                 # the whole suite
 uv run pytest --cov=app       # with coverage; CI requires at least 80%
 ```
 

@@ -4,21 +4,30 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import get_db
 
+# Worded like libpq's message when nothing listens at the database's address: it names
+# the host, and its hint is a second line.
+DRIVER_MESSAGE = (
+    'connection to server at "db.internal.example" (10.0.0.7), port 5432 failed: '
+    "Connection refused\n"
+    "\tIs the server running on that host and accepting TCP/IP connections?"
+)
+
 
 class BrokenSession:
     """Stands in for a session whose queries fail."""
 
     def execute(self, statement) -> None:
-        """Fail the way a lost connection does.
+        """Fail the way an unreachable database does, with the driver's message.
 
         Args:
             statement: The statement the route tried to run; ignored.
 
         Raises:
-            SQLAlchemyError: Always, so the readiness check takes its
-                failure path without a database being involved.
+            SQLAlchemyError: Always, carrying ``DRIVER_MESSAGE``, so the
+                readiness check takes its failure path without a database
+                being involved.
         """
-        raise SQLAlchemyError("connection failed")
+        raise SQLAlchemyError(DRIVER_MESSAGE)
 
 
 def test_liveness_returns_ok(client: TestClient) -> None:
@@ -64,3 +73,32 @@ def test_readiness_reports_unavailable_when_the_query_fails(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "SERVICE_UNAVAILABLE"
+
+
+def test_readiness_failure_keeps_the_driver_message_out_of_the_response(
+    app: FastAPI, client: TestClient
+) -> None:
+    """A failed readiness check answers the fixed 503 body, without the driver's message.
+
+    The stub fails with a message worded like libpq's, which names the
+    database host. This route is public, so the client gets only the code
+    ``SERVICE_UNAVAILABLE``, the fixed message, and the request ID it sent;
+    the host appears nowhere in the response.
+    """
+    app.dependency_overrides[get_db] = lambda: BrokenSession()
+
+    response = client.get(
+        "/health/ready",
+        headers={"X-Request-ID": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "SERVICE_UNAVAILABLE",
+            "message": "The database is not reachable.",
+            "details": [],
+            "request_id": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc",
+        }
+    }
+    assert "db.internal.example" not in response.text

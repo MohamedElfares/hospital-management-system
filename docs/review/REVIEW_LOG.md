@@ -101,6 +101,20 @@ closes when the last stage is done, so an interrupted run is obvious.
   `CLAUDE.md` under "Conventions", word for word. With R-026 fixed,
   sign-in, refresh, and the password change all follow it; sign-out
   revokes single tokens, so the rule doesn't cover it.
+- **Stage 8's findings fixed (2026-11-05):** R-026 (`a97d21e`), R-027
+  (`867a74c`), R-028 (`99c468b`), and R-029 (`0e58ac9`), written at your
+  request, one commit each, each code fix with tests that fail before
+  it. R-028 went into the API rather than the web-app rule first
+  recommended, because plan §6's principle 7 keeps the frontend out of
+  security. They change `auth/service.py` after stage 8 reviewed it at
+  `605ac3b`, and `auth/repository.py` after stage 7 (`b7d1692`), so the
+  next `/review new` takes those files again; `auth/router.py` changed
+  before stage 9 reaches it, in one `Raises` entry. New tests landed in
+  `test_auth_repository.py` (stage 16), `test_auth_service.py` (stages
+  18 and 20), and `test_auth_concurrency.py` (stage 25). Each commit
+  passes Ruff and the suite on its own, run like CI in a clean worktree:
+  319, 320, then 327 tests, with coverage at 99.57%. R-030, a naming
+  question found while fixing R-028, is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

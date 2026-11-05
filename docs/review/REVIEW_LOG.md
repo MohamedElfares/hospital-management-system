@@ -149,6 +149,21 @@ closes when the last stage is done, so an interrupted run is obvious.
   `test_auth_api.py` (stages 21 and 22). Each commit passes Ruff and the
   suite on its own, run like CI in a clean worktree: 327, 328, 331, then
   336 tests, with coverage at 99.58%. No finding is open.
+- **Stage 10's findings fixed (2026-11-05):** R-037 (`451e40b`), R-036
+  (`0951df5`), and R-038 (`6e13eba`), written at your request ("fix them
+  with your recommendations and best practices"), one commit each, in
+  dependency order: the test that pins today's 503 body first, then the
+  log line, then the CLI setting. Every new test was also run against
+  planted defects, such as a log line written with `%s` or a traceback
+  that shows local variables, and each defect failed it. R-038's guard
+  test checks what reaches the screen instead of reading the setting
+  back, as first recommended. The fixes change `app/api/health.py` and
+  `app/cli.py` after stage 10 reviewed them at `9c56300`, so the next
+  `/review new` takes them again. New tests landed in `test_health.py`
+  (stage 12) and `test_cli.py` (stage 15), and plan §12 and §8.1 each
+  gained a clause. Each commit passes Ruff and the suite on its own, run
+  like CI in a clean worktree: 337, 338, then 339 tests, with coverage at
+  99.58%. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

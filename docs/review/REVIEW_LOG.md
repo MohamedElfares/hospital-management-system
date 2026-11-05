@@ -114,7 +114,11 @@ closes when the last stage is done, so an interrupted run is obvious.
   18 and 20), and `test_auth_concurrency.py` (stage 25). Each commit
   passes Ruff and the suite on its own, run like CI in a clean worktree:
   319, 320, then 327 tests, with coverage at 99.57%. R-030, a naming
-  question found while fixing R-028, is open.
+  question found while fixing R-028, was settled by renaming
+  `get_refresh_token_by_hash` to `get_refresh_token_by_hash_for_update`
+  (`f316cc1`), your go-ahead; it changes `auth/repository.py` and
+  `auth/service.py` again, and both `NAMING.md` rows show the new name.
+  No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

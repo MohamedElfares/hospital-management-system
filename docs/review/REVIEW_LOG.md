@@ -132,6 +132,22 @@ closes when the last stage is done, so an interrupted run is obvious.
   `tests/test_auth_api.py` says every route that uses `CurrentUser` is
   exempt from the gate; it means every route that exists today, as the
   same fixture in `tests/test_logging.py` says, since none uses it yet.
+- **Stage 9's findings fixed (2026-11-05):** R-035 (`331a208`), R-032
+  (`040e120`), R-031 (`c565e11`), and R-033 (`412ae00`), written at your
+  request ("fix them with your recommendations and best practices"), one
+  commit each, each code fix with tests that fail before it; every new
+  test was also run against planted defects, such as a limit one
+  character off, and each defect failed a test. R-034 became issue #41,
+  in Milestone 1.7. The fixes change `app/core/errors.py` after stage 1
+  reviewed it at `d5dc7cd`, `users/schemas.py` after stage 6 (`75ec621`),
+  `auth/schemas.py` after stage 7 (`b7d1692`), and `auth/router.py` after
+  stage 9 (`9e21ddb`), so the next `/review new` takes those files again.
+  The new `app/api/__init__.py` joins stage 10, and the new
+  `tests/test_package_layout.py` joins stage 12. New tests landed in
+  `test_errors.py` (stage 12), `test_auth_schemas.py` (stage 17), and
+  `test_auth_api.py` (stages 21 and 22). Each commit passes Ruff and the
+  suite on its own, run like CI in a clean worktree: 327, 328, 331, then
+  336 tests, with coverage at 99.58%. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -146,12 +162,12 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [x] 7. auth: models, repository, and schemas — `app/modules/auth/__init__.py`, `models.py`, `repository.py`, `schemas.py` (274 lines) — refactor: `e0db329` (`add` → `create_refresh_token`, `get_by_hash` → `get_refresh_token_by_hash`, and `revoke_all_for_user` → `revoke_all_refresh_tokens_for_user`, the last your choice of my recommendation; it reaches `auth/service.py`, `tests/test_auth_repository.py`, whose three `test_revoke_all_*` names follow, and a `tests/test_auth_service.py` docstring; `NAMING.md` gained the `get_<thing>_by_hash` and `revoke_all_<things>_for_<owner>` rows); docs: `b7d1692`, with the `PasswordChange` correction carried from stage 6; Ruff clean, 296 passed; OpenAPI exported before and after: only `TokenResponse`'s and `PasswordChange`'s descriptions differ, which are their docstrings; claims checked with probes on scratch databases (the row lock between two connections, `EXPLAIN`, what loaded objects show after the bulk `UPDATE`) and in the installed SQLAlchemy, FastAPI, and Pydantic; findings R-022 to R-024
 - [x] 8. auth: service — `app/modules/auth/service.py` (546 lines when planned, 608 after the R-022 and R-025 fixes) — refactor: none, no rename needed (`refresh` and `logout` follow their routes, as `NAMING.md`'s `login` row does); docs: `605ac3b`; Ruff clean, 317 passed; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked against the race tests and with probes on a scratch database (a rotated token raises the alarm every time, even expired; a sign-out meeting a refresh in flight; `repr` of `IssuedTokens`); findings R-026 to R-029
 - [x] 9. auth: router and request dependencies — `app/modules/auth/router.py`, `app/api/deps.py` (428 lines when planned, 476 after the docs) — refactor: `20d8b7b` (the sign-in route's `result` → `issued_tokens`, the name the refresh and password change routes already use; the bearer token's parameter in `deps.py`, `token` → `access_token`, as the auth service names it, now a `NAMING.md` row); docs: `9e21ddb`; Ruff clean, 327 passed; OpenAPI exported before and after: identical after the renames, and after the docs only the five routes' descriptions differ, which are their docstrings; the code's AST is identical without the docstrings, with the renames mapped back; claims checked in probes on the test database and in the installed FastAPI 0.141.1, Starlette 1.6.0, and coverage.py 7.16.1 (one user lookup and one session per request, the context copies, which 401s carry `WWW-Authenticate`, the sign-in form's field sizes, the 422 body, coverage of a folder without `__init__.py`); findings R-031 to R-035
-- [ ] 10. App, health, and CLI — `app/__init__.py`, `app/main.py`, `app/modules/__init__.py`, `app/api/router.py`, `app/api/health.py`, `app/cli.py` (320 lines)
+- [ ] 10. App, health, and CLI — `app/__init__.py`, `app/main.py`, `app/modules/__init__.py`, `app/api/__init__.py` (added 2026-11-05 for R-032), `app/api/router.py`, `app/api/health.py`, `app/cli.py` (320 lines when planned)
 
 ### Tests
 
 - [ ] 11. Test setup — `tests/conftest.py`, `tests/factories.py` (324 lines)
-- [ ] 12. Platform tests — `tests/test_database.py`, `tests/test_errors.py`, `tests/test_logging.py`, `tests/test_health.py` (232 lines)
+- [ ] 12. Platform tests — `tests/test_database.py`, `tests/test_errors.py`, `tests/test_logging.py`, `tests/test_health.py`, `tests/test_package_layout.py` (added 2026-11-05 for R-032) (232 lines when planned)
 - [ ] 13. Security tests — `tests/test_security.py` (509 lines)
 - [ ] 14. users tests: model and schemas — `tests/test_user_model.py`, `tests/test_user_schemas.py` (349 lines)
 - [ ] 15. users tests: service and CLI — `tests/test_user_service.py`, `tests/test_cli.py` (414 lines)

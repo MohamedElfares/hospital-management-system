@@ -9,6 +9,9 @@ because a monitoring system should not have to follow the API's
 versioning.
 """
 
+# Standard logging; records why a readiness check failed.
+import logging
+
 # Attaches the dependency to the session parameter's type.
 from typing import Annotated
 
@@ -33,8 +36,13 @@ from sqlalchemy.orm import Session
 # Raised when the database can't be reached; the handler turns it into a 503.
 from app.core.errors import ServiceUnavailableError
 
+# The current request's ID, which ties the warning to the request's own log line.
+from app.core.logging import request_id_var
+
 # Provides one database session for the request.
 from app.db.session import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -103,11 +111,14 @@ def ready(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
         ServiceUnavailableError: If the database can't be reached. The
             handler turns it into a 503 with a fixed message, so the
             driver's message, which names the database host and user, stays
-            out of this public response. Nothing logs that message either:
-            the request's log line shows only the 503.
+            out of this public response. A warning records it in the log
+            instead, on one line, with the request ID.
     """
     try:
         db.execute(select(1))
         return {"status": "ok"}
     except SQLAlchemyError as exc:
+        # The check repeats every few seconds while the database is down, so each failure
+        # is one line without a traceback; %r keeps the driver's line breaks escaped.
+        logger.warning("Readiness check failed (request_id=%s): %r", request_id_var.get(), exc)
         raise ServiceUnavailableError("The database is not reachable.") from exc

@@ -969,7 +969,7 @@ Check every item before each release.
 | Area | Requirement |
 |---|---|
 | Performance | Lists are paginated; no N+1 queries (use `selectinload`); indexes on foreign keys and search columns; web app routes are code-split |
-| Reliability | The readiness check tests the database; migrations run before the server starts; `pool_pre_ping` replaces dropped connections |
+| Reliability | The readiness check tests the database, and a failed check logs its cause; migrations run before the server starts; `pool_pre_ping` replaces dropped connections |
 | Observability | One structured log line per request with request ID, user ID, method, path, status, and duration; an `X-Request-ID` response header |
 | Accessibility | Keyboard-operable screens, labeled form fields, visible focus, and sufficient contrast, targeting WCAG 2.2 AA |
 | Usability | Staff screens are designed for desktop; portal screens also work on phones |

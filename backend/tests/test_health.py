@@ -1,3 +1,6 @@
+import logging
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -102,3 +105,32 @@ def test_readiness_failure_keeps_the_driver_message_out_of_the_response(
         }
     }
     assert "db.internal.example" not in response.text
+
+
+def test_readiness_failure_logs_the_driver_message_on_one_line(
+    app: FastAPI, client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed readiness check writes one warning with the cause and the request ID.
+
+    The response leaves the driver's message out, so the log is the only
+    place an operator can read why the database was unreachable, such as a
+    wrong password or a stopped server. The warning carries the request ID
+    the response names, which ties it to the request's own log line. It
+    keeps the driver's two-line message on one line and has no traceback,
+    because the check repeats every few seconds while the database is down.
+    """
+    app.dependency_overrides[get_db] = lambda: BrokenSession()
+
+    with caplog.at_level(logging.WARNING, logger="app.api.health"):
+        response = client.get("/health/ready")
+
+    records = [record for record in caplog.records if record.name == "app.api.health"]
+    request_id = response.json()["error"]["request_id"]
+
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    message = records[0].getMessage()
+    assert f"request_id={request_id}" in message
+    assert "db.internal.example" in message
+    assert "\n" not in message

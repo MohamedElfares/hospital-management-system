@@ -119,6 +119,19 @@ closes when the last stage is done, so an interrupted run is obvious.
   (`f316cc1`), your go-ahead; it changes `auth/repository.py` and
   `auth/service.py` again, and both `NAMING.md` rows show the new name.
   No finding is open.
+- **Carried from stage 9:** three things in later stages' files, noticed
+  while checking the router and `deps.py`. Stage 10: `create_app`'s
+  docstring in `app/main.py` says importing the module no longer needs
+  valid settings, but the module builds `app` when imported, and its
+  imports reach `app.db.session`, which builds the engine; checked in a
+  fresh process with no settings, `import app.main` raises
+  `ValidationError`, as R-017 found. Stage 18: four tests in
+  `tests/test_auth_service.py` name `service.login`'s return `result`,
+  which stage 9 renamed `issued_tokens` in the router (shape rule).
+  Stage 21: the `gated_route` fixture's docstring in
+  `tests/test_auth_api.py` says every route that uses `CurrentUser` is
+  exempt from the gate; it means every route that exists today, as the
+  same fixture in `tests/test_logging.py` says, since none uses it yet.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -132,7 +145,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [x] 6. users: schemas and service — `app/modules/users/schemas.py`, `service.py` (299 lines) — refactor: none, no rename needed (`data` stays, your choice of my recommendation, now a `NAMING.md` row); docs: `75ec621`; Ruff clean, 281 passed; OpenAPI exported before and after: the only difference is `UserRead`'s description, which is its docstring; claims checked with probes on `hms_test` and the installed Pydantic, email-validator, and SQLAlchemy; findings R-018 to R-020
 - [x] 7. auth: models, repository, and schemas — `app/modules/auth/__init__.py`, `models.py`, `repository.py`, `schemas.py` (274 lines) — refactor: `e0db329` (`add` → `create_refresh_token`, `get_by_hash` → `get_refresh_token_by_hash`, and `revoke_all_for_user` → `revoke_all_refresh_tokens_for_user`, the last your choice of my recommendation; it reaches `auth/service.py`, `tests/test_auth_repository.py`, whose three `test_revoke_all_*` names follow, and a `tests/test_auth_service.py` docstring; `NAMING.md` gained the `get_<thing>_by_hash` and `revoke_all_<things>_for_<owner>` rows); docs: `b7d1692`, with the `PasswordChange` correction carried from stage 6; Ruff clean, 296 passed; OpenAPI exported before and after: only `TokenResponse`'s and `PasswordChange`'s descriptions differ, which are their docstrings; claims checked with probes on scratch databases (the row lock between two connections, `EXPLAIN`, what loaded objects show after the bulk `UPDATE`) and in the installed SQLAlchemy, FastAPI, and Pydantic; findings R-022 to R-024
 - [x] 8. auth: service — `app/modules/auth/service.py` (546 lines when planned, 608 after the R-022 and R-025 fixes) — refactor: none, no rename needed (`refresh` and `logout` follow their routes, as `NAMING.md`'s `login` row does); docs: `605ac3b`; Ruff clean, 317 passed; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked against the race tests and with probes on a scratch database (a rotated token raises the alarm every time, even expired; a sign-out meeting a refresh in flight; `repr` of `IssuedTokens`); findings R-026 to R-029
-- [ ] 9. auth: router and request dependencies — `app/modules/auth/router.py`, `app/api/deps.py` (428 lines)
+- [x] 9. auth: router and request dependencies — `app/modules/auth/router.py`, `app/api/deps.py` (428 lines when planned, 476 after the docs) — refactor: `20d8b7b` (the sign-in route's `result` → `issued_tokens`, the name the refresh and password change routes already use; the bearer token's parameter in `deps.py`, `token` → `access_token`, as the auth service names it, now a `NAMING.md` row); docs: `9e21ddb`; Ruff clean, 327 passed; OpenAPI exported before and after: identical after the renames, and after the docs only the five routes' descriptions differ, which are their docstrings; the code's AST is identical without the docstrings, with the renames mapped back; claims checked in probes on the test database and in the installed FastAPI 0.141.1, Starlette 1.6.0, and coverage.py 7.16.1 (one user lookup and one session per request, the context copies, which 401s carry `WWW-Authenticate`, the sign-in form's field sizes, the 422 body, coverage of a folder without `__init__.py`); findings R-031 to R-035
 - [ ] 10. App, health, and CLI — `app/__init__.py`, `app/main.py`, `app/modules/__init__.py`, `app/api/router.py`, `app/api/health.py`, `app/cli.py` (320 lines)
 
 ### Tests

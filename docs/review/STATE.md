@@ -8,6 +8,7 @@ with no row has never been reviewed and is always in scope.
 
 | File | Reviewed at commit | Date | Run |
 |---|---|---|---|
+| `backend/app/api/deps.py` | `9e21ddb` | 2026-11-05 | 1 |
 | `backend/app/core/__init__.py` | `d5dc7cd` | 2026-11-04 | 1 |
 | `backend/app/core/config.py` | `7d080c0` | 2026-11-04 | 1 |
 | `backend/app/core/errors.py` | `d5dc7cd` | 2026-11-04 | 1 |
@@ -20,6 +21,7 @@ with no row has never been reviewed and is always in scope.
 | `backend/app/modules/auth/__init__.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/models.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/repository.py` | `b7d1692` | 2026-11-05 | 1 |
+| `backend/app/modules/auth/router.py` | `9e21ddb` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/schemas.py` | `b7d1692` | 2026-11-05 | 1 |
 | `backend/app/modules/auth/service.py` | `605ac3b` | 2026-11-05 | 1 |
 | `backend/app/modules/users/__init__.py` | `8cee6f1` | 2026-11-04 | 1 |

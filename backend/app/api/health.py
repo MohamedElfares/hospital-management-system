@@ -78,7 +78,7 @@ def live() -> dict[str, str]:
     response_model=HealthStatus,
     responses={503: {"description": "The database is not reachable."}},
 )
-def ready(database: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def ready(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
     """Report that the application can serve requests right now.
 
     Render points its health check here (plan §16), so this decides whether
@@ -88,7 +88,7 @@ def ready(database: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
     exception is a bug and becomes a 500, so real faults stay visible.
 
     Args:
-        database: Session for this request, from the application's pool.
+        db: Session for this request, from the application's pool.
 
     Returns:
         ``{"status": "ok"}`` when the database answered.
@@ -99,7 +99,7 @@ def ready(database: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
             the log rather than in the response.
     """
     try:
-        database.execute(select(1))
+        db.execute(select(1))
         return {"status": "ok"}
-    except SQLAlchemyError as err:
-        raise ServiceUnavailableError("The database is not reachable.") from err
+    except SQLAlchemyError as exc:
+        raise ServiceUnavailableError("The database is not reachable.") from exc

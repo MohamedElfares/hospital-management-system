@@ -19,8 +19,9 @@ uv run pytest tests/test_health.py::test_liveness_returns_ok   # a single test
 | A test database | `docker compose exec db createdb -U hms hms_test`, once per machine |
 | `TEST_DATABASE_URL` in `backend/.env` | `postgresql+psycopg://hms:hms@127.0.0.1:5432/hms_test` |
 
-The suite refuses to run without `TEST_DATABASE_URL` rather than falling back to
-`DATABASE_URL`, because tests write to the database they are given.
+Without `TEST_DATABASE_URL`, every test that needs the database errors with
+`TEST_DATABASE_URL is not set`, and the tests that don't need one still run. The suite
+never falls back to `DATABASE_URL`, because tests write to the database they are given.
 
 ## Fixtures
 

@@ -1,5 +1,8 @@
 import getpass
 import sys
+from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextlib import nullcontext
 
 import pytest
@@ -18,14 +21,20 @@ ADMIN_FULL_NAME = "super user"
 
 def test_create_admin_creates_an_admin_and_prints_its_email(
     db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Valid input creates an Admin, prints its email, and saves it.
 
-    Each CLI test replaces ``SessionLocal`` so the command uses the test
-    session; without that, it would write to the development database.
+    Each CLI test puts ``contextmanager(get_test_db)`` in place of
+    ``SessionLocal``, so the command gets the test's session and ends it as
+    it would end a real one: what the test set up is committed first, and
+    whatever the command didn't commit is rolled back when its ``with``
+    block ends. The Admin is still found afterwards only because the
+    command committed it. Without the replacement, the command would write
+    to the development database.
     """
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
     result = CliRunner().invoke(
         cli.app,
@@ -44,6 +53,7 @@ def test_create_admin_creates_an_admin_and_prints_its_email(
 
 def test_create_admin_rejects_a_short_password_without_showing_it(
     db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An 11-character password is refused with the rule, never echoed, and nothing is saved.
@@ -51,7 +61,7 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     The test password is a string that can't appear in the output by
     chance, so its absence proves the command didn't print it.
     """
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
     result = CliRunner().invoke(
         cli.app,
@@ -67,6 +77,7 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
 
 def test_create_admin_rejects_a_control_character_in_the_name(
     db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A NUL typed at the name prompt is refused as invalid input, and nothing is saved.
@@ -76,7 +87,7 @@ def test_create_admin_rejects_a_control_character_in_the_name(
     database error. A command-line option can't carry NUL, so the name
     comes through the prompt.
     """
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
     result = CliRunner().invoke(
         cli.app,
@@ -91,10 +102,11 @@ def test_create_admin_rejects_a_control_character_in_the_name(
 
 def test_create_admin_refuses_when_an_active_admin_exists(
     db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With an active Admin already committed, the command exits with code 1 and says why."""
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
     user = make_user()
     db_session.add(user)
@@ -112,10 +124,11 @@ def test_create_admin_refuses_when_an_active_admin_exists(
 
 def test_create_admin_prompts_for_a_missing_email_and_name(
     db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without options, the command asks for the email and name, then creates the Admin."""
-    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(db_session))
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
     result = CliRunner().invoke(
         cli.app,

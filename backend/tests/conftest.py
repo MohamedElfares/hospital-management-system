@@ -23,6 +23,9 @@ import subprocess
 # Path to the interpreter running the tests, so the subprocess uses the same one.
 import sys
 
+# Type of the stand-in for get_db that the get_test_db fixture returns.
+from collections.abc import Callable
+
 # Return type of a fixture that yields a value and then cleans up.
 from collections.abc import Iterator
 
@@ -78,19 +81,18 @@ def app() -> FastAPI:
 
 
 @pytest.fixture
-def client(app: FastAPI, db_session: Session) -> TestClient:
+def client(app: FastAPI, get_test_db: Callable[[], Iterator[Session]]) -> TestClient:
     """Provide an HTTP client whose requests run in the test's transaction.
 
     The client sends requests through the whole stack, including the
     middleware and the exception handlers, without opening a network port.
-    ``get_db`` is replaced by the test's own session, so a request writes
-    into the same transaction the test can query afterwards, and everything
-    is rolled back when the test ends. The override returns that session
-    without closing it, because ``db_session`` closes it after the test.
+    ``get_db`` is replaced by ``get_test_db``, so each request gets the
+    test's own session and ends it as the application ends a request's:
+    what the test set up is committed first, and whatever the request
+    didn't commit is rolled back when it ends. The test can then query
+    what the request committed, and everything is rolled back when the
+    test ends.
 
-    Nothing ends the session when a request ends, as the ``with`` block in
-    ``get_db`` does, so work a request flushed but never committed stays
-    visible to the test; ``db_session`` says how a test checks a commit.
     An unexpected exception reaches the test as the exception itself rather
     than as the 500 response, because ``TestClient`` re-raises it by
     default; a test of the 500 body builds its own client with
@@ -101,13 +103,56 @@ def client(app: FastAPI, db_session: Session) -> TestClient:
 
     Args:
         app: The application built for this test.
-        db_session: Session bound to the test's transaction.
+        get_test_db: Stand-in for ``get_db`` that hands out the test's
+            session.
 
     Returns:
         A client whose requests reach that application and that session.
     """
-    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_db] = get_test_db
     return TestClient(app)
+
+
+@pytest.fixture
+def get_test_db(db_session: Session) -> Callable[[], Iterator[Session]]:
+    """Provide a stand-in for ``get_db`` that hands out the test's session.
+
+    The application opens a new session for each request in ``get_db``,
+    and for each command with ``with SessionLocal() as session``, and
+    closing it rolls back whatever wasn't committed. The stand-in ends the
+    test's session the same way. It commits what the test set up, which
+    would already be in the database before a real request, hands the
+    session over, and rolls back once the request or command ends, failed
+    or not. Only what the code under test committed is left, so a
+    forgotten ``commit()`` fails the test that reads the result. Both the
+    commit and the rollback stop at the test's savepoint, so the test's
+    transaction stays open until ``db_session`` rolls all of it back.
+
+    ``client`` installs the stand-in as the override for ``get_db``. A CLI
+    test wraps it with ``contextlib.contextmanager`` and puts the result in
+    place of ``SessionLocal``, so ``with SessionLocal() as session`` still
+    works.
+
+    Args:
+        db_session: Session bound to the test's transaction.
+
+    Returns:
+        A generator function that yields ``db_session`` once.
+    """
+
+    def hand_out_the_test_session() -> Iterator[Session]:
+        """Commit the test's setup, yield the session, then roll back.
+
+        Yields:
+            The test's session, for one request or command.
+        """
+        db_session.commit()
+        try:
+            yield db_session
+        finally:
+            db_session.rollback()
+
+    return hand_out_the_test_session
 
 
 @pytest.fixture(scope="session")
@@ -216,16 +261,20 @@ def db_session(test_engine: Engine, apply_migrations: None) -> Iterator[Session]
     by hand. Sequences are the exception, because PostgreSQL never rolls
     them back.
 
-    Three things differ from a request's session. A service's
-    ``rollback()`` also undoes what the test added since its last commit,
-    so a test whose service rolls back commits its setup first, as an
-    earlier request would have. Work a service flushed but never committed
-    stays visible, so a test sees a missing ``commit()`` only after calling
-    ``db_session.rollback()`` itself, as
-    ``test_the_logout_revocation_is_committed`` does. And this is a plain
-    ``Session``, which expires every object on commit and reloads it from
-    the database, where the application's ``SessionLocal`` sets
-    ``expire_on_commit=False`` and keeps the values in memory.
+    Requests and commands get the session through ``get_test_db``, which
+    ends it as the application does. A service test that calls a service
+    with this session directly gets no such boundary, so two things differ
+    from a request. A service's ``rollback()`` also undoes what the test
+    added since its last commit, so a test whose service rolls back
+    commits its setup first, as an earlier request would have. And work a
+    service flushed but never committed stays visible, so a service test
+    sees a missing ``commit()`` only after calling ``db_session.rollback()``
+    itself, as ``test_the_logout_revocation_is_committed`` does.
+
+    This is also a plain ``Session``, which expires every object on commit
+    and reloads it from the database, where the application's
+    ``SessionLocal`` sets ``expire_on_commit=False`` and keeps the values
+    in memory.
 
     Args:
         test_engine: Engine for the test database, shared by the run.

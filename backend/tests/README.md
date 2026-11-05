@@ -31,7 +31,8 @@ naming it as a parameter; nothing is imported from that file.
 | Fixture | Scope | What it gives you |
 |---|---|---|
 | `app` | test | A fresh application from `create_app()`, so dependency overrides never leak between tests |
-| `client` | test | An HTTP client for that application, with `get_db` replaced by the test's session |
+| `client` | test | An HTTP client for that application, with `get_db` replaced by `get_test_db` |
+| `get_test_db` | test | A stand-in for `get_db` that hands requests and CLI commands the test's session, ended the way the application ends one |
 | `test_engine` | session | The engine for the test database, disposed of at the end of the run |
 | `apply_migrations` | session | `alembic upgrade head` against the test database, in a subprocess |
 | `db_session` | test | A session inside a transaction that is rolled back when the test ends |
@@ -45,8 +46,20 @@ Each test that touches the database runs inside one transaction:
    in application code releases a savepoint instead of ending the transaction.
 3. After the test, the transaction is rolled back — rows, schema changes and all.
 
-Because `client` shares that session, a request made over HTTP and a direct query in the
-test see the same data, and neither survives the test.
+Requests and CLI commands get that same session through `get_test_db`, which ends it the
+way the application ends a real one:
+
+- Before the request or command, it commits what the test set up, as that data would
+  already be in the database.
+- Afterwards, whether the code succeeded or failed, it rolls back whatever the code didn't
+  commit, as closing a real session does.
+
+So a forgotten `commit()` fails the test that reads the result, and what the code did
+commit stays visible to the test until the test ends. A CLI test puts
+`contextmanager(get_test_db)` in place of `SessionLocal`. A service test that calls a
+service with `db_session` directly has no such boundary; it checks a commit by calling
+`db_session.rollback()` before it asserts, as `test_the_logout_revocation_is_committed`
+does. `test_conftest.py` pins this behaviour.
 
 ## Conventions
 

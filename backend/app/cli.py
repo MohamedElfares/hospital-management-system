@@ -43,7 +43,12 @@ from app.modules.users.schemas import UserCreate
 # The service that checks the rules and creates the first Admin.
 from app.modules.users.service import create_first_admin
 
-app = typer.Typer(help="Hospital Management System maintenance commands.")
+# A crash prints Typer's traceback. Its local variables would show the typed password and
+# the database password, so they stay hidden here whatever Typer's default becomes.
+app = typer.Typer(
+    help="Hospital Management System maintenance commands.",
+    pretty_exceptions_show_locals=False,
+)
 
 # Pydantic words a SecretStr's length error as "at least 12 items after validation, not 5",
 # which is confusing and reveals how long the typed password was, so the CLI prints the rule.
@@ -82,9 +87,9 @@ def create_admin(
     password. The service refuses when an active Admin already exists or
     another account uses the email. Invalid input and a refusal each print
     to stderr and exit with code 1, and nothing is saved. A database error
-    isn't caught: Typer prints its traceback, which shows no local
-    variables, Typer's default since 0.23. That default is what keeps the
-    typed password and the database URL's password off the screen.
+    isn't caught: Typer prints its traceback, without local variables,
+    because ``app`` turns them off. That setting is what keeps the typed
+    password and the database URL's password off the screen.
 
     Args:
         email: Sign-in email for the new Admin.

@@ -1,7 +1,10 @@
+import getpass
+import sys
 from contextlib import nullcontext
 
 import pytest
 from factories import make_user
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -127,3 +130,42 @@ def test_create_admin_prompts_for_a_missing_email_and_name(
 
     assert admin is not None
     assert admin.role is Role.ADMIN
+
+
+def test_create_admin_crash_output_never_shows_the_typed_password(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A database failure after the prompt prints a traceback without the typed password.
+
+    The command runs through ``cli.app()``, the entry point that
+    ``python -m app.cli`` uses, because ``CliRunner`` skips Typer's own
+    error handling. The service fails the way an unreachable database does,
+    and the uncaught error goes to the hook Typer installs, as Python would
+    send it there. The password is still a local variable of the command at
+    that moment, so a traceback that showed local variables would print it.
+    """
+    typed_password = "TypedSecretPassword"
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": typed_password)
+    monkeypatch.setattr(cli, "SessionLocal", lambda: nullcontext(None))
+
+    def fail_like_an_unreachable_database(*args: object) -> None:
+        """Raise a database error, as SQLAlchemy does when the database can't be reached."""
+        raise SQLAlchemyError("connection to server failed: Connection refused")
+
+    monkeypatch.setattr(cli, "create_first_admin", fail_like_an_unreachable_database)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["app.cli", "create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
+    )
+    # Typer replaces sys.excepthook when it runs; monkeypatch puts the original back afterward.
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+
+    with pytest.raises(SQLAlchemyError) as crash:
+        cli.app()
+    sys.excepthook(crash.type, crash.value, crash.tb)
+
+    output = capsys.readouterr()
+    assert "Connection refused" in output.err
+    assert typed_password not in output.out + output.err

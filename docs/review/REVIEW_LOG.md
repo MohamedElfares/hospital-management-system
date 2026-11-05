@@ -164,6 +164,14 @@ closes when the last stage is done, so an interrupted run is obvious.
   gained a clause. Each commit passes Ruff and the suite on its own, run
   like CI in a clean worktree: 337, 338, then 339 tests, with coverage at
   99.58%. No finding is open.
+- **Carried from stage 11:** two things in later stages' files. Stage 25:
+  `_run_migrations` in `tests/test_auth_concurrency.py` names what
+  `subprocess.run` returns `result`, as `apply_migrations` did until
+  stage 11 renamed it `upgrade`. Stage 15:
+  `test_create_admin_creates_an_admin_and_prints_its_email` says the
+  command saves the Admin, but through `nullcontext(db_session)` it can't
+  see whether the command committed (R-039); if R-039 is still open then,
+  its docstring should say what the test can see.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -182,7 +190,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
 ### Tests
 
-- [ ] 11. Test setup — `tests/conftest.py`, `tests/factories.py` (324 lines)
+- [x] 11. Test setup — `tests/conftest.py`, `tests/factories.py` (324 lines when planned, 403 after the docs) — refactor: `ba00ba5` (`apply_migrations`' `result` → `upgrade`, the finished `alembic upgrade head` run, per the shape rule); docs: `a459df1`; Ruff clean, 339 passed, both commits also run like CI in a clean worktree (coverage 99.58%); no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked in probes on the test database, in fresh runs, and in the installed SQLAlchemy 2.1.1, pytest 9.1.1, pwdlib 0.3.1, and Faker 40.40.0 (the savepoint statements and what a rollback undoes, a run without `TEST_DATABASE_URL`, the whole suite against an unreachable `DATABASE_URL`, the import mode that makes `factories` importable, `caplog` after `create_app`, the time to build an engine and to connect, a built user's database defaults, every Argon2 variant passing `verify_password`, the `user_id` call forms, and `TestClient` re-raising an error), and with mutants that skip each of the six service commits; findings R-039 to R-041
 - [ ] 12. Platform tests — `tests/test_database.py`, `tests/test_errors.py`, `tests/test_logging.py`, `tests/test_health.py`, `tests/test_package_layout.py` (added 2026-11-05 for R-032) (232 lines when planned)
 - [ ] 13. Security tests — `tests/test_security.py` (509 lines)
 - [ ] 14. users tests: model and schemas — `tests/test_user_model.py`, `tests/test_user_schemas.py` (349 lines)

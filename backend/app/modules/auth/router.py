@@ -305,7 +305,9 @@ def change_password(
             turns it into a 400 with code ``BAD_REQUEST``.
         AuthenticationError: From the dependency, before this runs, if the
             access token is missing, invalid, or expired, or the account is
-            deactivated. The handler turns it into a 401.
+            deactivated; and from the service, if the account is
+            deactivated while the request runs. The handler turns it into a
+            401.
     """
     issued_tokens = service.change_password(db, user, data)
     set_refresh_cookie(response, issued_tokens.refresh_token)

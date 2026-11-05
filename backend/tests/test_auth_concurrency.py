@@ -43,6 +43,7 @@ from app.modules.users.models import User
 PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
 WRONG_PASSWORD = "Wrong-Password-1"
+INVALID_TOKEN = "Invalid or expired token."
 
 # The longest any wait in these tests may take. A lock that is missing or
 # never released makes a test fail after this long instead of hanging.
@@ -747,6 +748,67 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
     assert stored_user is not None
     assert verify_password(NEW_PASSWORD, stored_user.password_hash)
+
+
+def test_a_password_change_is_refused_when_the_account_is_deactivated_after_loading(
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A password change saves nothing if its account is deactivated after loading.
+
+    This request loads the user first, as its authentication does, and the
+    account is then deactivated on another connection. The change reads
+    the account again under its lock, so it must refuse with the usual
+    token error, as the request's authentication would refuse it now, keep
+    the old password, and issue no session. Before the fix it went on with
+    the account it had loaded, so the inactive account got a new password
+    and a refresh token.
+    """
+    with session_factory() as session:
+        signed_in_user = session.get(User, committed_user.id)
+        assert signed_in_user is not None
+
+        _deactivate_user_in_new_session(session_factory, committed_user)
+
+        data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            service.change_password(session, signed_in_user, data)
+
+    with session_factory() as session:
+        stored_user = session.get(User, committed_user.id)
+
+    assert exc_info.value.message == INVALID_TOKEN
+    assert stored_user is not None
+    assert verify_password(PASSWORD, stored_user.password_hash)
+    assert _count_tokens(session_factory, committed_user, is_usable=False) == 0
+
+
+def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A password change gets the usual refusal, not a 500, if its account is deleted after loading.
+
+    The app never deletes users, but a development database can be reset
+    while a browser still holds a token. The change finds no account under
+    its lock, so it must raise the usual token error. Before the fix it
+    changed the copy it had loaded, and flushing an ``UPDATE`` that matched
+    no row raised SQLAlchemy's ``StaleDataError``, which the API answers
+    with a 500.
+    """
+    with session_factory() as session:
+        signed_in_user = session.get(User, committed_user.id)
+        assert signed_in_user is not None
+
+        _delete_user_in_new_session(session_factory, committed_user)
+
+        data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            service.change_password(session, signed_in_user, data)
+
+    assert exc_info.value.message == INVALID_TOKEN
 
 
 def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(

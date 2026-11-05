@@ -578,14 +578,19 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     The user's row is locked before anything is checked, as refresh and a
     sign-in lock it, so neither a refresh on another device nor a sign-in
     with the old password can slip a new token past the revocation. The
-    lock also reloads ``user``, so the current password is checked against
-    the hash as it is now, even if another password change committed after
-    this request loaded the account.
+    account is read again with the lock, and everything after works on
+    that copy, not on ``user``, which the request loaded earlier. An
+    account deactivated or deleted since then is refused with a 401, as
+    the request's authentication would refuse it now, so the web app ends
+    the session. And the current password is checked against the hash as
+    it is now, even if another password change committed after this
+    request loaded the account.
 
     Args:
         session: The open database session. This function commits it.
-        user: The signed-in user, from the access token, loaded in this
-            session.
+        user: The signed-in user, from the access token. Only its ID is
+            used: the account is read again, locked, before anything is
+            checked.
         data: The current and new passwords, the new one already checked
             against the password rule. Neither is logged or stored.
 
@@ -593,6 +598,9 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
         The new session's access token and refresh token.
 
     Raises:
+        AuthenticationError: If the account was deactivated or deleted
+            after the request was authenticated, with the message every
+            rejected token gets. Nothing is saved.
         BadRequestError: If the current password is wrong, or the new
             password is the same as the current one. Nothing is saved.
     """
@@ -600,26 +608,29 @@ def change_password(session: Session, user: User, data: PasswordChange) -> Issue
     new_password = data.new_password.get_secret_value()
 
     # The same lock refresh and sign-in take, so they run in turn (see refresh).
-    # It reloads user in place, because user belongs to this session.
-    get_user_by_id_for_update(session, user.id)
+    # What the request loaded may be out of date by now; the locked copy isn't.
+    locked_user = get_user_by_id_for_update(session, user.id)
 
-    if not verify_password(current_password, user.password_hash):
+    if locked_user is None or not locked_user.is_active:
+        raise AuthenticationError(_INVALID_TOKEN)
+
+    if not verify_password(current_password, locked_user.password_hash):
         raise BadRequestError("Current password is incorrect.")
 
-    if verify_password(new_password, user.password_hash):
+    if verify_password(new_password, locked_user.password_hash):
         raise BadRequestError("The new password must be different from the current one.")
 
     now = datetime.now(UTC)
     expires_at = now + timedelta(days=get_settings().refresh_token_expire_days)
 
-    user.password_hash = hash_password(new_password)
-    user.must_change_password = False
+    locked_user.password_hash = hash_password(new_password)
+    locked_user.must_change_password = False
 
     # Revoke before issuing: the bulk UPDATE would otherwise also revoke the
     # new token, which autoflush has already written to the table.
-    repository.revoke_all_refresh_tokens_for_user(session, user.id, now)
+    repository.revoke_all_refresh_tokens_for_user(session, locked_user.id, now)
 
-    issued_tokens, _ = _issue_tokens(session, user, expires_at)
+    issued_tokens, _ = _issue_tokens(session, locked_user, expires_at)
 
     # TODO(1.3): audit password changes (plan §8.6)
 

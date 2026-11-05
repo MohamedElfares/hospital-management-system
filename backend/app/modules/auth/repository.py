@@ -13,7 +13,7 @@ included: deciding what a revoked token means, such as a sign of theft,
 is the service's job, and it can only do that if it sees the token.
 """
 
-# The UUID type of user ids; annotates whose tokens are revoked.
+# The UUID type of user and token ids; annotates the ids these queries take.
 import uuid
 
 # Timestamp type; annotates the revocation time the service passes in.
@@ -103,6 +103,41 @@ def get_refresh_token_by_hash(session: Session, token_hash: str) -> RefreshToken
         .execution_options(populate_existing=True)
     )
     return session.scalar(statement)
+
+
+def get_refresh_token_by_id_for_update(
+    session: Session, token_id: uuid.UUID
+) -> RefreshToken | None:
+    """Find the refresh token with a given id, lock its row, and read it fresh.
+
+    Sign-out calls this for the token that replaced the one in the cookie,
+    when a refresh rotated that one while the sign-out waited for its lock.
+    The row is read with ``SELECT ... FOR UPDATE``, as
+    ``get_refresh_token_by_hash`` reads the cookie's own token, so a
+    refresh of the replacement waits until the sign-out has revoked it,
+    then finds it revoked. The lock lasts until the caller's transaction
+    ends. ``populate_existing`` makes the result show the row as it is
+    once locked, even when the session already holds a copy.
+
+    Revoked and expired tokens are returned too: the caller decides what
+    a token's state means. The primary key's index serves the lookup.
+
+    Args:
+        session: The open database session. The lock lasts until it
+            commits or rolls back.
+        token_id: The token's primary key, such as another token's
+            ``replaced_by_id``.
+
+    Returns:
+        The matching token, in whatever state it is, or None if no token
+        has this id.
+    """
+    return session.get(
+        RefreshToken,
+        token_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
 
 
 def revoke_all_refresh_tokens_for_user(

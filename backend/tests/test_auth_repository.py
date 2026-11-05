@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -128,6 +129,78 @@ def test_a_locked_token_lookup_reads_the_row_as_it_is_now(db_session: Session) -
     )
 
     found_token = repository.get_refresh_token_by_hash(db_session, token.token_hash)
+
+    assert found_token is token
+    assert token.revoked_at is not None
+
+
+def test_a_token_can_be_found_by_its_id_whatever_its_state(db_session: Session) -> None:
+    """An id lookup returns the token with that id, revoked or not.
+
+    The decoy belongs to another user and is saved first, so a lookup that
+    returned the wrong row would show it. The target is revoked, because
+    sign-out looks a replacement up whatever its state and decides itself
+    what that state means.
+    """
+    revoked_at = datetime.now(UTC)
+    decoy_user = make_user(email="other-user@example.com")
+    user = make_user()
+
+    db_session.add(decoy_user)
+    db_session.add(user)
+    db_session.flush()
+
+    decoy_token = make_refresh_token(decoy_user.id)
+    target_token = make_refresh_token(user.id, revoked_at=revoked_at)
+
+    db_session.add(decoy_token)
+    db_session.add(target_token)
+    db_session.flush()
+
+    found_token = repository.get_refresh_token_by_id_for_update(db_session, target_token.id)
+
+    assert found_token is not None
+    assert found_token.id == target_token.id
+    assert found_token.user_id == user.id
+    assert found_token.revoked_at == revoked_at
+
+
+def test_an_unknown_id_finds_no_token(db_session: Session) -> None:
+    """An id that no token has returns None, even with a token in the table."""
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    db_session.add(make_refresh_token(user.id))
+    db_session.flush()
+
+    assert repository.get_refresh_token_by_id_for_update(db_session, uuid.uuid4()) is None
+
+
+def test_a_locked_token_lookup_by_id_reads_the_row_as_it_is_now(db_session: Session) -> None:
+    """The locking id lookup replaces a copy of the token the session already holds.
+
+    As in the hash lookup's test, the copy is read back first, so it holds
+    every column, and the token is then revoked through plain SQL, which
+    leaves that copy unrevoked. The lookup must still report it revoked: a
+    lock is only worth taking if the row read under it is the one the
+    database holds.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    token = make_refresh_token(user.id)
+    db_session.add(token)
+    db_session.flush()
+    db_session.refresh(token)
+
+    db_session.execute(
+        text("UPDATE refresh_tokens SET revoked_at = now() WHERE id = :id"),
+        {"id": token.id},
+    )
+
+    found_token = repository.get_refresh_token_by_id_for_update(db_session, token.id)
 
     assert found_token is token
     assert token.revoked_at is not None

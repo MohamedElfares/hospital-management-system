@@ -443,6 +443,32 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     return pause
 
 
+def _pause_after_the_replacement_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
+    """Make the held request stop just after a sign-out has found and locked a replacement.
+
+    The service looks tokens up through the repository module, so replacing
+    the function there reaches its calls. The held sign-out stops with the
+    rotated token and its replacement both locked, and nothing written yet.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+
+    Returns:
+        The pause the held request will stop at.
+    """
+    pause = _Pause()
+    real_lookup = repository.get_refresh_token_by_id_for_update
+
+    def lookup_then_pause(session: Session, token_id: uuid.UUID) -> RefreshToken | None:
+        """Look the token up as usual, then stop the held request."""
+        token = real_lookup(session, token_id)
+        pause.wait_here()
+        return token
+
+    monkeypatch.setattr(repository, "get_refresh_token_by_id_for_update", lookup_then_pause)
+    return pause
+
+
 def _pause_after_the_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     """Make the held request stop just after a sign-in has checked its password.
 
@@ -614,6 +640,82 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
         competing_future.result()
 
     assert _count_tokens(session_factory, committed_user, is_usable=False) == 1
+    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+
+
+def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_too(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A sign-out that meets a refresh of the same cookie also ends the token that refresh issues.
+
+    The refresh is held after its checks, with the token locked, so the
+    sign-out of the same token has to wait. Released, the refresh rotates
+    the token and returns a replacement, which the browser may store after
+    the sign-out has deleted the cookie. The sign-out must then revoke the
+    replacement, so no token of that session works afterwards. Before the
+    fix the sign-out found the token rotated and changed nothing, and the
+    replacement kept the session alive.
+    """
+    raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = _pause_before_issuing_tokens(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _refresh_in_new_session(session_factory, raw_token),
+        competing=lambda: _sign_out_in_new_session(session_factory, committed_user, raw_token),
+    )
+
+    refreshed_tokens = held_future.result()
+
+    assert isinstance(refreshed_tokens, IssuedTokens)
+    assert competing_future.result() is None
+    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+
+    with pytest.raises(AuthenticationError):
+        _refresh_in_new_session(session_factory, refreshed_tokens.refresh_token)
+
+
+def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A refresh of the replacement waits for the sign-out that is revoking it, then is refused.
+
+    The cookie's token was already rotated, and the sign-out is held right
+    after it has locked the replacement. A refresh of that replacement, as
+    the browser that received it would send, has to wait for the lock, and
+    once the sign-out commits it finds the replacement revoked and is
+    refused. Without the lock the refresh would rotate the replacement
+    while the sign-out was deciding, and its new token would outlive the
+    sign-out.
+    """
+    raw_replacement = _commit_refresh_token(session_factory, committed_user)
+    raw_rotated_token = _commit_refresh_token(
+        session_factory,
+        committed_user,
+        revoked_at=datetime.now(UTC),
+        replaced_by_id=_token_id(session_factory, raw_replacement),
+    )
+    pause = _pause_after_the_replacement_lookup(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _sign_out_in_new_session(session_factory, committed_user, raw_rotated_token),
+        competing=lambda: _refresh_in_new_session(session_factory, raw_replacement),
+    )
+
+    assert held_future.result() is None
+
+    with pytest.raises(AuthenticationError):
+        competing_future.result()
+
     assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
 
 

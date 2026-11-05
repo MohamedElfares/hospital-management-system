@@ -15,8 +15,9 @@ user's row before they issue or revoke tokens, so they take turns: no
 token is ever issued while all of that user's tokens are being revoked,
 where the revocation would miss it.
 
-Signing out revokes only the refresh token of the device signing out, and
-never fails, so signing out twice is harmless.
+Signing out ends only the session of the device signing out, even when a
+refresh of the same cookie has just replaced its token, and never fails,
+so signing out twice is harmless.
 
 Changing a password requires the current one. It ends every session the
 user has, on every device, and starts a new one for the device that made
@@ -436,22 +437,29 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
     signature and not looked up; the web app drops it from memory, and it
     expires within ``ACCESS_TOKEN_EXPIRE_MINUTES``.
 
-    Sign-out never fails. A missing cookie, an unknown token, a token that
-    is already revoked, and another user's token all leave the database
-    unchanged, and the router still clears the cookie, so signing out twice
-    gives the same result as signing out once.
+    When the cookie's token was rotated, its replacement is revoked
+    instead, if it is still unrevoked. That is what happens when a refresh
+    of the same token comes first. The token's row is locked while it is
+    read, so the two run one after the other, and the refresh sends the
+    browser the replacement, possibly after the sign-out has deleted the
+    cookie. Left alone, that replacement would restore the session the
+    user had just ended (plan §8.1). It is locked too while it is read, so
+    a refresh of it waits and then finds it revoked. A refresh that comes
+    after the sign-out finds the token itself revoked and is refused.
 
-    The token's row is locked while it is read, so a sign-out and a refresh
-    of the same token run one after the other. A refresh that comes second
-    finds the token revoked and is refused. One that comes first has
-    already rotated the token, so the sign-out changes nothing, and the new
-    token that refresh issued keeps working.
+    Sign-out never fails. A missing cookie, an unknown token, another
+    user's token, and a token that has already ended, with no unrevoked
+    replacement, all leave the database unchanged, and the router still
+    clears the cookie, so signing out twice gives the same result as
+    signing out once. No revoked token raises the reuse alarm here, unlike
+    in refresh: signing out can't start a session, so a copy gains nothing,
+    and a double-clicked sign-out must not end every device's session.
 
     Args:
         session: The open database session. This function commits it only
             when a token is revoked.
         user: The signed-in user, from the access token. Only their own
-            token can be revoked.
+            tokens can be revoked.
         raw_refresh_token: The cookie's value as the browser sent it, or
             None when there is no cookie. Never logged or stored.
     """
@@ -463,18 +471,23 @@ def logout(session: Session, user: User, raw_refresh_token: str | None) -> None:
     )
 
     # Signing out ends only the caller's own session, so a stolen cookie
-    # can't be used with another account to end someone else's. A revoked
-    # token, even a rotated one, raises no reuse alarm here, unlike in
-    # refresh: signing out can't start a session, so a copy gains nothing,
-    # and a double-clicked sign-out must not end every device's session.
-    if (
-        presented_token is None
-        or presented_token.user_id != user.id
-        or presented_token.revoked_at is not None
-    ):
+    # can't be used with another account to end someone else's.
+    if presented_token is None or presented_token.user_id != user.id:
         return
 
-    presented_token.revoked_at = datetime.now(UTC)
+    token_to_revoke: RefreshToken | None = presented_token
+
+    # Rotated by a refresh that came first: that refresh sent the browser the
+    # replacement, which now carries the session this sign-out must end.
+    if presented_token.replaced_by_id is not None:
+        token_to_revoke = repository.get_refresh_token_by_id_for_update(
+            session, presented_token.replaced_by_id
+        )
+
+    if token_to_revoke is None or token_to_revoke.revoked_at is not None:
+        return
+
+    token_to_revoke.revoked_at = datetime.now(UTC)
 
     # TODO(1.3): audit sign-outs (plan §8.6)
 

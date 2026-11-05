@@ -63,6 +63,10 @@ their password at least once a week, which suits a system holding sensitive data
   the check: failed sign-ins of an existing account would then wait for each other, while
   those for an unknown email never wait, and the difference would reveal which accounts
   exist.
+- *Added 2026-11-05 (review run 1, R-028):* a sign-out locks its token the same way, so a
+  refresh of the same cookie can come first and rotate it. The sign-out then revokes the
+  replacement, which that refresh sends to the same browser, possibly after the sign-out
+  has deleted the cookie; left alone, it would restore the session that was just ended.
 
 **Why:** when a used token comes back, the server can't tell the real user from a thief,
 so ending every session is the only safe answer: the real user signs in again, and the
@@ -155,8 +159,9 @@ but an extra service this single-instance deployment doesn't need yet.
 - Plan §8.1 (authentication rules) and §11 (the auth endpoints).
 - `backend/app/modules/auth/service.py`: `login`, `refresh`, `logout` and
   `change_password`.
-- `backend/app/modules/auth/repository.py`: `get_refresh_token_by_hash` (the row lock)
-  and `revoke_all_refresh_tokens_for_user`.
+- `backend/app/modules/auth/repository.py`: `get_refresh_token_by_hash` (the row lock),
+  `get_refresh_token_by_id_for_update` (the replacement's lock at sign-out), and
+  `revoke_all_refresh_tokens_for_user`.
 - `backend/app/modules/users/service.py`: `get_user_by_id_for_update` (the user's row
   lock).
 - `backend/app/core/security.py`: the access token and the refresh cookie.

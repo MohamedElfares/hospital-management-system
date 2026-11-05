@@ -949,6 +949,60 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
     assert unrevoked_token_row.revoked_at is None
 
 
+def test_signing_out_twice_keeps_the_first_revocation(db_session: Session, user: User) -> None:
+    """A second sign-out with the same cookie changes nothing.
+
+    A double click can send the cookie twice. The first sign-out revokes
+    the token; the second finds it revoked and must leave its revocation
+    time alone, so the record of when the session ended never moves.
+    """
+    raw_token = _save_refresh_token(db_session, user)
+
+    service.logout(db_session, user, raw_token)
+    first_revoked_at = _token_row(db_session, raw_token).revoked_at
+
+    service.logout(db_session, user, raw_token)
+
+    assert first_revoked_at is not None
+    assert _token_row(db_session, raw_token).revoked_at == first_revoked_at
+
+
+def test_logout_with_a_rotated_token_revokes_its_replacement(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Signing out with a token that a refresh has rotated ends the replacement too.
+
+    A refresh of the same cookie can rotate the token just before the
+    sign-out reads it, and send the browser the replacement. The sign-out
+    must revoke that replacement, without linking it to another token, and
+    commit, so the session can't come back. It raises no reuse alarm, and
+    the user's token on another device stays active.
+    """
+    raw_rotated_token = _save_rotated_token(db_session, user)
+    raw_other_device_token = _save_refresh_token(db_session, user)
+    replacement_id = _token_row(db_session, raw_rotated_token).replaced_by_id
+
+    assert replacement_id is not None
+
+    with caplog.at_level("WARNING"):
+        service.logout(db_session, user, raw_rotated_token)
+
+    # A request's session is rolled back when it closes; only committed work remains.
+    db_session.rollback()
+
+    replacement_row = db_session.get(RefreshToken, replacement_id, populate_existing=True)
+    other_device_row = _token_row(db_session, raw_other_device_token)
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+
+    assert replacement_row is not None
+    assert replacement_row.revoked_at is not None
+    assert replacement_row.replaced_by_id is None
+    assert other_device_row.revoked_at is None
+    assert warnings == []
+
+
 def test_logout_ignores_another_users_token(db_session: Session, user: User) -> None:
     """A user can't sign out someone else by presenting their token.
 

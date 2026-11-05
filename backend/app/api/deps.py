@@ -49,7 +49,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 def get_current_user_allowing_password_change(
     request: Request,
-    token: Annotated[str, Depends(oauth2_scheme)],
+    access_token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
     """Return the signed-in user, even while a password change is pending.
@@ -74,8 +74,8 @@ def get_current_user_allowing_password_change(
 
     Args:
         request: The incoming request; the user's ID is stored on its state.
-        token: The bearer token from the ``Authorization`` header. It can be
-            empty when the header is just ``Bearer``.
+        access_token: The bearer token from the ``Authorization`` header.
+            It can be empty when the header is just ``Bearer``.
         db: The request's database session.
 
     Returns:
@@ -87,7 +87,7 @@ def get_current_user_allowing_password_change(
             it into a 401 with code ``AUTHENTICATION_FAILED``. The user's ID
             is not stored in that case, so the log line names nobody.
     """
-    user = service.get_authenticated_user(db, token)
+    user = service.get_authenticated_user(db, access_token)
     request.state.user_id = user.id
 
     return user

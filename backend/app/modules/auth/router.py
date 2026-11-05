@@ -103,10 +103,10 @@ def login(
         AuthenticationError: From the service, for any failed sign-in. The
             handler turns it into a 401 with code ``AUTHENTICATION_FAILED``.
     """
-    result = service.login(db, form.username, form.password)
-    set_refresh_cookie(response, result.refresh_token)
+    issued_tokens = service.login(db, form.username, form.password)
+    set_refresh_cookie(response, issued_tokens.refresh_token)
 
-    return TokenResponse(access_token=result.access_token)
+    return TokenResponse(access_token=issued_tokens.access_token)
 
 
 @router.post(

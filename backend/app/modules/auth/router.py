@@ -35,9 +35,6 @@ from fastapi import Depends
 # A response FastAPI merges into the one it sends; the routes set or clear the cookie on it.
 from fastapi import Response
 
-# Reads the OAuth2 password form: the email in "username" and the password.
-from fastapi.security import OAuth2PasswordRequestForm
-
 # Type of the database session passed to the service.
 from sqlalchemy.orm import Session
 
@@ -58,6 +55,9 @@ from app.db.session import get_db
 
 # Auth use cases; imported as a module because the routes share their names, such as login.
 from app.modules.auth import service
+
+# The sign-in form: the OAuth2 password form, with the email in "username", and length limits.
+from app.modules.auth.schemas import LoginForm
 
 # Body of a password change: the current and the new password, as JSON.
 from app.modules.auth.schemas import PasswordChange
@@ -81,7 +81,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     responses={401: {"description": "Incorrect email or password."}},
 )
 def login(
-    form: Annotated[OAuth2PasswordRequestForm, Depends()],
+    form: Annotated[LoginForm, Depends()],
     response: Response,
     db: Annotated[Session, Depends(get_db)],
 ) -> TokenResponse:
@@ -90,14 +90,15 @@ def login(
     The request is a form with the email in the ``username`` field, as the
     OAuth2 password flow requires, so Swagger UI's Authorize button works.
     That flow sends ``application/x-www-form-urlencoded``; a JSON body is
-    rejected with a 422. On success, the access token goes in the body and
-    the refresh token goes only into the ``HttpOnly`` cookie, so page
-    scripts can never read it. Every failed sign-in, whether the email is
-    unknown, the password is wrong, or the account is deactivated, gets the
-    same 401 and no cookie.
+    rejected with a 422, and so is an email longer than 255 characters or
+    a password longer than 128, which no account can have. On success, the
+    access token goes in the body and the refresh token goes only into the
+    ``HttpOnly`` cookie, so page scripts can never read it. Every failed
+    sign-in, whether the email is unknown, the password is wrong, or the
+    account is deactivated, gets the same 401 and no cookie.
 
     Args:
-        form: The OAuth2 password form; ``username`` holds the email.
+        form: The sign-in form; ``username`` holds the email.
         response: Holds the headers FastAPI adds to the response; the
             refresh cookie is set on it.
         db: Session for this request; the service commits it on success.

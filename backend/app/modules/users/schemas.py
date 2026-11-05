@@ -56,6 +56,11 @@ from app.core.permissions import Role
 # never disagree about how an address is written.
 Email = Annotated[EmailStr, AfterValidator(str.lower)]
 
+# The users.email column's size, so no account's email is longer. Sign-in
+# refuses a longer username before any lookup, as plan §12 asks of every
+# input; public, so the auth schemas and the tests use the same number.
+EMAIL_MAX_LENGTH = 255
+
 # Plan §8.1: 12 to 128 characters and no composition rules (NIST SP 800-63B).
 # Pydantic counts characters, not bytes. The maximum bounds the input, as
 # plan §12 asks of every field; it isn't about hashing time, which barely

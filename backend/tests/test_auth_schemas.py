@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from app.modules.auth.schemas import LoginForm
 from app.modules.auth.schemas import PasswordChange
 from app.modules.users.schemas import PASSWORD_MAX_LENGTH
 from app.modules.users.schemas import PASSWORD_MIN_LENGTH
@@ -127,3 +128,19 @@ def test_both_passwords_are_hidden_when_printed() -> None:
     assert NEW_PASSWORD not in repr(password_change)
     assert CURRENT_PASSWORD not in str(password_change)
     assert CURRENT_PASSWORD not in repr(password_change)
+
+
+def test_the_login_form_shows_no_credentials_when_printed() -> None:
+    """Printing the sign-in form shows neither the password nor the email.
+
+    The form keeps the password as a plain ``str``, as FastAPI's form class
+    does, so it stays out of logs only because the form is a plain class,
+    whose ``repr`` and ``str`` show no field values. A dataclass or a model
+    with the same fields would print both, and this test would fail.
+    """
+    login_form = LoginForm(username="test@example.com", password=CURRENT_PASSWORD)
+
+    assert CURRENT_PASSWORD not in repr(login_form)
+    assert CURRENT_PASSWORD not in str(login_form)
+    assert "test@example.com" not in repr(login_form)
+    assert "test@example.com" not in str(login_form)

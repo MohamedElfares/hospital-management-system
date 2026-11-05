@@ -507,7 +507,7 @@ erDiagram
 
 ### 8.1 Authentication and sessions
 
-- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie.
+- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie. The form caps the email at 255 characters, the size of the `email` column, and the password at 128, the password rule's maximum, so longer input gets a `422` before any lookup (§12).
 - **Passwords** are hashed with Argon2id through pwdlib. A wrong email and a wrong password return the same `401` message, and an unknown email is checked against a dummy hash so both take the same time. A stored hash in an unsupported format counts as a wrong password and logs a warning without the hash.
 - **Password rule:** 12 to 128 characters, with no composition rules (NIST SP 800-63B). One Pydantic schema enforces it for every way a password is set: the API and the CLI.
 - **First Admin:** `python -m app.cli create-admin` takes the email and full name as options and the password only from a hidden, confirmed prompt, never as an argument or environment variable. It calls the users service, creates an Admin with `must_change_password` false, and refuses when an active Admin already exists, so it works for a fresh database and for recovery after every Admin has been deactivated. It prints the new user's ID and email, never the password.

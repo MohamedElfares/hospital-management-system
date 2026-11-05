@@ -21,6 +21,7 @@ from app.core.security import hash_password
 from app.core.security import hash_refresh_token
 from app.modules.auth.models import RefreshToken
 from app.modules.users.models import User
+from app.modules.users.schemas import EMAIL_MAX_LENGTH
 from app.modules.users.schemas import PASSWORD_MAX_LENGTH
 from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
@@ -32,6 +33,13 @@ ME_URL = "/api/v1/auth/me"
 REFRESH_URL = "/api/v1/auth/refresh"
 NEW_PASSWORD = "New-Password-123"
 PASSWORD = "Correct-Password-1"
+
+# Sign-in fields one character over their limit, with the form field each
+# replaces. Lengths come from the shared constants, so they follow them.
+OVERLONG_LOGIN_FIELDS = [
+    pytest.param("username", "a" * (EMAIL_MAX_LENGTH + 1), id="email-too-long"),
+    pytest.param("password", "p" * (PASSWORD_MAX_LENGTH + 1), id="password-too-long"),
+]
 
 # Every way the service refuses a change: the body field that differs from a
 # valid change, and the message the user sees. Both bodies pass validation.
@@ -311,6 +319,75 @@ def test_login_with_a_json_body_is_a_validation_error(
     assert error["message"] == "The request contains invalid data."
     assert "set-cookie" not in response.headers
     assert db_session.scalars(select(RefreshToken)).all() == []
+
+
+@pytest.mark.parametrize(("field", "value"), OVERLONG_LOGIN_FIELDS)
+def test_login_with_an_overlong_field_is_a_validation_error(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    field: str,
+    value: str,
+) -> None:
+    """A sign-in field longer than any account's gets a 422, and nothing is saved.
+
+    No account's email is longer than its column, and no password can be
+    set longer than the password rule allows, so such a value can never
+    sign in; the form refuses it before any lookup or password check. The
+    other field holds the user's real credentials, so the length alone
+    decides the outcome. The 422 names the field and the reason, and never
+    repeats the value, so a rejected password can't reach a log or the
+    browser's network panel.
+    """
+    form = {"username": user.email, "password": PASSWORD, field: value}
+
+    response = client.post(LOGIN_URL, data=form)
+    error = response.json()["error"]
+
+    assert response.status_code == 422
+    assert [(detail["field"], detail["type"]) for detail in error["details"]] == [
+        (f"body.{field}", "string_too_long")
+    ]
+    assert value not in response.text
+    assert "set-cookie" not in response.headers
+    assert db_session.scalars(select(RefreshToken)).all() == []
+
+
+def test_login_with_a_password_of_the_longest_allowed_length_succeeds(
+    db_session: Session,
+    client: TestClient,
+) -> None:
+    """An account whose password is as long as the rule allows can sign in.
+
+    The form's limit must match the password rule exactly: one character
+    less would lock such an account out, and this test would fail.
+    """
+    longest_password = "p" * PASSWORD_MAX_LENGTH
+    user = make_user(email="longest@example.com", password_hash=hash_password(longest_password))
+    db_session.add(user)
+    db_session.flush()
+
+    response = client.post(LOGIN_URL, data={"username": user.email, "password": longest_password})
+
+    assert response.status_code == 200
+
+
+def test_login_with_an_email_of_the_longest_allowed_length_reaches_the_service(
+    client: TestClient,
+) -> None:
+    """An email exactly as long as the limit is checked like any other.
+
+    It gets the standard 401 for an unknown email, not a 422: the form
+    refuses only longer ones. No address that long is valid, so no account
+    is needed for the check to fail.
+    """
+    response = client.post(
+        LOGIN_URL, data={"username": "a" * EMAIL_MAX_LENGTH, "password": PASSWORD}
+    )
+    error = response.json()["error"]
+
+    assert response.status_code == 401
+    assert error["message"] == "Incorrect email or password."
 
 
 def test_me_returns_exactly_the_public_fields_of_the_user(

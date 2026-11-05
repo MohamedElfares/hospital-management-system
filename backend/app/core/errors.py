@@ -20,8 +20,14 @@ Example:
 # Standard logging; records the traceback of unexpected errors.
 import logging
 
+# Read-only dictionary type; the type of the headers an error adds to its response.
+from collections.abc import Mapping
+
 # Enum whose members are also strings; lists every allowed error code.
 from enum import StrEnum
+
+# Read-only view of a dict; every error class's shared headers can't be changed through it.
+from types import MappingProxyType
 
 # Type of the values inside an error's details.
 from typing import Any
@@ -106,6 +112,11 @@ class AppError(Exception):
         status_code: HTTP status returned for this class of error.
         code: Machine-readable code. The class default is used unless the
             caller passes a more specific one.
+        headers: HTTP headers the response carries for this class of
+            error, such as ``WWW-Authenticate`` on a 401. Empty unless a
+            subclass sets them. Every instance shares its class's mapping,
+            so the mapping is read-only: no one error can change the
+            headers of the rest.
         message: Human-readable explanation, safe to show to the user.
         details: Extra structured information, such as which medicines are
             short. Always a list, empty when there is nothing to add.
@@ -113,6 +124,7 @@ class AppError(Exception):
 
     status_code: int = 500
     code: str = ErrorCode.INTERNAL_ERROR
+    headers: Mapping[str, str] = MappingProxyType({})
 
     def __init__(
         self,
@@ -170,10 +182,16 @@ class AuthenticationError(AppError):
     request without a bearer token never gets this far: FastAPI's
     ``OAuth2PasswordBearer`` answers it with its own 401, which
     ``_handle_http_exception`` gives the same ``AUTHENTICATION_FAILED`` code.
+
+    Its response carries ``WWW-Authenticate: Bearer``, because HTTP requires
+    every 401 to name a way to authenticate (RFC 9110). That is the
+    challenge FastAPI's own 401 sends too, so every 401 the API returns
+    looks the same, whichever check failed.
     """
 
     status_code: int = 401
     code: str = ErrorCode.AUTHENTICATION_FAILED
+    headers: Mapping[str, str] = MappingProxyType({"WWW-Authenticate": "Bearer"})
 
 
 class PermissionDeniedError(AppError):
@@ -285,17 +303,24 @@ def _error_response(
 async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     """Convert a domain error raised by a service into its HTTP response.
 
-    The status, code, message, and details all come from the exception, so
-    this one handler serves every ``AppError`` subclass.
+    The status, code, message, details, and headers all come from the
+    exception, so this one handler serves every ``AppError`` subclass. The
+    headers are copied onto the response as ``_handle_http_exception``
+    copies FastAPI's, which is how every 401 gets its ``WWW-Authenticate``
+    header.
 
     Args:
         request: The request that failed.
         exc: The domain error raised by a service.
 
     Returns:
-        The error response with the exception's own status and code.
+        The error response with the exception's own status, code, and
+        headers.
     """
-    return _error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+    response = _error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+    response.headers.update(exc.headers)
+
+    return response
 
 
 async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

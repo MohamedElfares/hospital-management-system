@@ -3,6 +3,9 @@ import uuid
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.errors import AuthenticationError
+from app.core.errors import PermissionDeniedError
+
 
 def test_unknown_path_returns_the_standard_404(client: TestClient) -> None:
     """An unknown URL is answered in the project's error format.
@@ -30,6 +33,52 @@ def test_wrong_method_returns_405_with_an_allow_header(client: TestClient) -> No
     assert response.status_code == 405
     assert response.json()["error"]["code"] == "METHOD_NOT_ALLOWED"
     assert response.headers["allow"] == "GET"
+
+
+def test_an_authentication_error_carries_a_bearer_challenge(
+    app: FastAPI,
+    client: TestClient,
+) -> None:
+    """An ``AuthenticationError`` answers 401 with ``WWW-Authenticate: Bearer``.
+
+    HTTP requires every 401 to name a way to authenticate (RFC 9110), and
+    FastAPI's own 401, for a request without a bearer token, names
+    ``Bearer``. The route raises the domain error itself, so the header can
+    only come from the handler, which adds it to every
+    ``AuthenticationError``, whichever service raised it.
+    """
+
+    def refuse() -> None:
+        """Refuse the caller the way the auth service does."""
+        raise AuthenticationError("Invalid or expired token.")
+
+    app.add_api_route("/api/v1/test/refuse", refuse, methods=["GET"])
+
+    response = client.get("/api/v1/test/refuse")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "AUTHENTICATION_FAILED"
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_a_permission_error_carries_no_challenge(app: FastAPI, client: TestClient) -> None:
+    """A ``PermissionDeniedError`` answers 403 without ``WWW-Authenticate``.
+
+    A 403 means the caller is signed in but not allowed, so signing in
+    again wouldn't help, and a challenge would only invite the client to
+    try. The header belongs to 401s alone.
+    """
+
+    def forbid() -> None:
+        """Refuse a signed-in caller the way a permission check will."""
+        raise PermissionDeniedError("You don't have permission to do this.")
+
+    app.add_api_route("/api/v1/test/forbid", forbid, methods=["GET"])
+
+    response = client.get("/api/v1/test/forbid")
+
+    assert response.status_code == 403
+    assert "www-authenticate" not in response.headers
 
 
 def test_response_carries_a_generated_request_id(client: TestClient) -> None:

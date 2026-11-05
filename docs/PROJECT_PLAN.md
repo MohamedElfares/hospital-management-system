@@ -780,7 +780,7 @@ hospital-management-system/
 |---|---|
 | `200` / `201` / `204` | Success |
 | `400` | The request can't be processed, for example an invalid activation code |
-| `401` | Not authenticated, or the token is invalid or expired |
+| `401` | Not authenticated, or the token is invalid or expired. The response always carries `WWW-Authenticate: Bearer` |
 | `403` | Authenticated but missing the permission, or a password change is required |
 | `404` | Doesn't exist, or is outside the user's scope |
 | `405` | The path exists, but not for this HTTP method |

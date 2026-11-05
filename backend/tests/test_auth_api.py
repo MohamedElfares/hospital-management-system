@@ -1,3 +1,8 @@
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
+
+import jwt
 import pytest
 from factories import make_user
 from fastapi import FastAPI
@@ -99,6 +104,28 @@ def _auth_header(user: User) -> dict[str, str]:
         The headers to pass to the test client.
     """
     return {"Authorization": f"Bearer {create_access_token(user.id)}"}
+
+
+def _expired_access_token(user: User) -> str:
+    """Sign an access token for the user that expired a minute ago.
+
+    It is signed with the application's key and algorithm and names a real
+    user, so its expiry is the only thing wrong with it.
+
+    Args:
+        user: The saved user the token should name.
+
+    Returns:
+        The encoded token.
+    """
+    now = datetime.now(UTC)
+    claims = {
+        "sub": str(user.id),
+        "iat": now - timedelta(hours=1),
+        "exp": now - timedelta(minutes=1),
+    }
+
+    return jwt.encode(claims, get_settings().jwt_secret_key.get_secret_value(), algorithm="HS256")
 
 
 def _password_change_body(**overrides: str) -> dict[str, str]:
@@ -340,6 +367,30 @@ def test_me_without_a_token_is_the_standard_401(
     assert body["code"] == "AUTHENTICATION_FAILED"
     assert body["message"] == "Not authenticated"
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_every_kind_of_401_names_the_bearer_scheme(user: User, client: TestClient) -> None:
+    """Every refusal from the auth service carries ``WWW-Authenticate: Bearer`` too.
+
+    HTTP requires every 401 to name a way to authenticate (RFC 9110), as
+    FastAPI's own 401 above does. An expired access token, a failed
+    sign-in, and a refused refresh are each refused by a different part of
+    the auth service, so the test sends all three and compares them in one
+    assertion, which names every request that lacks the header.
+    """
+    expired_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
+    wrong_password = {"username": user.email, "password": "Wrong Password"}
+
+    responses = {
+        "expired access token": client.get(ME_URL, headers=expired_header),
+        "failed sign-in": client.post(LOGIN_URL, data=wrong_password),
+        "refused refresh": client.post(REFRESH_URL),
+    }
+
+    assert {
+        kind: (response.status_code, response.headers.get("www-authenticate"))
+        for kind, response in responses.items()
+    } == {kind: (401, "Bearer") for kind in responses}
 
 
 @pytest.mark.parametrize(

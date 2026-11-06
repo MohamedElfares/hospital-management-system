@@ -9,13 +9,20 @@ raises itself (an unknown path, a wrong method), domain errors raised by
 routes the tests add to their own application, and an unexpected crash.
 They check the status, the code, the ``Allow`` header a 405 needs, the
 challenge a 401 needs and a 403 leaves out, the request ID in the header
-and in the body, and that a crash's text never reaches the client.
-Validation errors are tested with the sign-in and password-change
-requests in ``tests/test_auth_api.py``.
+and in the body, and that a crash's text never reaches the client, while
+its traceback reaches the log with the request ID. Validation errors are
+tested with the sign-in and password-change requests in
+``tests/test_auth_api.py``.
 """
+
+# Log levels, for capturing the 500 handler's record and checking its level.
+import logging
 
 # Parses the generated request ID, which raises unless the value is a UUID.
 import uuid
+
+# Test framework: the type of the caplog fixture that captures the 500 handler's record.
+import pytest
 
 # Type of the app fixture, which the tests add their failing routes to.
 from fastapi import FastAPI
@@ -194,3 +201,48 @@ def test_unexpected_error_returns_a_generic_500_with_the_request_id(app: FastAPI
         }
     }
     assert "Leaked-Secret-1" not in response.text
+
+
+def test_unexpected_error_logs_its_traceback_with_the_request_id(
+    app: FastAPI,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A crash writes one ERROR record that holds the exception and the request ID.
+
+    The middleware writes no line for a request whose route raises, so this
+    record, from the 500 handler, is the only log line that carries the
+    request's ID, which plan §12 asks of every request, and the ID in the
+    500 body is what finds it. The record holds the route's own exception,
+    so the log shows its traceback, and its level is ERROR, which both the
+    default ``INFO`` and CI's ``WARNING`` keep. The test builds its own
+    client with ``raise_server_exceptions=False``, as the test above does,
+    and takes the application from the ``app`` fixture, which builds it
+    before the test body runs, so ``caplog`` still captures its records.
+    """
+    failure = RuntimeError("Unexpected failure in a route.")
+
+    def crash() -> None:
+        """Fail as an unhandled bug does, with the exception the test looks for.
+
+        Raises:
+            RuntimeError: Always, the test's ``failure``.
+        """
+        raise failure
+
+    app.add_api_route("/api/v1/test/crash", crash, methods=["GET"])
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR, logger="app.core.errors"):
+        response = client.get(
+            "/api/v1/test/crash",
+            headers={"X-Request-ID": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"},
+        )
+
+    records = [record for record in caplog.records if record.name == "app.core.errors"]
+
+    assert response.status_code == 500
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert "request_id=3f2c8a1e-9b4d-4c6e-8f00-123456789abc" in records[0].getMessage()
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[1] is failure

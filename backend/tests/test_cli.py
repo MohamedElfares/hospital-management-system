@@ -31,8 +31,8 @@ def test_create_admin_creates_an_admin_and_prints_its_email(
     it would end a real one: what the test set up is committed first, and
     whatever the command didn't commit is rolled back when its ``with``
     block ends. The Admin is still found afterwards only because the
-    command committed it. Without the replacement, the command would write
-    to the development database.
+    command committed it. Without the replacement, the command would try
+    to connect to the development database, which the suite refuses.
     """
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 

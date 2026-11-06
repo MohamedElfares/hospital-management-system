@@ -2,11 +2,14 @@
 
 On the application side, the engine in ``app/db/session.py`` must keep a
 statement's values out of its error messages. On the test side, the
-``test_engine`` fixture must point at the test database, and
-``db_session`` must run each test that uses it inside a transaction that
-is rolled back when the test ends, so that nothing a test commits outlives
-it.
+``test_engine`` fixture must point at the test database, the application's
+engine must refuse to connect while the tests run, and ``db_session`` must
+run each test that uses it inside a transaction that is rolled back when
+the test ends, so that nothing a test commits outlives it.
 """
+
+# Test framework: raises, which checks that a connection is refused.
+import pytest
 
 # Type of the test_engine fixture, the engine for the test database.
 from sqlalchemy import Engine
@@ -17,7 +20,7 @@ from sqlalchemy import text
 # Type of the db_session fixture, the session bound to the test's transaction.
 from sqlalchemy.orm import Session
 
-# The application's engine, whose hide_parameters setting is checked.
+# The application's engine: its hide_parameters setting, and the refusal to connect.
 from app.db.session import engine
 
 
@@ -28,10 +31,28 @@ def test_engine_points_at_the_test_database(test_engine: Engine) -> None:
     database. A ``TEST_DATABASE_URL`` copied from ``DATABASE_URL``, which
     names the development database ``hms`` in ``.env.example`` and CI,
     fails here, and so does a test database under any other name. The test
-    reads only the URL: whether any code reaches the development database
-    through the application's engine is outside what it checks.
+    reads only the URL; that no code reaches the development database
+    through the application's engine is the next test's concern.
     """
     assert test_engine.url.database == "hms_test"
+
+
+def test_connecting_through_the_application_engine_is_refused() -> None:
+    """While the tests run, the application's engine refuses to connect.
+
+    The engine is bound to ``DATABASE_URL``, the development database, and
+    ``conftest.py`` refuses every connection through it before one opens,
+    so a test that forgets ``client`` or ``get_test_db`` can't write
+    there. Without the refusal, the connection opens, or fails with a
+    database error where no development database is running, and the test
+    fails either way. The ``with`` block closes a connection that opened,
+    so a failing run leaves none behind.
+    """
+    with (
+        pytest.raises(RuntimeError, match="must not connect to the development database"),
+        engine.connect(),
+    ):
+        pass
 
 
 def test_database_errors_leave_out_the_statement_values() -> None:
@@ -42,8 +63,8 @@ def test_database_errors_leave_out_the_statement_values() -> None:
     500 handler logs that text with the traceback. Without the flag, an
     insert into ``users`` that fails unexpectedly logs the email and the
     password hash. The flag is read from the engine itself, because a real
-    failing statement would need the development database, which tests
-    never touch.
+    failing statement would need the development database, which the suite
+    refuses to connect to.
     """
     assert engine.hide_parameters is True
 

@@ -36,6 +36,7 @@ naming it as a parameter; nothing is imported from that file.
 | `test_engine` | session | The engine for the test database, disposed of at the end of the run |
 | `apply_migrations` | session | `alembic upgrade head` against the test database, in a subprocess |
 | `db_session` | test | A session from the application's `SessionLocal`, inside a transaction that is rolled back when the test ends |
+| `refuse_the_development_database` | session, autouse | Refuses every connection through the application's engine, so no test can reach the development database |
 
 ## How isolation works
 
@@ -62,6 +63,11 @@ commit stays visible to the test until the test ends. A CLI test puts
 service with `db_session` directly has no such boundary; it checks a commit by calling
 `db_session.rollback()` before it asserts, as `test_the_logout_revocation_is_committed`
 does. `test_conftest.py` pins this behaviour.
+
+The application's own engine stays bound to `DATABASE_URL`, the development database, for
+the whole run, so `refuse_the_development_database` refuses every connection through it
+before one opens. A test that bypasses `client` or `get_test_db` meets `RuntimeError: Tests
+must not connect to the development database` instead of writing there.
 
 ## Conventions
 

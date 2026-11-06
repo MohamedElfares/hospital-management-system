@@ -10,8 +10,11 @@ connection.
 
 Everything a test does through ``client`` or ``db_session`` happens inside
 one transaction against the database named by ``TEST_DATABASE_URL``, and
-that transaction is rolled back when the test ends. Tests therefore leave
-nothing behind, and never touch the development database.
+that transaction is rolled back when the test ends, so tests leave nothing
+behind. The application's own engine stays bound to ``DATABASE_URL``, the
+development database, and ``refuse_the_development_database`` refuses
+every connection through it, so a test that bypasses these fixtures can't
+reach that database either.
 """
 
 # Environment of the migration subprocess, copied and overridden.
@@ -32,6 +35,9 @@ from collections.abc import Iterator
 # Locates the backend folder, so Alembic runs where alembic.ini lives.
 from pathlib import Path
 
+# Return type of the listener that refuses connections: it always raises.
+from typing import NoReturn
+
 # Test framework: the fixture decorator and the failure helper.
 import pytest
 
@@ -47,6 +53,9 @@ from sqlalchemy import Engine
 # Builds that engine from the test database URL.
 from sqlalchemy import create_engine
 
+# Attaches the listener that refuses connections to the application's engine.
+from sqlalchemy import event
+
 # Type of the session the fixtures hand to the tests and the code under test.
 from sqlalchemy.orm import Session
 
@@ -55,6 +64,9 @@ from app.core.config import get_settings
 
 # The application's session factory; db_session is built with its options.
 from app.db.session import SessionLocal
+
+# The application's engine, bound to DATABASE_URL; the run refuses its connections.
+from app.db.session import engine as application_engine
 
 # The dependency the client fixture replaces with the test's session.
 from app.db.session import get_db
@@ -165,6 +177,56 @@ def get_test_db(db_session: Session) -> Callable[[], Iterator[Session]]:
             db_session.rollback()
 
     return hand_out_the_test_session
+
+
+def _refuse_the_connection(*_: object) -> NoReturn:
+    """Refuse a connection that the application's engine is about to open.
+
+    SQLAlchemy calls this ``do_connect`` listener with the dialect, the
+    connection record, and the arguments it would connect with. None of
+    them is needed, and the connect arguments hold the database password,
+    so the listener neither keeps nor shows them. The error is a plain
+    ``RuntimeError`` rather than a ``SQLAlchemyError``, so code that
+    handles database errors, such as the readiness check, can't take it
+    for an outage and answer as if the database were down.
+
+    Raises:
+        RuntimeError: Always, naming the rule and the fixtures to use
+            instead.
+    """
+    raise RuntimeError(
+        "Tests must not connect to the development database (DATABASE_URL). "
+        "Use client, get_test_db, or db_session, which reach the test database."
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def refuse_the_development_database() -> Iterator[None]:
+    """Refuse every connection through the application's engine, for the whole run.
+
+    The application's ``engine``, and the ``SessionLocal`` built on it,
+    stay bound to ``DATABASE_URL`` while the tests run, and that names the
+    development database. Tests reach a database only through engines
+    built from ``TEST_DATABASE_URL``: ``client`` and the CLI tests hand the
+    code under test the test's session through ``get_test_db``. A test
+    that forgot to would write to the development database instead, and
+    one that checks only a command's output would still pass. In CI that
+    database is migrated before the tests run, so such a write would
+    succeed there too.
+
+    SQLAlchemy calls ``do_connect`` listeners before it opens a
+    connection, so the listener refuses it before anything reaches the
+    database, and a test that meets the error fails. Code that catches the
+    error, as ``CliRunner`` does, still writes nothing. The fixture is
+    session-scoped and autouse, so pytest sets it up before every other
+    fixture of the run, the session-scoped ones included.
+
+    Yields:
+        Nothing; the listener is removed when the run ends.
+    """
+    event.listen(application_engine, "do_connect", _refuse_the_connection)
+    yield
+    event.remove(application_engine, "do_connect", _refuse_the_connection)
 
 
 @pytest.fixture(scope="session")

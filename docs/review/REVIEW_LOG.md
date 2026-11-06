@@ -192,6 +192,23 @@ closes when the last stage is done, so an interrupted run is obvious.
   `tests/test_conftest.py` joins stage 12. Each commit passes Ruff and the
   suite on its own, run like CI in a clean worktree: 339, 344, 347, then
   347 tests, with coverage at 99.58%. No finding is open.
+- **Stage 12a's findings fixed (2026-11-06):** R-044 (`61819ee`), R-043
+  (`f71533e`), and R-042 (`c5066fc`), written at your request ("fix them
+  with recommendations and best practices"), one commit each, in
+  dependency order: first the guard that keeps tests off the development
+  database, so that the tests the next two commits add can't reach it,
+  then the tests of the real `get_db`, then the single test that replaces
+  the order-dependent pair, with R-042's recommendation as revised on the
+  second pass. The code under test didn't change, so every new test was
+  run instead against broken copies, of `conftest.py` and of `get_db`,
+  and each copy failed a test. The fixes change `tests/conftest.py` after
+  stage 11 reviewed it at `a459df1`, and `tests/test_database.py` after
+  stage 12a (`bf31a33`), so the next `/review new` takes them again;
+  `tests/test_cli.py` changed in one docstring before stage 15 reaches
+  it. `tests/README.md` gained the new fixture and a convention, and
+  plan §13 a sentence. Each commit passes Ruff and the suite on its own,
+  run like CI in a clean worktree: 348, 351, then 350 tests, with
+  coverage at 99.58%, then 99.86% once `get_db` runs. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

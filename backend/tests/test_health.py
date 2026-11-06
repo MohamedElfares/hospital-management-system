@@ -1,13 +1,14 @@
 """Tests for the health check routes in ``app/api/health.py``.
 
-``/health/live`` answers whenever the process runs. ``/health/ready``
-answers 200 only while the database answers, because plan §16 makes it
-Render's health check path, and Render decides by its status code whether
-an instance gets traffic and when to restart it. The tests run the
-database-down case without stopping the database: they replace ``get_db``
-with ``BrokenSession``, whose queries fail with a message worded like the
-driver's, and check that the 503 keeps that message out of the public
-response and writes it to the log instead.
+``/health/live`` answers whenever the process runs, even while the
+database is down. ``/health/ready`` answers 200 only while the database
+answers, because plan §16 makes it Render's health check path, and Render
+decides by its status code whether an instance gets traffic and when to
+restart it. The tests run the database-down case without stopping the
+database: they replace ``get_db`` with ``BrokenSession``, whose queries
+fail with a message worded like the driver's. The liveness check must
+still answer 200, and the readiness check must answer 503, keep that
+message out of the public response, and write it to the log instead.
 """
 
 # Log levels, for capturing the readiness check's warning and checking its level.
@@ -16,7 +17,7 @@ import logging
 # Test framework: the type of the caplog fixture that captures the warning.
 import pytest
 
-# Type of the app fixture, on which the failure tests replace get_db with the stub.
+# Type of the app fixture, on which the tests replace get_db with the stub.
 from fastapi import FastAPI
 
 # Sends requests to the health routes through the whole application.
@@ -25,7 +26,7 @@ from fastapi.testclient import TestClient
 # Base class of SQLAlchemy's errors, the class the readiness check catches; the stub raises it.
 from sqlalchemy.exc import SQLAlchemyError
 
-# The dependency the failure tests replace with the stub.
+# The dependency the tests replace with the stub.
 from app.db.session import get_db
 
 # Worded like libpq's message when nothing listens at the database's address, because the
@@ -41,13 +42,14 @@ DRIVER_MESSAGE = (
 class BrokenSession:
     """Stand-in for a session whose queries fail, as when the database is down.
 
-    A test replaces ``get_db`` with a function that returns this stub, so
-    the readiness check's failure path runs while the test database stays
-    up. The stub needs only ``execute``, the one method the route calls. A
-    real session fails at that same call: building one opens no
+    A test replaces ``get_db`` with a function that returns this stub. The
+    readiness tests use it to run the failure path while the test database
+    stays up, and the liveness test to show that its route never queries.
+    The stub needs only ``execute``, the one method the readiness check
+    calls. A real session fails at that same call: building one opens no
     connection, and its first ``execute`` raises ``OperationalError``,
     which subclasses the ``SQLAlchemyError`` raised here, the class the
-    route catches.
+    readiness check catches.
     """
 
     def execute(self, statement) -> None:
@@ -64,15 +66,22 @@ class BrokenSession:
         raise SQLAlchemyError(DRIVER_MESSAGE)
 
 
-def test_liveness_returns_ok(client: TestClient) -> None:
-    """The liveness check answers 200 with the fixed body.
+def test_liveness_returns_ok_while_the_database_is_unreachable(app: FastAPI) -> None:
+    """The liveness check answers 200 with the fixed body while no query can succeed.
 
-    The route touches nothing outside the process, so it answers even while
-    the database is down, and a failure there means the process itself is
-    stuck or gone. This test runs through ``client``, whose test database
-    is up, so it checks the answer, not that the route stays clear of the
-    database.
+    The route must touch nothing outside the process, so that a failure
+    there means the process itself is stuck or gone, and a database
+    outage, such as a sleeping Neon instance, never makes it fail. The test
+    therefore takes no ``client``, whose test session would answer any
+    query. It replaces ``get_db`` with ``BrokenSession``, so a route that
+    queried through ``get_db`` would fail, and the suite refuses every
+    connection through the application's engine, so a route that opened
+    its own session would fail too. Needing no database, the test also
+    passes while the test database is down.
     """
+    app.dependency_overrides[get_db] = lambda: BrokenSession()
+    client = TestClient(app)
+
     response = client.get("/health/live")
 
     assert response.status_code == 200

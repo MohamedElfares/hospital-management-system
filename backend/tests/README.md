@@ -8,7 +8,7 @@ Backend tests, written with pytest against a real PostgreSQL database.
 uv run pytest              # the whole suite
 uv run pytest -v           # one line per test, including parametrized cases
 uv run pytest --cov=app    # with a coverage report
-uv run pytest tests/test_health.py::test_liveness_returns_ok   # a single test
+uv run pytest tests/test_health.py::test_liveness_returns_ok_while_the_database_is_unreachable   # a single test
 ```
 
 ## What you need first

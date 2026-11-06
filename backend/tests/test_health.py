@@ -14,6 +14,9 @@ message out of the public response, and write it to the log instead.
 # Log levels, for capturing the readiness check's warning and checking its level.
 import logging
 
+# Return type of the stub's execute, which always raises.
+from typing import NoReturn
+
 # Test framework: the type of the caplog fixture that captures the warning.
 import pytest
 
@@ -22,6 +25,9 @@ from fastapi import FastAPI
 
 # Sends requests to the health routes through the whole application.
 from fastapi.testclient import TestClient
+
+# Type of the statement the stub's execute receives, as Session.execute declares it.
+from sqlalchemy import Executable
 
 # Base class of SQLAlchemy's errors, the class the readiness check catches; the stub raises it.
 from sqlalchemy.exc import SQLAlchemyError
@@ -52,7 +58,7 @@ class BrokenSession:
     readiness check catches.
     """
 
-    def execute(self, statement) -> None:
+    def execute(self, statement: Executable) -> NoReturn:
         """Fail as an unreachable database does, with the driver's message.
 
         Args:
@@ -166,6 +172,8 @@ def test_readiness_failure_logs_the_driver_message_on_one_line(
 
     with caplog.at_level(logging.WARNING, logger="app.api.health"):
         response = client.get("/health/ready")
+
+    assert response.status_code == 503
 
     records = [record for record in caplog.records if record.name == "app.api.health"]
     request_id = response.json()["error"]["request_id"]

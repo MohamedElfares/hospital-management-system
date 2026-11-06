@@ -9,17 +9,17 @@ raises itself (an unknown path, a wrong method), domain errors raised by
 routes the tests add to their own application, and an unexpected crash.
 They check the status, the code, the ``Allow`` header a 405 needs, the
 challenge a 401 needs and a 403 leaves out, the request ID in the header
-and in the body, and that a crash's text never reaches the client, while
-its traceback reaches the log with the request ID. Validation errors are
-tested with the sign-in and password-change requests in
-``tests/test_auth_api.py``.
+and in the body, a new one for each request that brings none, and that a
+crash's text never reaches the client, while its traceback reaches the
+log with the request ID. Validation errors are tested with the sign-in and
+password-change requests in ``tests/test_auth_api.py``.
 """
 
 # Log levels, for capturing the 500 handler's record and checking its level.
 import logging
 
-# Parses the generated request ID, which raises unless the value is a UUID.
-import uuid
+# Matches each generated request ID against the one form every request ID takes.
+import re
 
 # Test framework: the type of the caplog fixture that captures the 500 handler's record.
 import pytest
@@ -35,6 +35,11 @@ from app.core.errors import AuthenticationError
 
 # Domain error for a signed-in caller who isn't allowed to act, which the API answers with 403.
 from app.core.errors import PermissionDeniedError
+
+# The one form every request ID takes, a lowercase UUID with dashes, as _resolve_request_id
+# promises. It is written out rather than built with uuid, so the test doesn't share the
+# logic of the code it checks.
+REQUEST_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 
 def test_unknown_path_returns_the_standard_404(client: TestClient) -> None:
@@ -130,18 +135,25 @@ def test_a_permission_error_carries_no_challenge(app: FastAPI, client: TestClien
     assert "www-authenticate" not in response.headers
 
 
-def test_response_carries_a_generated_request_id(client: TestClient) -> None:
-    """A request sent without an ID gets a generated one in ``X-Request-ID``.
+def test_each_request_without_an_id_gets_its_own_generated_id(client: TestClient) -> None:
+    """Two requests sent without an ID get two different IDs, each in the normalized form.
 
-    The client sent no ID, so the middleware created one and returned it in
-    the header, as it does for every response except a crash's 500, whose
-    ID is only in the body. Parsing the value proves it is a UUID, not an
-    empty or arbitrary string; how the middleware treats the IDs a client
-    sends is tested in ``tests/test_logging.py``.
+    The middleware creates an ID for a request that brings none, and
+    returns it in ``X-Request-ID``, as it does for every response except a
+    crash's 500, whose ID is only in the body. Each request must get its
+    own: one shared ID, such as a fallback built once at import, would
+    match every request's log line, so a failed request a user reports
+    could no longer be found. Each ID must also take the lowercase,
+    36-character form the middleware gives the IDs it reuses, so every ID
+    in the log is spelled one way. How the middleware treats the IDs a
+    client sends is tested in ``tests/test_logging.py``.
     """
-    response = client.get("/health/live")
+    first_request_id = client.get("/health/live").headers["x-request-id"]
+    second_request_id = client.get("/health/live").headers["x-request-id"]
 
-    assert uuid.UUID(response.headers["x-request-id"])
+    assert re.fullmatch(REQUEST_ID_PATTERN, first_request_id)
+    assert re.fullmatch(REQUEST_ID_PATTERN, second_request_id)
+    assert first_request_id != second_request_id
 
 
 def test_client_request_id_is_echoed_back(client: TestClient) -> None:

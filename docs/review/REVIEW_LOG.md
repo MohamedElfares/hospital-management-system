@@ -216,6 +216,23 @@ closes when the last stage is done, so an interrupted run is obvious.
   accept or reject: "Every log line that plan §12 requires or a docstring
   promises gets a test that captures it with `caplog` and checks its
   level, its request ID, and what it must leave out."
+- **Stage 12b's findings fixed (2026-11-06):** R-045 (`5791b30`), R-046
+  (`44d5731`), R-047 (`c89c3e9`), and R-048 (`33c698f`), written at your
+  request ("fix the open in findings with recommendations and best
+  practices"), one commit each, in ID order, since none depends on
+  another. The code under test didn't change, so each new or changed
+  test was run instead against the broken copies of `errors.py`,
+  `health.py`, and `logging.py` that had passed the whole suite, and each
+  copy failed it. R-046's test is now
+  `test_liveness_returns_ok_while_the_database_is_unreachable`, and the
+  single-test example in `tests/README.md` follows; R-047 strengthens the
+  existing request-ID test rather than adding one beside it. The fixes
+  change `tests/test_errors.py` and `tests/test_health.py` after stage 12b
+  reviewed them at `d8362d5`, so the next `/review new` takes them again.
+  Each commit passes Ruff and the suite on its own, run like CI in a
+  clean worktree: 351 tests each time, with coverage at 99.86%, and the
+  suite also passes reversed and shuffled twice. The `CLAUDE.md` line
+  proposed above still waits for your answer. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

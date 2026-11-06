@@ -1,23 +1,67 @@
+"""Tests for the session fixtures in ``conftest.py``.
+
+API and CLI tests trust ``get_test_db`` to end the test's session the way
+the application ends a request's or a command's, and every test trusts
+``db_session`` to have the application's session options. These tests
+check both, through routes added to the test's own application that stand
+for services that commit, forget to commit, or fail after a flush.
+"""
+
+# Type of the user ID in the path of the routes that read a user back.
 import uuid
+
+# Type of the get_test_db fixture, a function that returns a generator.
 from collections.abc import Callable
+
+# Return type of the generator get_test_db returns.
 from collections.abc import Iterator
+
+# Turns get_test_db into a context manager, as CLI tests do for SessionLocal.
 from contextlib import contextmanager
+
+# Date and time type of the sign-in time the tests give a user.
 from datetime import datetime
+
+# Attaches the get_db dependency to each test route's session parameter.
 from typing import Annotated
+
+# Asia/Dubai time zone, so the sign-in time differs from its UTC form.
 from zoneinfo import ZoneInfo
 
+# Test framework: the fixture decorator and the usefixtures mark.
 import pytest
+
+# Builds a valid user, so each test sets only the email it checks.
 from factories import make_user
+
+# Declares the get_db dependency of each test route.
 from fastapi import Depends
+
+# Type of the app fixture, which the test routes are added to.
 from fastapi import FastAPI
+
+# Type of the client fixture, which sends requests to the test routes.
 from fastapi.testclient import TestClient
+
+# SQL count(), for counting the users saved with an email.
 from sqlalchemy import func
+
+# Builds the counting query.
 from sqlalchemy import select
+
+# Type of the sessions the routes receive and the tests query.
 from sqlalchemy.orm import Session
 
+# Domain error the failing route raises, which the API answers with 409.
 from app.core.errors import ConflictError
+
+# The application's session factory, whose session class db_session must be.
 from app.db.session import SessionLocal
+
+# The dependency the test routes ask for, and the client replaces.
 from app.db.session import get_db
+
+# The ORM model the routes save and the tests count.
 from app.modules.users.models import User
 
 COMMIT_URL = "/api/v1/test/commit-a-user"
@@ -38,38 +82,77 @@ def user_routes(app: FastAPI) -> None:
     """Add routes that save a user in three ways, and two that read a user back.
 
     Each saving route stands for a service: one that commits, one that
-    forgets to, and one that fails after it flushed. They are added to this
-    test's own application only, so they never leak into another test.
+    forgets to, and one that fails after it flushed. The reading routes
+    show what a request's session sees of the test's setup. Every route
+    asks for ``get_db``, so it gets the session ``client`` hands out, and
+    the routes are added to this test's own application only, so they
+    never leak into another test.
 
     Args:
         app: The application built for this test.
     """
 
     def commit_a_user(db: Annotated[Session, Depends(get_db)]) -> None:
-        """Save a user and commit, as a use case that completes does."""
+        """Save a user and commit, as a use case that completes does.
+
+        Args:
+            db: The request's session, from ``get_db``.
+        """
         db.add(make_user(email=COMMITTED_EMAIL))
         db.commit()
 
     def flush_a_user(db: Annotated[Session, Depends(get_db)]) -> None:
-        """Save a user and flush it but never commit, as a service that forgets to does."""
+        """Save a user and flush it but never commit, as a service that forgets to does.
+
+        The flush sends the ``INSERT``, so the row exists in the request's
+        transaction, and only the missing commit can lose it.
+
+        Args:
+            db: The request's session, from ``get_db``.
+        """
         db.add(make_user(email=UNCOMMITTED_EMAIL))
         db.flush()
 
     def flush_a_user_then_fail(db: Annotated[Session, Depends(get_db)]) -> None:
-        """Save a user and flush it, then refuse with a conflict before any commit."""
+        """Save a user and flush it, then refuse with a conflict before any commit.
+
+        Args:
+            db: The request's session, from ``get_db``.
+
+        Raises:
+            ConflictError: Always, after the flush; the API answers 409.
+        """
         db.add(make_user(email=FAILED_EMAIL))
         db.flush()
         raise ConflictError("This test route always fails after its flush.")
 
     def find_user(user_id: uuid.UUID, db: Annotated[Session, Depends(get_db)]) -> dict[str, bool]:
-        """Say whether the request's session finds the user with ``user_id``."""
+        """Say whether the request's session finds the user with ``user_id``.
+
+        Args:
+            user_id: ID of the user to look for, from the path.
+            db: The request's session, from ``get_db``.
+
+        Returns:
+            ``{"found": True}`` when the user exists, else ``{"found": False}``.
+        """
         return {"found": db.get(User, user_id) is not None}
 
     def read_last_login(
         user_id: uuid.UUID,
         db: Annotated[Session, Depends(get_db)],
     ) -> dict[str, str]:
-        """Return the user's sign-in time exactly as the request's session reads it."""
+        """Return the user's sign-in time exactly as the request's session reads it.
+
+        Args:
+            user_id: ID of the user to read, from the path. The user must
+                exist and have a sign-in time.
+            db: The request's session, from ``get_db``.
+
+        Returns:
+            ``{"last_login_at": ...}``, the time in ISO 8601 form with its
+            UTC offset, so a test can tell +04:00 from +00:00.
+        """
         user = db.get(User, user_id)
         return {"last_login_at": user.last_login_at.isoformat()}
 
@@ -81,7 +164,20 @@ def user_routes(app: FastAPI) -> None:
 
 
 def _count_users(db_session: Session, email: str) -> int | None:
-    """Count the users saved with ``email``, as the database holds them now."""
+    """Count the users saved with ``email``, as the database holds them now.
+
+    The count runs as a query rather than through the session's loaded
+    objects, so it sees only what is in the test's transaction: a row a
+    request flushed and then rolled back counts as gone.
+
+    Args:
+        db_session: The test's session.
+        email: Email to count, as stored.
+
+    Returns:
+        The number of users with that email; ``scalar`` is typed as
+        possibly ``None``, though a count always returns a row.
+    """
     return db_session.scalar(select(func.count()).select_from(User).where(User.email == email))
 
 
@@ -90,9 +186,10 @@ def test_a_request_loses_the_work_it_never_commits(client: TestClient, db_sessio
     """A user a request flushes but never commits is gone once the request ends.
 
     The application's ``get_db`` closes the request's session, and closing
-    rolls back whatever wasn't committed. The test client does the same, so
-    a service that forgets ``commit()`` fails the API test that reads its
-    result, instead of passing with work that production would lose.
+    rolls back whatever wasn't committed. ``get_test_db``, which ``client``
+    puts in place of ``get_db``, rolls back the same way, so a service that
+    forgets ``commit()`` fails the API test that reads its result, instead
+    of passing with work that production would lose.
     """
     response = client.post(FLUSH_URL)
 
@@ -180,6 +277,9 @@ def test_the_test_session_is_built_by_the_applications_session_factory(
 
     An option added to ``SessionLocal`` later then reaches the tests too,
     instead of the tests quietly running with SQLAlchemy's defaults.
+    ``sessionmaker`` builds a subclass of ``Session`` of its own, its
+    ``class_``, so a plain ``Session`` fails the check even when it is
+    given the same options.
     """
     assert isinstance(db_session, SessionLocal.class_)
 

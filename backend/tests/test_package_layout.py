@@ -18,11 +18,13 @@ def test_every_folder_of_application_code_is_a_regular_package() -> None:
 
     Without one, Python still imports the folder, as a namespace package,
     but coverage.py skips such a folder when it looks for files no test
-    ran. An untested module there would be left out of the coverage report
-    instead of counting as 0%, so the coverage gate would never see it.
-    The check walks the real ``app`` package, so a module folder added
-    later, such as ``patients``, is checked too. A folder with no ``.py``
-    file of its own, such as ``__pycache__``, is skipped.
+    ran, unless its ``include_namespace_packages`` setting is turned on,
+    which this project leaves off. An untested module there would be left
+    out of the coverage report instead of counting as 0%, so the coverage
+    gate would never see it. The check walks the real ``app`` package, so
+    a module folder added later, such as ``patients``, is checked too. A
+    folder with no ``.py`` file of its own, such as ``__pycache__``, is
+    skipped.
     """
     app_root = Path(app.__file__).parent
     folders = [app_root, *(path for path in app_root.rglob("*") if path.is_dir())]

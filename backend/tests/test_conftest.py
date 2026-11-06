@@ -3,8 +3,10 @@
 API and CLI tests trust ``get_test_db`` to end the test's session the way
 the application ends a request's or a command's, and every test trusts
 ``db_session`` to have the application's session options. These tests
-check both, through routes added to the test's own application that stand
-for services that commit, forget to commit, or fail after a flush.
+check both. The request side runs through routes added to the test's own
+application, which stand for services that commit, forget to commit, or
+fail after a flush; the command side and the session's options are
+checked on the session directly.
 """
 
 # Type of the user ID in the path of the routes that read a user back.
@@ -13,7 +15,7 @@ import uuid
 # Type of the get_test_db fixture, a function that returns a generator.
 from collections.abc import Callable
 
-# Return type of the generator get_test_db returns.
+# Type of what get_test_db's stand-in returns when called: a generator of one session.
 from collections.abc import Iterator
 
 # Turns get_test_db into a context manager, as CLI tests do for SessionLocal.
@@ -31,7 +33,7 @@ from zoneinfo import ZoneInfo
 # Test framework: the fixture decorator and the usefixtures mark.
 import pytest
 
-# Builds a valid user, so each test sets only the email it checks.
+# Builds a valid user, so a test sets only the fields it is about.
 from factories import make_user
 
 # Declares the get_db dependency of each test route.
@@ -84,9 +86,10 @@ def user_routes(app: FastAPI) -> None:
     Each saving route stands for a service: one that commits, one that
     forgets to, and one that fails after it flushed. The reading routes
     show what a request's session sees of the test's setup. Every route
-    asks for ``get_db``, so it gets the session ``client`` hands out, and
-    the routes are added to this test's own application only, so they
-    never leak into another test.
+    asks for ``get_db``, so, through the override ``client`` installs, it
+    gets the test's session from ``get_test_db``. The routes are added to
+    this test's own application only, so they never leak into another
+    test.
 
     Args:
         app: The application built for this test.
@@ -105,7 +108,7 @@ def user_routes(app: FastAPI) -> None:
         """Save a user and flush it but never commit, as a service that forgets to does.
 
         The flush sends the ``INSERT``, so the row exists in the request's
-        transaction, and only the missing commit can lose it.
+        transaction until the rollback that ends the request removes it.
 
         Args:
             db: The request's session, from ``get_db``.
@@ -166,9 +169,9 @@ def user_routes(app: FastAPI) -> None:
 def _count_users(db_session: Session, email: str) -> int | None:
     """Count the users saved with ``email``, as the database holds them now.
 
-    The count runs as a query rather than through the session's loaded
-    objects, so it sees only what is in the test's transaction: a row a
-    request flushed and then rolled back counts as gone.
+    The count is a query, so it reports the rows the test's transaction
+    holds at that moment: a row a request flushed and then rolled back is
+    not counted.
 
     Args:
         db_session: The test's session.

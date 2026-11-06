@@ -1,11 +1,11 @@
-"""Tests for the database setup the application and the test suite share.
+"""Tests for the database settings of the application and of the test suite.
 
-The application side is the engine in ``app/db/session.py``, whose
-settings keep a statement's values out of error messages. The test side is
-the ``db_session`` fixture in ``conftest.py``, which runs every test inside
-a transaction that is rolled back when the test ends: these tests check
-that the suite uses the test database and that a test's committed work
-doesn't outlive the test.
+On the application side, the engine in ``app/db/session.py`` must keep a
+statement's values out of its error messages. On the test side, the
+``test_engine`` fixture must point at the test database, and
+``db_session`` must run each test that uses it inside a transaction that
+is rolled back when the test ends, so that nothing a test commits outlives
+it.
 """
 
 # Type of the test_engine fixture, the engine for the test database.
@@ -22,14 +22,14 @@ from app.db.session import engine
 
 
 def test_engine_points_at_the_test_database(test_engine: Engine) -> None:
-    """The suite's engine connects to the database named ``hms_test``.
+    """The suite's engine points at the database named ``hms_test``.
 
-    The name is the one the README and ``.env.example`` give the test
-    database, and the one CI creates, so a ``TEST_DATABASE_URL`` copied
-    from ``DATABASE_URL``, which names the development database ``hms``,
-    fails here. The test reads only the URL: whether any code reaches the
-    development database through the application's engine is outside what
-    it checks.
+    That is the name the README, ``.env.example``, and CI give the test
+    database. A ``TEST_DATABASE_URL`` copied from ``DATABASE_URL``, which
+    names the development database ``hms`` in ``.env.example`` and CI,
+    fails here, and so does a test database under any other name. The test
+    reads only the URL: whether any code reaches the development database
+    through the application's engine is outside what it checks.
     """
     assert test_engine.url.database == "hms_test"
 
@@ -37,12 +37,13 @@ def test_engine_points_at_the_test_database(test_engine: Engine) -> None:
 def test_database_errors_leave_out_the_statement_values() -> None:
     """The application's engine keeps a statement's values out of its errors.
 
-    SQLAlchemy writes the bound values into the text of every database
-    error unless the engine sets ``hide_parameters``, and the 500 handler
-    logs that text. Without the flag, a failed insert into ``users`` logs
-    the email and the password hash. The flag is read from the engine
-    itself, because a real failing statement would need the development
-    database, which tests never touch.
+    When a statement fails, SQLAlchemy writes its bound values into the
+    text of the error unless the engine sets ``hide_parameters``, and the
+    500 handler logs that text with the traceback. Without the flag, an
+    insert into ``users`` that fails unexpectedly logs the email and the
+    password hash. The flag is read from the engine itself, because a real
+    failing statement would need the development database, which tests
+    never touch.
     """
     assert engine.hide_parameters is True
 

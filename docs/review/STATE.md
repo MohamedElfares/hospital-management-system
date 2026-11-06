@@ -41,3 +41,6 @@ with no row has never been reviewed and is always in scope.
 | `backend/migrations/versions/feee06ced45e_create_users_table.py` | `2a1b18b` | 2026-11-04 | 1 |
 | `backend/tests/conftest.py` | `a459df1` | 2026-11-06 | 1 |
 | `backend/tests/factories.py` | `a459df1` | 2026-11-06 | 1 |
+| `backend/tests/test_conftest.py` | `04f1228` | 2026-11-06 | 1 |
+| `backend/tests/test_database.py` | `04f1228` | 2026-11-06 | 1 |
+| `backend/tests/test_package_layout.py` | `04f1228` | 2026-11-06 | 1 |

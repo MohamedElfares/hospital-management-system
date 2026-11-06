@@ -13,6 +13,9 @@ the test ends, so that nothing a test commits outlives it.
 # Type of the real_get_db fixture: a function that opens one request's session.
 from collections.abc import Callable
 
+# Return type of the fixture that checks the probe table once the test is over.
+from collections.abc import Iterator
+
 # What that function returns: get_db as a context manager, one with block per request.
 from contextlib import AbstractContextManager
 
@@ -28,7 +31,7 @@ from factories import make_user
 # Type of the test_engine fixture, the engine for the test database.
 from sqlalchemy import Engine
 
-# Wraps the raw SQL that creates, fills, and looks up the probe table.
+# Wraps the raw SQL that creates, fills, looks up, and drops the probe table.
 from sqlalchemy import text
 
 # Type of the db_session fixture, the session bound to the test's transaction.
@@ -189,33 +192,66 @@ def test_get_db_rolls_back_a_request_that_fails(
     assert get_user_by_email(db_session, FAILED_EMAIL) is None
 
 
-def test_a_row_committed_in_a_test_is_visible_in_that_test(db_session: Session) -> None:
-    """A table and a row a test creates and commits are there for the rest of the test.
+@pytest.fixture
+def check_the_probe_table_is_gone_afterwards(test_engine: Engine) -> Iterator[None]:
+    """Once the test and its ``db_session`` have ended, check that the probe table is gone.
 
-    The commit is the point: application code commits once per use case, and
-    the fixture turns that into a savepoint release rather than a real
-    commit, so the outer transaction can still undo it. The companion test
-    below checks that the table is gone afterwards.
+    The check runs in the fixture's teardown, on a connection of its own,
+    so it sees only what the database kept after the test's transaction
+    ended. That catches a ``db_session`` whose commits are real, and also
+    one whose teardown commits instead of rolling back, which no check
+    inside the test can see. It must be torn down after ``db_session``:
+    pytest tears fixtures down in the reverse of their setup order, and it
+    sets up the fixtures a test names in ``usefixtures`` before the test's
+    parameters, so a test names this one there. A table that did outlive
+    its test is dropped before the check fails, so the next run starts
+    clean.
+
+    Yields:
+        Nothing; the check runs once the test is over.
+
+    Raises:
+        AssertionError: If the probe table still exists after the test.
     """
-    db_session.execute(text("CREATE TABLE IF NOT EXISTS rollback_probe (note text)"))
-    db_session.execute(text("INSERT INTO rollback_probe VALUES ('first test')"))
+    yield
+    with test_engine.connect() as connection:
+        probe_table = connection.execute(
+            text("SELECT to_regclass('public.rollback_probe')")
+        ).scalar()
+        if probe_table is not None:
+            connection.execute(text("DROP TABLE rollback_probe"))
+            connection.commit()
+    assert probe_table is None, "rollback_probe outlived the test that created it"
+
+
+@pytest.mark.usefixtures("check_the_probe_table_is_gone_afterwards")
+def test_a_table_committed_in_a_test_is_gone_once_the_test_ends(
+    db_session: Session,
+    test_engine: Engine,
+) -> None:
+    """A table and a row that a test creates and commits last only as long as the test.
+
+    The commit is the point: application code commits once per use case,
+    and ``db_session`` turns that commit into a savepoint release rather
+    than a real commit, so the test's outer transaction can still undo it.
+    Inside the test the row is there. From another connection the table
+    can't be seen at all, because the commit never left the test's
+    transaction. Once the test ends, the fixture named in ``usefixtures``
+    checks that the table is gone: PostgreSQL rolls back schema changes as
+    well as rows, so the rollback removes the table itself. The test needs
+    no other test, so it means the same alone, picked with ``-k``, or in
+    any order. ``to_regclass`` returns NULL, which arrives as ``None``,
+    when no table has that name.
+    """
+    db_session.execute(text("CREATE TABLE rollback_probe (note text)"))
+    db_session.execute(text("INSERT INTO rollback_probe VALUES ('committed')"))
     db_session.commit()
 
     row_count = db_session.execute(text("SELECT COUNT(*) FROM rollback_probe")).scalar()
+    with test_engine.connect() as connection:
+        probe_table = connection.execute(
+            text("SELECT to_regclass('public.rollback_probe')")
+        ).scalar()
+
     assert row_count == 1
-
-
-def test_a_previous_test_left_no_table_behind(db_session: Session) -> None:
-    """The table created and committed by the previous test no longer exists.
-
-    PostgreSQL rolls back schema changes as well as rows, so the rollback
-    that ends the previous test removes the table itself. Run on its own
-    this test passes trivially, because nothing created the table in that
-    run; its value is in a full run, where it runs after its companion and
-    shows that one test cannot leave data behind for the next one.
-    ``to_regclass`` returns NULL, which arrives as ``None``, when no table
-    has that name.
-    """
-    probe_table = db_session.execute(text("SELECT to_regclass('public.rollback_probe')")).scalar()
-
     assert probe_table is None

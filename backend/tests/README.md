@@ -81,9 +81,8 @@ must not connect to the development database` instead of writing there.
   comparison instead of a `KeyError`.
 - **Expected values are literals**, never recomputed with the same logic the code under test
   uses.
-
-## One deliberate exception
-
-`test_a_previous_test_left_no_table_behind` passes trivially when run on its own: it proves
-that the *previous* test left nothing behind, so it only carries weight in a full run. Its
-docstring says so. Every other test is independent of the order tests run in.
+- **No test depends on another.** Each test sets up what it needs and leaves nothing behind,
+  so it means the same run on its own, picked with `-k`, or in any order. A check that must
+  run after a test has ended goes in a fixture's teardown, as
+  `check_the_probe_table_is_gone_afterwards` in `test_database.py` does, rather than in a
+  second test that runs next.

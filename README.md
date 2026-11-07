@@ -64,7 +64,7 @@ Behind those endpoints:
   defined roles. Passwords are stored only as Argon2id hashes.
 - **The first Admin.** `python -m app.cli create-admin` creates the first account on an
   empty database. The password is typed twice at a hidden prompt, never passed as an
-  argument, and must be 12 to 128 characters. The command refuses when an active Admin
+  argument, and must be 15 to 128 characters. The command refuses when an active Admin
   already exists.
 - **Sessions that can be ended.** The access token is a short-lived JWT the web app will
   keep in memory only. The refresh token travels only in an `HttpOnly`, `SameSite=Strict`

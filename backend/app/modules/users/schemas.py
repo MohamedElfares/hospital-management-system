@@ -61,12 +61,13 @@ Email = Annotated[EmailStr, AfterValidator(str.lower)]
 # input; public, so the auth schemas and the tests use the same number.
 EMAIL_MAX_LENGTH = 255
 
-# Plan §8.1: 12 to 128 characters and no composition rules (NIST SP 800-63B).
-# Pydantic counts characters, not bytes. The maximum bounds the input, as
-# plan §12 asks of every field; it isn't about hashing time, which barely
-# grows with length under Argon2. Public, so the auth schemas, the CLI's
-# message, and the tests use the same numbers.
-PASSWORD_MIN_LENGTH = 12
+# Plan §8.1: 15 to 128 characters and no composition rules. NIST SP 800-63B-4
+# requires at least 15 characters for a password that is the only factor of a
+# sign-in, as every password here is. Pydantic counts characters, not bytes.
+# The maximum bounds the input, as plan §12 asks of every field; it isn't
+# about hashing time, which barely grows with length under Argon2. Public, so
+# the auth schemas, the CLI's message, and the tests use the same numbers.
+PASSWORD_MIN_LENGTH = 15
 PASSWORD_MAX_LENGTH = 128
 
 # The one password rule for every way a password is set (plan §8.1); today
@@ -124,8 +125,8 @@ class UserCreate(BaseModel):
     no ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
     password too.
 
-    The password follows the shared ``Password`` rule of 12 to 128
-    characters with no composition rules (NIST SP 800-63B), the same rule
+    The password follows the shared ``Password`` rule of 15 to 128
+    characters with no composition rules (NIST SP 800-63B-4), the same rule
     every other way of setting a password uses. It is a ``SecretStr``, so
     printing or logging the model shows ``**********``; the real value is
     read only once, with ``get_secret_value()``, to hash it. Pydantic's
@@ -136,7 +137,7 @@ class UserCreate(BaseModel):
         email: Sign-in email, validated, normalized, and lowercased.
         full_name: Display name, 1 to 255 characters after stripping, with
             no control characters.
-        password: Plain password to hash, 12 to 128 characters.
+        password: Plain password to hash, 15 to 128 characters.
         role: The new user's role.
     """
 

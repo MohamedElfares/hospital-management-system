@@ -144,7 +144,7 @@ class TokenResponse(BaseModel):
 class PasswordChange(BaseModel):
     """Validated input for changing the signed-in user's own password.
 
-    The new password follows the shared ``Password`` rule, 12 to 128
+    The new password follows the shared ``Password`` rule, 15 to 128
     characters, like every other way a password is set. The current
     password has only a maximum. It is checked against the stored hash,
     not against the rule, so a minimum would add nothing: an empty one
@@ -162,7 +162,7 @@ class PasswordChange(BaseModel):
     Attributes:
         current_password: The password the user signs in with now, at most
             128 characters.
-        new_password: The password to replace it, 12 to 128 characters.
+        new_password: The password to replace it, 15 to 128 characters.
     """
 
     current_password: SecretStr = Field(max_length=PASSWORD_MAX_LENGTH)

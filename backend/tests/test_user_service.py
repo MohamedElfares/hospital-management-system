@@ -20,7 +20,7 @@ from app.modules.users.service import get_user_by_id
 from app.modules.users.service import get_user_by_id_for_update
 
 EMAIL = "test@example.com"
-PASSWORD = "Password@1331"
+PASSWORD = "Correct-Password-1"
 
 
 def test_create_user_saves_the_given_details(db_session: Session) -> None:

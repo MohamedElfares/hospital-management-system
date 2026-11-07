@@ -110,7 +110,7 @@ def make_user_create(**overrides: object) -> UserCreate:
     values: dict[str, Any] = {
         "email": "new.user@example.com",
         "full_name": "test user",
-        "password": "Password@1331",
+        "password": "Correct-Password-1",
         "role": Role.DOCTOR,
     }
 

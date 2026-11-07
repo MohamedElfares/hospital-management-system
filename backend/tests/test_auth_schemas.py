@@ -50,15 +50,18 @@ def test_a_valid_password_change_is_accepted() -> None:
 @pytest.mark.parametrize(
     "new_password",
     [
-        pytest.param("x" * PASSWORD_MIN_LENGTH, id="12 characters"),
-        pytest.param("x" * PASSWORD_MAX_LENGTH, id="128 characters"),
+        pytest.param("x" * PASSWORD_MIN_LENGTH, id=f"{PASSWORD_MIN_LENGTH} characters"),
+        pytest.param("x" * PASSWORD_MAX_LENGTH, id=f"{PASSWORD_MAX_LENGTH} characters"),
     ],
 )
 def test_the_new_password_at_the_length_limits_is_accepted(new_password: str) -> None:
-    """New passwords of exactly 12 and 128 characters are accepted unchanged.
+    """New passwords of exactly the rule's shortest and longest lengths are accepted unchanged.
 
     These are the last valid lengths on each side, built from the shared
-    constants so the test follows the rule if it ever changes.
+    constants so the test follows the rule if it ever changes, and the IDs
+    are built from them too, so they always name the lengths tested. The
+    rule's values are pinned by the ``UserCreate`` tests in
+    ``tests/test_user_schemas.py``.
     """
     data = valid_password_change(new_password=new_password)
     password_change = PasswordChange(**data)
@@ -69,12 +72,12 @@ def test_the_new_password_at_the_length_limits_is_accepted(new_password: str) ->
 @pytest.mark.parametrize(
     "new_password",
     [
-        pytest.param("x" * (PASSWORD_MIN_LENGTH - 1), id="11 characters"),
-        pytest.param("x" * (PASSWORD_MAX_LENGTH + 1), id="129 characters"),
+        pytest.param("x" * (PASSWORD_MIN_LENGTH - 1), id=f"{PASSWORD_MIN_LENGTH - 1} characters"),
+        pytest.param("x" * (PASSWORD_MAX_LENGTH + 1), id=f"{PASSWORD_MAX_LENGTH + 1} characters"),
     ],
 )
 def test_an_invalid_new_password_is_rejected(new_password: str) -> None:
-    """New passwords of 11 and 129 characters fail on the ``new_password`` field.
+    """New passwords one character outside the rule's limits fail on the ``new_password`` field.
 
     These are the first invalid lengths on each side, so a limit that is
     off by one in either direction fails one of the two boundary tests.

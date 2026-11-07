@@ -50,7 +50,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-# Pydantic words a SecretStr's length error as "at least 12 items after validation, not 5",
+# Pydantic words a SecretStr's length error as "at least 15 items after validation, not 5",
 # which is confusing and reveals how long the typed password was, so the CLI prints the rule.
 _PASSWORD_RULE = f"must be {PASSWORD_MIN_LENGTH} to {PASSWORD_MAX_LENGTH} characters."
 

@@ -306,7 +306,7 @@ def change_password(
     401 as an expired session and would sign the user out. It sets no
     cookie: the error handler builds a new response, and nothing changed,
     so the browser keeps its working cookie. An invalid body, such as a new
-    password shorter than 12 characters, is a 422 that never contains the
+    password shorter than 15 characters, is a 422 that never contains the
     passwords. The route stays open while ``must_change_password`` is set,
     since it is how a temporary password gets replaced.
 

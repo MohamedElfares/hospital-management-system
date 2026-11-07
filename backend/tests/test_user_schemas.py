@@ -20,7 +20,7 @@ def valid_data(**overrides: object) -> dict[str, object]:
     values = {
         "email": "test@example.com",
         "full_name": "test user",
-        "password": "Password@1331",
+        "password": "Correct-Password-1",
         "role": Role.DOCTOR,
     }
 
@@ -133,21 +133,26 @@ def test_the_password_is_kept_exactly_as_typed() -> None:
 
     They are part of the password; stripping them would lock the user out.
     """
-    data = valid_data(password=" padded pass ")
+    data = valid_data(password=" padded password ")
     user = UserCreate(**data)
 
-    assert user.password.get_secret_value() == " padded pass "
+    assert user.password.get_secret_value() == " padded password "
 
 
 @pytest.mark.parametrize(
     "password",
     [
-        pytest.param("x" * 12, id="12 characters"),
+        pytest.param("x" * 15, id="15 characters"),
         pytest.param("x" * 128, id="128 characters"),
     ],
 )
 def test_a_password_at_the_length_limits_is_accepted(password: str) -> None:
-    """Passwords of exactly 12 and 128 characters are accepted unchanged."""
+    """Passwords of exactly 15 and 128 characters are accepted unchanged.
+
+    The lengths are written out rather than read from the constants, so
+    lowering the minimum below the 15 that NIST SP 800-63B-4 requires of a
+    password that is the only sign-in factor fails here.
+    """
     data = valid_data(password=password)
     user = UserCreate(**data)
 
@@ -160,22 +165,22 @@ def test_the_password_is_hidden_when_printed() -> None:
     The model is what ends up in logs and tracebacks, so this checks
     ``repr`` and ``str`` of the model, not just of the password field.
     """
-    data = valid_data(password="Password@1331")
+    data = valid_data(password="Correct-Password-1")
     user = UserCreate(**data)
 
-    assert "Password@1331" not in repr(user)
-    assert "Password@1331" not in str(user)
+    assert "Correct-Password-1" not in repr(user)
+    assert "Correct-Password-1" not in str(user)
 
 
 @pytest.mark.parametrize(
     "password",
     [
-        pytest.param("x" * 11, id="11 characters"),
+        pytest.param("x" * 14, id="14 characters"),
         pytest.param("x" * 129, id="129 characters"),
     ],
 )
 def test_an_invalid_password_is_rejected(password: str) -> None:
-    """Passwords of 11 and 129 characters fail on the ``password`` field."""
+    """Passwords of 14 and 129 characters fail on the ``password`` field."""
     data = valid_data(password=password)
     with pytest.raises(ValidationError) as exc_info:
         UserCreate(**data)

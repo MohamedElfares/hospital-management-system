@@ -39,7 +39,7 @@ def test_create_admin_creates_an_admin_and_prints_its_email(
     result = CliRunner().invoke(
         cli.app,
         ["create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
-        input="Password@1331\nPassword@1331\n",
+        input="Correct-Password-1\nCorrect-Password-1\n",
     )
 
     assert result.exit_code == 0
@@ -70,7 +70,7 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     )
 
     assert result.exit_code == 1
-    assert "password: must be 12 to 128 characters." in result.output
+    assert "password: must be 15 to 128 characters." in result.output
     assert "short-pw-11" not in result.output
     assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
@@ -92,7 +92,7 @@ def test_create_admin_rejects_a_control_character_in_the_name(
     result = CliRunner().invoke(
         cli.app,
         ["create-admin", "--email", ADMIN_EMAIL],
-        input="Ana\x00Smith\nPassword@1331\nPassword@1331\n",
+        input="Ana\x00Smith\nCorrect-Password-1\nCorrect-Password-1\n",
     )
 
     assert result.exit_code == 1
@@ -115,7 +115,7 @@ def test_create_admin_refuses_when_an_active_admin_exists(
     result = CliRunner().invoke(
         cli.app,
         ["create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
-        input="Password@1331\nPassword@1331\n",
+        input="Correct-Password-1\nCorrect-Password-1\n",
     )
 
     assert result.exit_code == 1
@@ -133,7 +133,7 @@ def test_create_admin_prompts_for_a_missing_email_and_name(
     result = CliRunner().invoke(
         cli.app,
         ["create-admin"],
-        input=f"{ADMIN_EMAIL}\n{ADMIN_FULL_NAME}\nPassword@1331\nPassword@1331\n",
+        input=f"{ADMIN_EMAIL}\n{ADMIN_FULL_NAME}\nCorrect-Password-1\nCorrect-Password-1\n",
     )
 
     assert result.exit_code == 0

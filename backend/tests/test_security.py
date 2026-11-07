@@ -1,13 +1,16 @@
 """Tests for the password, token, and cookie helpers in ``app/core/security.py``.
 
 These are unit tests: they call the functions directly, with no database
-and no request. Password hashing is checked for its Argon2id format, a
-new salt for every hash, an exact comparison, and the warning a stored
-value in an unknown format gets; ``verify_login_password`` for its
-answers and for the dummy-hash check that makes an unknown email as slow
-to reject as a wrong password. ``_make_token`` builds access tokens with
-PyJWT that are valid except for the one thing a rejection test changes,
-so each rejection comes from the check the test names. Refresh tokens
+and no request. Password hashing is checked for its Argon2id format and
+settings, a new salt for every hash, a comparison that counts every
+character and is exact but for the Unicode form, and the warning a
+stored value in an unknown format gets; ``verify_login_password`` for
+its answers and for the dummy-hash check that makes an unknown email as
+slow to reject as a wrong password, the dummy's settings included.
+``_make_token`` builds access tokens with PyJWT that are valid except for
+the one thing a rejection test changes, so each rejection comes from the
+check the test names, and a new token's lifetime is checked against a
+copy of the settings holding a value no default has. Refresh tokens
 are checked for their length, their characters, and their SHA-256 hash,
 and the cookie helpers for the header each one writes, parsed so that
 each attribute is compared whole, and for the two headers agreeing, with

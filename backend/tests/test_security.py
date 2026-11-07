@@ -1,33 +1,99 @@
+"""Tests for the password, token, and cookie helpers in ``app/core/security.py``.
+
+These are unit tests: they call the functions directly, with no database
+and no request. Password hashing is checked for its Argon2id format, a
+new salt for every hash, an exact comparison, and the warning a stored
+value in an unknown format gets; ``verify_login_password`` for its
+answers and for the dummy-hash check that makes an unknown email as slow
+to reject as a wrong password. ``_make_token`` builds access tokens with
+PyJWT that are valid except for the one thing a rejection test changes,
+so each rejection comes from the check the test names. Refresh tokens
+are checked for their length, their characters, and their SHA-256 hash,
+and the cookie helpers for the header each one writes, with the
+``Secure`` flag checked in production through a copy of the settings.
+What the API does with these helpers, such as the 401 a bad token gets
+and the cookie a sign-in sets, is tested in ``tests/test_auth_api.py``.
+"""
+
+# Matches a refresh token and its hash against the characters each may contain.
 import re
+
+# A random key of the test's own, to sign a token the application must refuse.
 import secrets
+
+# Random user IDs for the tokens; a decoded subject is compared with one.
 import uuid
+
+# UTC time zone; the tokens' timestamps are built in UTC, as the application builds them.
 from datetime import UTC
+
+# The current time, for a token's iat and exp and for the bounds iat must fall between.
 from datetime import datetime
+
+# Token lifetimes: the configured lifetime after iat, or a minute in the past.
 from datetime import timedelta
+
+# Type hint for claim values, which mix strings and datetimes.
 from typing import Any
 
+# PyJWT; builds tokens the application never would, and reads a real token's claims.
 import jwt
+
+# Test framework: parametrize, raises, and the monkeypatch and caplog types.
 import pytest
+
+# The response the cookie helpers write their Set-Cookie header to.
 from fastapi import Response
 
+# The module under test, so monkeypatch can replace names where its functions look them up.
 from app.core import security
+
+# Cached settings: the signing key and the token lifetime; the cookie tests copy them.
 from app.core.config import get_settings
+
+# The error every rejected access token raises, which the API answers with 401.
 from app.core.errors import AuthenticationError
+
+# The hash an unknown email's password is checked against.
 from app.core.security import _DUMMY_HASH
+
+# Writes the header that deletes the refresh cookie.
 from app.core.security import clear_refresh_cookie
+
+# Signs an access token for a user ID.
 from app.core.security import create_access_token
+
+# Verifies an access token and returns the user ID it names.
 from app.core.security import decode_access_token
+
+# Makes a new random refresh token.
 from app.core.security import generate_refresh_token
+
+# Hashes a password with Argon2id.
 from app.core.security import hash_password
+
+# Hashes a refresh token with SHA-256, as it is stored.
 from app.core.security import hash_refresh_token
+
+# Writes the Set-Cookie header that carries a refresh token.
 from app.core.security import set_refresh_cookie
+
+# Checks a sign-in password, against the dummy hash when no user matched.
 from app.core.security import verify_login_password
+
+# Checks a password against a stored hash.
 from app.core.security import verify_password
 
 # Written out rather than imported from app.core.security, so a change to the
 # module's algorithm fails these tests instead of silently passing them.
 JWT_ALGORITHM = "HS256"
+
+# The password most tests hash. hash_password applies no rule of its own, so it
+# needn't meet the password rule that the request schemas enforce.
 PASSWORD: str = "Password@1331"
+
+# Shaped like a bcrypt hash ($2a$, cost 12), the kind of value an account hashed
+# before Argon2 would hold. pwdlib's recommended hasher identifies only Argon2.
 OLD_BCRYPT_HASH = "$2a$12$xmwWaOMD74tVfixmTpxpWe7oZiybi9crvSu0lbrbe9NXCx8CS1nq"
 
 
@@ -72,7 +138,7 @@ def _make_token(
     for name in omit:
         del claims[name]
 
-    # PyJWT refuses any key for alg "none"; it must be None.
+    # PyJWT raises InvalidKeyError for alg "none" unless the key is None or empty.
     if algorithm == "none":
         signing_key = None
     elif key is not None:
@@ -84,7 +150,13 @@ def _make_token(
 
 
 def test_a_hash_is_argon2_and_not_the_password() -> None:
-    """Hashing gives an Argon2id string that doesn't contain the password as is."""
+    """Hashing gives an Argon2id string, not the password itself.
+
+    The ``$argon2id$`` prefix names the algorithm, which pwdlib reads back
+    when it verifies, so a hasher switched to another algorithm, such as
+    bcrypt, fails here. The settings and the salt follow the prefix; this
+    test doesn't read them.
+    """
     password_hash: str = hash_password(PASSWORD)
 
     assert password_hash.startswith("$argon2id$")
@@ -94,8 +166,11 @@ def test_a_hash_is_argon2_and_not_the_password() -> None:
 def test_the_same_password_gets_a_different_hash_each_time() -> None:
     """Two hashes of one password differ, and both still verify.
 
-    Each hash gets its own random salt, so users who share a password don't
-    share a hash, and one cracked hash doesn't unlock the others.
+    Each hash gets a new random salt, so two users with the same password
+    get different hashes: a stolen ``users`` table doesn't show which
+    accounts share a password, and each hash has to be guessed on its own,
+    because no table of hashes computed in advance covers a salt no one
+    has seen before.
     """
     first_password_hash: str = hash_password(PASSWORD)
     second_password_hash: str = hash_password(PASSWORD)
@@ -123,8 +198,9 @@ def test_the_right_password_verifies() -> None:
 def test_a_wrong_password_is_rejected(submitted: str, stored: str) -> None:
     """A submitted password that differs from the stored one fails to verify.
 
-    Passwords are compared exactly, so even a small difference must be
-    rejected rather than normalized away.
+    Passwords are compared exactly, so even a small difference, such as a
+    letter's case or a trailing space, must be rejected rather than
+    normalized away.
     """
     password_hash: str = hash_password(stored)
 
@@ -132,7 +208,11 @@ def test_a_wrong_password_is_rejected(submitted: str, stored: str) -> None:
 
 
 def test_a_unicode_password_round_trips() -> None:
-    """A password with non-ASCII characters hashes and then verifies."""
+    """A password with non-ASCII characters hashes and then verifies.
+
+    The password is typed in one Unicode form, with each accented letter as
+    a single character, and verified in that same form.
+    """
     unicode_password = "Pässwörd123!"
     password_hash = hash_password(unicode_password)
 
@@ -142,8 +222,11 @@ def test_a_unicode_password_round_trips() -> None:
 def test_a_very_long_password_round_trips() -> None:
     """A 3,000-character password hashes and then verifies.
 
-    Argon2 has no input limit, unlike bcrypt, which silently ignores
-    everything after 72 bytes.
+    ``hash_password`` sets no limit of its own: the 128-character maximum
+    belongs to the request schemas, and Argon2 takes a password of any
+    practical length, where bcrypt uses only its first 72 bytes. The round
+    trip shows that a long password is accepted, not that every character
+    counts: a hasher that cut it short would pass too.
     """
     long_password = "abc" * 1000
     password_hash = hash_password(long_password)
@@ -162,11 +245,16 @@ def test_an_unsupported_hash_fails_and_logs_a_safe_warning(
     password_hash: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A bcrypt or corrupted stored hash fails to verify, with a safe warning.
+    """A stored value pwdlib can't identify fails to verify, with a warning that leaves it out.
 
-    pwdlib raises for hashes it doesn't recognize; ``verify_password``
-    turns that into False so sign-in answers 401, not 500. The warning must
-    be logged, and it must not contain the hash.
+    The cases are a value shaped like a bcrypt hash and text that is no
+    hash at all. pwdlib raises ``UnknownHashError`` for both, and
+    ``verify_password`` turns that into False, so sign-in answers 401
+    rather than 500, and logs a warning so the bad row gets noticed. The
+    test captures every logger from WARNING up, and checks that a warning
+    was logged and that the stored value appears nowhere in the captured
+    text. A damaged value that still looks like an Argon2 hash isn't
+    covered: pwdlib reports it as an ordinary mismatch, without a warning.
     """
     with caplog.at_level("WARNING"):
         is_correct = verify_password("some-password", password_hash)
@@ -177,10 +265,14 @@ def test_an_unsupported_hash_fails_and_logs_a_safe_warning(
 
 
 def test_the_dummy_hash_is_argon2_and_matches_no_password() -> None:
-    """The dummy hash is a real Argon2id hash that an ordinary password doesn't match.
+    """The dummy hash is an Argon2id hash that an ordinary password doesn't match.
 
-    Being Argon2id with the normal settings is what makes verifying against
-    it take as long as a real sign-in.
+    ``verify_login_password`` checks an unknown email's password against
+    it, so that rejecting the email costs as much as rejecting a wrong
+    password. That needs a well-formed hash with the settings real hashes
+    have, because Argon2 takes its cost from the settings written into the
+    hash. This test checks the prefix and one password; it can't see the
+    settings, or whether the rest of the hash parses.
     """
     assert verify_password(PASSWORD, _DUMMY_HASH) is False
     assert _DUMMY_HASH.startswith("$argon2id$")
@@ -217,7 +309,9 @@ def test_an_access_token_holds_only_sub_iat_and_exp() -> None:
     is one configured lifetime later. No other claim, such as the role or
     the email, may appear: the token can be read by anyone who holds it, and
     those values would go stale. The lifetime is read from the settings, so
-    the test doesn't depend on the environment's value.
+    the test passes whatever ``ACCESS_TOKEN_EXPIRE_MINUTES`` the
+    environment sets; for the same reason, it can't tell the setting from
+    a lifetime written into the code that happens to equal it.
     """
     settings = get_settings()
     jwt_secret_key = settings.jwt_secret_key.get_secret_value()
@@ -340,9 +434,10 @@ def test_an_access_token_whose_subject_is_not_a_uuid_is_rejected() -> None:
 def test_a_malformed_access_token_is_rejected(token: str) -> None:
     """Input that isn't a JWT at all fails with the same 401 error.
 
-    The cases fail at different stages of parsing: no dots, an empty
-    string, and three segments that aren't base64-encoded JSON. Each must
-    give the generic 401, never a 500.
+    PyJWT refuses each one before it checks a signature: the empty string
+    and ``not-a-token`` don't split into a token's three dot-separated
+    parts, and ``a.b.c`` does, but its header isn't valid base64url. Each
+    must give the generic 401, never a 500.
     """
     with pytest.raises(AuthenticationError) as exc_info:
         decode_access_token(token)
@@ -353,8 +448,12 @@ def test_a_malformed_access_token_is_rejected(token: str) -> None:
 def test_two_refresh_tokens_are_never_the_same() -> None:
     """A hundred generated refresh tokens are all different.
 
-    With 256 random bits a repeat never happens, so a duplicate would mean
-    the generator had become predictable, such as a counter or a clock.
+    With 256 random bits a repeat never happens by chance, so one would
+    mean the generator had lost its randomness, such as one that returns a
+    fixed value or starts from the same seed on every call. A generator
+    that is predictable but never repeats, such as a counter, passes: that
+    the tokens can't be guessed rests on ``secrets``, which a unit test
+    can't measure.
     """
     tokens = set()
     for _ in range(100):
@@ -366,8 +465,9 @@ def test_two_refresh_tokens_are_never_the_same() -> None:
 def test_a_refresh_token_is_url_safe_and_long_enough() -> None:
     """A refresh token has at least 43 characters, all safe in a cookie.
 
-    Forty-three is the base64 length of 32 random bytes. Only letters,
-    digits, ``-``, and ``_`` may appear, so the cookie needs no escaping.
+    Forty-three is the length of 32 random bytes in URL-safe base64,
+    without the ``=`` padding. Only letters, digits, ``-``, and ``_`` may
+    appear, so the cookie needs no escaping.
     """
     token = generate_refresh_token()
 
@@ -378,9 +478,9 @@ def test_a_refresh_token_is_url_safe_and_long_enough() -> None:
 def test_a_refresh_token_hash_is_64_hex_characters() -> None:
     """A refresh token's hash has the shape of the ``token_hash`` column.
 
-    Sixty-four lowercase hex characters fit ``String(64)``, and the raw
-    token, with its mixed case, could never match, so the function can't
-    be returning the token itself.
+    Sixty-four lowercase hex characters fit ``String(64)``. A raw token is
+    43 characters long, so a function that returned the token instead of
+    its hash would fail here.
     """
     token = generate_refresh_token()
     assert re.fullmatch(r"[0-9a-f]{64}", hash_refresh_token(token))
@@ -389,9 +489,11 @@ def test_a_refresh_token_hash_is_64_hex_characters() -> None:
 def test_a_refresh_token_hash_is_plain_sha256() -> None:
     """Hashing ``"abc"`` gives the published SHA-256 test vector.
 
-    This pins the exact algorithm and shows the hash is the same every
-    time. Adding a salt or switching algorithms would make stored tokens
-    unfindable and sign everyone out, and this test would fail first.
+    A fixed expected value pins the exact algorithm and shows that nothing
+    else, such as a salt, goes into the hash, so the same token always
+    gives the same hash. Adding a salt or switching algorithms would make
+    stored tokens unfindable and sign everyone out, and this test would
+    fail first.
     """
     sha256_of_abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
@@ -423,7 +525,12 @@ def test_verify_login_password_rejects_a_wrong_password() -> None:
 
 
 def test_verify_login_password_without_a_user_returns_false() -> None:
-    """With no matching user, the check always fails."""
+    """With no matching user, the check fails.
+
+    The dummy check's own answer is False as well, since no one knows the
+    password the dummy hash was made from, so this test can't tell the
+    explicit False that ``verify_login_password`` returns from that answer.
+    """
     assert verify_login_password(PASSWORD, None) is False
 
 
@@ -432,17 +539,29 @@ def test_verify_login_password_without_a_user_still_checks_the_dummy_hash(
 ) -> None:
     """With no matching user, the password is still verified against the dummy hash.
 
-    The slow Argon2 check runs exactly once, against ``_DUMMY_HASH``, so an
-    unknown email takes as long as a wrong password. A spy records the
-    calls: measuring time would be too unreliable for a test. The previous
-    test checks the answer; this one checks the cost, so removing the dummy
-    check would fail here even though the answer stays False.
+    ``verify_password`` must run exactly once, against ``_DUMMY_HASH``, so
+    an unknown email costs the same Argon2 work as a wrong password and
+    response times can't reveal which emails have accounts. A spy records
+    the calls, because measuring time would be too unreliable for a test.
+    The answer is False either way, as
+    ``test_verify_login_password_without_a_user_returns_false`` checks, so
+    only this test fails when the dummy check is removed. How long the
+    check takes depends on ``_DUMMY_HASH`` itself, which the spy can't see.
     """
     calls: list[str] = []
     real_verify = verify_password
 
     def spy(password: str, password_hash: str) -> bool:
-        """Record the hash being checked, then run the real verification."""
+        """Record the hash being checked, then run the real verification.
+
+        Args:
+            password: The submitted password, passed on unchanged.
+            password_hash: The hash ``verify_login_password`` checks
+                against.
+
+        Returns:
+            The real ``verify_password``'s answer.
+        """
         calls.append(password_hash)
         return real_verify(password, password_hash)
 
@@ -473,13 +592,16 @@ def test_the_refresh_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPa
 
 
 def test_clear_refresh_cookie_expires_the_refresh_cookie() -> None:
-    """Clearing sends the refresh cookie back with ``Max-Age=0``.
+    """Clearing sends the refresh cookie back empty, with ``Max-Age=0``.
 
-    The browser deletes a cookie only when the deleting header names the
-    same cookie and path as the one that set it, so the name and
-    ``Path=/api/v1/auth`` are checked along with ``Max-Age=0``. The
-    ``HttpOnly`` and ``SameSite=Strict`` flags must match the original
-    cookie too.
+    A browser replaces a cookie only with one of the same name, domain, and
+    path, so the deleting header must name ``refresh_token`` and
+    ``Path=/api/v1/auth``, as ``set_refresh_cookie`` does, and ``Max-Age=0``
+    then deletes it. ``HttpOnly`` and ``SameSite=Strict`` are checked too:
+    deleting doesn't need them, but ``clear_refresh_cookie`` keeps the
+    cookie's flags, so the deleting header follows the same rules. Each
+    check looks for its text anywhere in the header, so a longer path, such
+    as ``/api/v1/auth/``, would also pass the path check.
     """
     response = Response()
     clear_refresh_cookie(response)
@@ -495,10 +617,12 @@ def test_clear_refresh_cookie_expires_the_refresh_cookie() -> None:
 def test_the_cleared_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     """In production, the header that clears the refresh cookie carries ``Secure``.
 
-    The deleting header must keep the flags of the cookie it deletes, so a
-    change to one cookie function and not the other fails here.
-    ``get_settings`` is replaced with a production copy, as in the test
-    for setting the cookie.
+    ``clear_refresh_cookie`` gives the deleting header the cookie's flags,
+    and in production that includes ``Secure``, as ``set_refresh_cookie``
+    sets it. A copy that drops the flag from the deleting header fails
+    here; a change to ``set_refresh_cookie`` alone fails
+    ``test_the_refresh_cookie_is_secure_in_production`` instead.
+    ``get_settings`` is replaced with a production copy, as in that test.
     """
     production_settings = get_settings().model_copy(update={"environment": "production"})
     monkeypatch.setattr(security, "get_settings", lambda: production_settings)

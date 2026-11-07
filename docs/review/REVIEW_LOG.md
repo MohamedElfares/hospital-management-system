@@ -287,6 +287,35 @@ closes when the last stage is done, so an interrupted run is obvious.
   token and cookie rules), or stops startup on a bad setting, gets a test
   that fails when the guard is removed." The line proposed in stage 12b
   still waits for your answer too.
+- **Stage 13's findings fixed (2026-11-08):** R-052 (`36919e6`), R-053
+  (`31b2445`), R-054 (`d00c08f`), R-055 (`47151a4`), R-056 (`276eeaf`),
+  R-057 (`6d57f19`), R-058 (`e8e09ae`), R-059 (`fc35fae`), and R-060
+  (`903a8c5`), written at your request ("fix the open in findings with
+  recommendations and best practices"), one commit each, in ID order,
+  since none depends on another: the test-only fixes first, then the
+  docstring, then the two changes of behaviour, each with tests that fail
+  before it. Every new or changed test was run against broken copies of
+  the code it pins, and each copy failed it. Two steps differ from the
+  logged recommendations: R-055's access token test uses 9 minutes, since
+  a copy that reads the refresh setting passes a 7-minute test, and
+  R-059 adds a ligature case that pins NFC over NFKC. `73515e7` brought
+  `tests/test_security.py`'s module docstring up to the fixes. R-058
+  raises the password minimum to 15, and R-059 puts every password in
+  Unicode NFC, so `app/core/security.py`, `users/schemas.py`,
+  `auth/schemas.py`, `auth/router.py`, and `cli.py` changed after their
+  stages reviewed them (3, 6, 7, 9, and 10), as did
+  `tests/test_security.py` after stage 13 (`cc8e73f`) and
+  `tests/factories.py` after stage 11 (`a459df1`), so the next
+  `/review new` takes them again. `test_user_schemas.py` (stage 14),
+  `test_cli.py` and `test_user_service.py` (stage 15),
+  `test_auth_schemas.py` (stage 17), `test_auth_service.py` (stages 18
+  and 20), and `test_auth_api.py` (stage 21) changed before their stages
+  reach them. Each commit passes Ruff and the suite on its own, run like
+  CI in a clean worktree: 353, 355, 356, 356, 358, 358, 358, 361, 361,
+  then 361 tests, with coverage at 99.86%, and the suite also
+  passes reversed, shuffled twice, and at `LOG_LEVEL=INFO`. The
+  `CLAUDE.md` lines proposed in stages 12b and 13 still wait for your
+  answer. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

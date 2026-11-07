@@ -293,8 +293,9 @@ closes when the last stage is done, so an interrupted run is obvious.
   keeps secrets or personal data out of responses and logs, protects
   passwords or tokens (hashing settings, the unknown-email dummy check,
   token and cookie rules), or stops startup on a bad setting, gets a test
-  that fails when the guard is removed." The line proposed in stage 12b
-  still waits for your answer too.
+  that fails when the guard is removed." Accepted on 2026-11-08 (you said
+  "yes" to both open proposals), with the stage 12b line, and put in
+  `CLAUDE.md` in place of the stage 2 line, word for word.
 - **Stage 13's findings fixed (2026-11-08):** R-052 (`36919e6`), R-053
   (`31b2445`), R-054 (`d00c08f`), R-055 (`47151a4`), R-056 (`276eeaf`),
   R-057 (`6d57f19`), R-058 (`e8e09ae`), R-059 (`fc35fae`), and R-060

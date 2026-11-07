@@ -38,7 +38,7 @@ Hospital Management System: a FastAPI backend and a React frontend for hospital 
 - Before I write tests for a feature, list the edge cases to cover, using the checklist in plan §13. No test code unless I ask.
 - The first time I need a pytest feature (fixtures, `parametrize`, `monkeypatch`, `raises`, marks), explain it in one or two lines.
 - When reviewing tests, look for missing cases, weak assertions, and tests that depend on each other.
-- Every guard that keeps secrets or personal data out of responses and logs, or stops startup on a bad setting, gets a test that fails when the guard is removed.
+- Every guard that keeps secrets or personal data out of responses and logs, protects passwords or tokens (hashing settings, the unknown-email dummy check, token and cookie rules), or stops startup on a bad setting, gets a test that fails when the guard is removed.
 - Every log line that plan §12 requires or a docstring promises gets a test that captures it with `caplog` and checks its level, its request ID, and what it must leave out.
 
 ## CI/CD and Docker

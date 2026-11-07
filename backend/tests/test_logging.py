@@ -119,7 +119,7 @@ def _request_log_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
         ),
     ],
 )
-def test_reuses_a_valid_uuid_in_lowercase(header_value: str, expected: str) -> None:
+def test_a_valid_uuid_is_reused_in_its_normalized_form(header_value: str, expected: str) -> None:
     """Every spelling of a valid UUID comes back in one normalized form.
 
     Uppercase, braces, missing dashes and a ``urn:uuid:`` prefix are all
@@ -143,7 +143,7 @@ def test_reuses_a_valid_uuid_in_lowercase(header_value: str, expected: str) -> N
         "not-a-uuid",
     ],
 )
-def test_generates_an_id_when_clients_sends_fake_uuid_value(header_value: str | None) -> None:
+def test_a_missing_or_invalid_header_gets_a_generated_id(header_value: str | None) -> None:
     """Anything that is not a valid UUID is replaced by a freshly generated one.
 
     Covers a missing header, an empty value, one containing a line break, an

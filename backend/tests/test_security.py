@@ -291,11 +291,31 @@ def test_the_dummy_hash_is_argon2_and_matches_no_password() -> None:
     it, so that rejecting the email costs as much as rejecting a wrong
     password. That needs a well-formed hash with the settings real hashes
     have, because Argon2 takes its cost from the settings written into the
-    hash. This test checks the prefix and one password; it can't see the
-    settings, or whether the rest of the hash parses.
+    hash. This test checks the prefix and one password;
+    ``test_the_dummy_hash_has_the_settings_of_a_real_hash`` checks the
+    rest.
     """
     assert verify_password(PASSWORD, _DUMMY_HASH) is False
     assert _DUMMY_HASH.startswith("$argon2id$")
+
+
+def test_the_dummy_hash_has_the_settings_of_a_real_hash() -> None:
+    """The dummy hash has the settings and the length of a hash made now.
+
+    Argon2 takes its cost from the settings written into a hash, so checking
+    a password against the dummy costs what a real check does only while
+    the dummy has a real hash's settings, and parses. A dummy made with
+    cheaper settings, or written out by hand without its digest, which
+    argon2-cffi refuses at once, would let an unknown email be answered
+    thousands of times faster than a wrong password, and so show which
+    emails have accounts. The dummy is compared with a fresh hash rather
+    than with fixed values, so it keeps following ``hash_password``;
+    ``test_a_hash_uses_the_documented_argon2_settings`` pins the values.
+    """
+    password_hash = hash_password(PASSWORD)
+
+    assert _DUMMY_HASH.rsplit("$", 2)[0] == password_hash.rsplit("$", 2)[0]
+    assert len(_DUMMY_HASH) == len(password_hash)
 
 
 def test_the_token_helper_builds_a_valid_token() -> None:
@@ -549,8 +569,42 @@ def test_verify_login_password_without_a_user_returns_false() -> None:
 
     The dummy check's own answer is False as well, since no one knows the
     password the dummy hash was made from, so this test can't tell the
-    explicit False that ``verify_login_password`` returns from that answer.
+    explicit False that ``verify_login_password`` returns from that answer;
+    ``test_verify_login_password_without_a_user_fails_even_if_the_dummy_matched``
+    does.
     """
+    assert verify_login_password(PASSWORD, None) is False
+
+
+def test_verify_login_password_without_a_user_fails_even_if_the_dummy_matched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no matching user, the answer is False even when the dummy check says yes.
+
+    ``verify_login_password`` ignores the dummy check's answer and returns
+    False itself, so an email that matches no account can never sign in,
+    whatever the dummy hash is. ``verify_password`` is replaced here with
+    one that always answers True, as it would if the dummy hash were ever
+    made from a password someone could type, so a copy that returned the
+    dummy check's answer fails. ``login`` checks for a missing user again,
+    but its comment says that check is there for the type checker; the
+    rule lives here.
+    """
+
+    def always_matches(password: str, password_hash: str) -> bool:
+        """Answer as if every password matched every hash.
+
+        Args:
+            password: The submitted password, ignored.
+            password_hash: The hash it is checked against, ignored.
+
+        Returns:
+            Always True.
+        """
+        return True
+
+    monkeypatch.setattr(security, "verify_password", always_matches)
+
     assert verify_login_password(PASSWORD, None) is False
 
 

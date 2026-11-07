@@ -49,6 +49,10 @@ import jwt
 # Test framework: parametrize, raises, and the monkeypatch and caplog types.
 import pytest
 
+# A hash in bcrypt's format, the one make_user stores, as an account hashed before
+# Argon2 would hold; pwdlib's recommended hasher identifies only Argon2.
+from factories import FAKE_PASSWORD_HASH
+
 # The response the cookie helpers write their Set-Cookie header to.
 from fastapi import Response
 
@@ -109,10 +113,6 @@ DECOMPOSED_PASSWORD = "Pässwörd123!"
 # header that set it: a browser matches the path, and clear_refresh_cookie keeps
 # the flags. The value and Max-Age differ on purpose.
 SHARED_COOKIE_ATTRIBUTES = ("path", "domain", "httponly", "samesite", "secure")
-
-# Shaped like a bcrypt hash ($2a$, cost 12), the kind of value an account hashed
-# before Argon2 would hold. pwdlib's recommended hasher identifies only Argon2.
-OLD_BCRYPT_HASH = "$2a$12$xmwWaOMD74tVfixmTpxpWe7oZiybi9crvSu0lbrbe9NXCx8CS1nq"
 
 
 def _make_token(
@@ -345,7 +345,7 @@ def test_every_character_of_a_long_password_counts() -> None:
 @pytest.mark.parametrize(
     "password_hash",
     [
-        pytest.param(OLD_BCRYPT_HASH, id="bcrypt-hash"),
+        pytest.param(FAKE_PASSWORD_HASH, id="bcrypt-hash"),
         pytest.param("not-a-real-hash", id="garbage"),
     ],
 )
@@ -355,8 +355,8 @@ def test_an_unsupported_hash_fails_and_logs_a_safe_warning(
 ) -> None:
     """A stored value pwdlib can't identify fails to verify, with a warning that leaves it out.
 
-    The cases are a value shaped like a bcrypt hash and text that is no
-    hash at all. pwdlib raises ``UnknownHashError`` for both, and
+    The cases are a hash in bcrypt's format, the one ``make_user`` stores,
+    and text that is no hash at all. pwdlib raises ``UnknownHashError`` for both, and
     ``verify_password`` turns that into False, so sign-in answers 401
     rather than 500, and logs a warning so the bad row gets noticed. The
     test captures every logger from WARNING up, and checks that a warning

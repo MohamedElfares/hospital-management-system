@@ -1155,7 +1155,7 @@ You create these settings in `backend/.env` and load them in `backend/app/core/c
 |---|---|---|
 | `ENVIRONMENT` | `local`, `test`, or `production` | Controls the refresh cookie's `Secure` flag. Error responses are generic in every environment; the traceback goes to the log |
 | `DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms` | Must start with `postgresql+psycopg://` (the settings validator checks it). In production, use Neon's connection string with its `postgresql://` prefix changed to `postgresql+psycopg://`, keeping `sslmode=require` |
-| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`; the suite refuses to run without it rather than falling back to `DATABASE_URL` |
+| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`. Without it, every test that needs the database errors with `TEST_DATABASE_URL is not set`, and the suite never falls back to `DATABASE_URL` |
 | `JWT_SECRET_KEY` | *(64 hex characters)* | At least 32 characters and different in every environment; generate with `uv run python -c "import secrets; print(secrets.token_hex(32))"` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | |

@@ -1,20 +1,62 @@
+"""Tests for the request ID and the request log line in ``app/core/logging.py``.
+
+``_resolve_request_id`` chooses each request's ID: a UUID the client sends
+is reused in one normalized form, and anything else is replaced by a new
+one. ``request_context_middleware`` writes one ``key=value`` line per
+request with the fields plan §12 asks for: the request ID, the signed-in
+user's ID, the method, the path, the status, and the duration. The unit
+tests call ``_resolve_request_id`` directly. The line tests send requests
+through the whole application and read the middleware's records with
+``caplog``: they check what each field holds, what must stay out of the
+line (the query string, raw control characters, and a user from another
+request), and which requests name a user. The ``X-Request-ID`` header is
+tested in ``tests/test_errors.py``.
+"""
+
+# Log levels, for capturing the middleware's INFO records whatever LOG_LEVEL is.
 import logging
+
+# Matches the whole request log line against the pattern of the plan's fields.
 import re
+
+# Parses each generated request ID, which raises unless the value is a UUID.
 import uuid
 
+# Test framework: fixtures, parametrize, the usefixtures mark, and caplog's type.
 import pytest
+
+# Builds a valid user, so the fixture sets nothing the tests don't need.
 from factories import make_user
+
+# Type of the app fixture, which the gated route is added to.
 from fastapi import FastAPI
+
+# Sends requests through the whole application, middleware included.
 from fastapi.testclient import TestClient
+
+# Type of the db_session fixture, which saves the user and its pending password change.
 from sqlalchemy.orm import Session
 
+# The gated dependency: the signed-in user, refused while a password change is pending.
 from app.api.deps import CurrentUser
+
+# Chooses each request's ID; the unit tests call it directly.
 from app.core.logging import _resolve_request_id
+
+# Signs an access token for the user, as sign-in does, so no test needs a password.
 from app.core.security import create_access_token
+
+# Type of the user fixture.
 from app.modules.users.models import User
 
+# Exists only on a test's own application, added by the gated_route fixture.
 GATED_URL = "/api/v1/test/gated"
+
+# The plainest route that needs a signed-in user, and it lets one through whose password
+# change is pending, as every new account's is.
 ME_URL = "/api/v1/auth/me"
+
+# Already in the normalized form, so the line carries it unchanged.
 REQUEST_ID = "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
 
 
@@ -23,8 +65,13 @@ def user(db_session: Session) -> User:
     """Save an active user for the signed-in requests.
 
     The tests sign the user's access token directly, so the password never
-    matters and ``make_user``'s default hash is enough. The user is
-    flushed, not committed, so the test's rollback removes it.
+    matters and ``make_user``'s default hash is enough. Like every new
+    account, the user must change their password, which is the database's
+    default; ``/auth/me`` lets such a user through, so only the gated route
+    refuses them. The user is flushed so that it has its ID, which the
+    token names;
+    ``get_test_db`` commits it before each request, and the rollback at the
+    end of the test removes it.
 
     Args:
         db_session: The test's session.
@@ -43,17 +90,25 @@ def user(db_session: Session) -> User:
 def gated_route(app: FastAPI) -> None:
     """Add a route at ``GATED_URL`` that uses the ordinary ``CurrentUser``.
 
-    Every route that exists today skips the password-change gate, so the
-    test of a user the gate refuses needs one that applies it. It is added
-    to this test's own application only, so it never leaks into another
-    test.
+    No route that exists today applies the password-change gate: the three
+    that need a signed-in user ask for ``CurrentUserAllowingPasswordChange``.
+    The test of a user the gate refuses therefore needs a route of its own
+    that applies it. The route is added to this test's own application
+    only, so it never leaks into another test.
 
     Args:
         app: The application built for this test.
     """
 
     def gated(user: CurrentUser) -> dict[str, str]:
-        """Return the caller's ID, proving the route ran for that user."""
+        """Return the caller's ID, proving the route ran for that user.
+
+        Args:
+            user: The signed-in user, past the password-change gate.
+
+        Returns:
+            The user's ID as text, under ``user_id``.
+        """
         return {"user_id": str(user.id)}
 
     app.add_api_route(GATED_URL, gated, methods=["GET"])
@@ -61,6 +116,10 @@ def gated_route(app: FastAPI) -> None:
 
 def _auth_header(user: User) -> dict[str, str]:
     """Build an Authorization header with a fresh access token for the user.
+
+    The token is signed here as sign-in signs one, with
+    ``create_access_token``, so the tests need neither a password nor a
+    sign-in request.
 
     Args:
         user: The saved user the token should name.
@@ -74,11 +133,13 @@ def _auth_header(user: User) -> dict[str, str]:
 def _request_log_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
     """Return the lines the request middleware logged during the test.
 
-    Only records from ``app.core.logging`` count: the test client logs every
-    request too, with its full URL, so its lines must never be mistaken for
-    the application's. Tests make the request inside
+    Only records from ``app.core.logging`` count. httpx2, the HTTP client
+    ``TestClient`` is built on, logs every request at INFO with its full
+    URL, query string included, so when ``LOG_LEVEL`` lets INFO through,
+    its records are captured too and must never be mistaken for the
+    application's. Tests make the request inside
     ``caplog.at_level(logging.INFO, logger="app.core.logging")``, so the
-    lines are recorded even when ``LOG_LEVEL`` is set higher.
+    middleware's lines are recorded even when ``LOG_LEVEL`` is set higher.
 
     Args:
         caplog: pytest's log capture for the running test.
@@ -144,13 +205,15 @@ def test_a_valid_uuid_is_reused_in_its_normalized_form(header_value: str, expect
     ],
 )
 def test_a_missing_or_invalid_header_gets_a_generated_id(header_value: str | None) -> None:
-    """Anything that is not a valid UUID is replaced by a freshly generated one.
+    """A missing header, or one that isn't a valid UUID, gets a generated ID instead.
 
-    Covers a missing header, an empty value, one containing a line break, an
-    oversized one, and a malformed string. The value reaches the logs, so a
-    line break could otherwise forge a second log entry and a huge value
-    would bloat every line. Parsing the result checks that the replacement
-    is itself a real UUID, not merely different from what was sent.
+    Covers a missing header, an empty value, one containing a line break,
+    an oversized one, and a malformed string. The value reaches the logs,
+    so a line break could otherwise forge a second log entry and a huge
+    value would bloat every line. Parsing the result checks that the
+    replacement is a UUID, not the text that was sent; it can't tell a new
+    ID from one fixed in advance, or the normalized form from another
+    spelling.
     """
     resolved = _resolve_request_id(header_value)
     assert uuid.UUID(resolved)
@@ -202,12 +265,15 @@ def test_request_log_line_escapes_the_path(
 ) -> None:
     """The path is logged percent-encoded, so a client can't write raw control characters.
 
-    The server decodes the path before the application sees it, so ``%1B``
-    arrives as a real escape character, which can rewrite the screen of
-    whoever reads the log in a terminal, and ``%20`` as a space, which can
-    fake a ``key=value`` field of its own. Starlette already drops line
-    breaks and tabs from the path. Each line must stay printable, with the
-    path in its encoded form.
+    The server decodes the path before the application sees it, and so does
+    the test client, so ``%1B`` arrives as a real escape character, which
+    can rewrite the screen of whoever reads the log in a terminal, and
+    ``%20`` as a space, which can fake a ``key=value`` field of its own.
+    Tabs, carriage returns, and line feeds never reach the line: Starlette
+    parses ``request.url`` with Python's ``urlsplit``, which removes them,
+    so the cases are control characters it keeps. No route has these
+    paths, so each request answers 404, which is logged like any other.
+    Each line must stay printable, with the path in its encoded form.
     """
     with caplog.at_level(logging.INFO, logger="app.core.logging"):
         response = client.get(requested_path)
@@ -229,7 +295,8 @@ def test_request_log_line_names_the_signed_in_user(
 
     Plan §12 asks for the user ID, so a problem someone reports can be
     traced to the requests they made. ``/auth/me`` is the plainest route
-    that needs a signed-in user.
+    that needs a signed-in user, and it lets this one through although
+    their password change is pending.
     """
     with caplog.at_level(logging.INFO, logger="app.core.logging"):
         response = client.get(ME_URL, headers=_auth_header(user))
@@ -248,6 +315,9 @@ def test_request_log_line_has_no_user_for_a_rejected_token(
     """A request whose access token is refused is logged with no user ID.
 
     The 401 means nobody was signed in, so the line must not name anyone.
+    The authentication dependency stores the ID only once the auth service
+    has accepted both the token and the account, and here the token can't
+    even be decoded.
     """
     with caplog.at_level(logging.INFO, logger="app.core.logging"):
         response = client.get(ME_URL, headers={"Authorization": "Bearer not-a-token"})
@@ -270,7 +340,9 @@ def test_request_log_line_names_a_user_the_password_change_gate_refuses(
 
     The token and the account are checked before the password-change gate,
     so the caller is known even though the route turns them away, and the
-    log shows who was refused.
+    log shows who was refused. The test sets ``must_change_password``
+    itself, although every new account starts with it, so the condition it
+    depends on is written in the test.
     """
     user.must_change_password = True
     db_session.flush()

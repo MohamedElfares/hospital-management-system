@@ -2,6 +2,9 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 
+# Parses a Set-Cookie header, so an attribute such as Max-Age is compared whole.
+from http.cookies import SimpleCookie
+
 import jwt
 import pytest
 from factories import make_user
@@ -11,6 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser
+
+# The module whose get_settings set_refresh_cookie reads, so a test can replace it there.
+from app.core import security
 from app.core.config import get_settings
 from app.core.errors import ErrorCode
 from app.core.security import REFRESH_COOKIE_NAME
@@ -191,26 +197,36 @@ def test_login_returns_a_bearer_access_token(user: User, client: TestClient) -> 
 def test_login_sets_the_refresh_cookie_with_its_security_flags(
     user: User,
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sign-in sets the refresh cookie with every security flag.
 
     The flags are read from the raw ``Set-Cookie`` header, because the
-    client's cookie jar keeps only names and values. ``Max-Age`` comes from
-    the settings, and ``Secure`` is absent because tests don't run in
-    production; ``test_security.py`` covers the production case.
+    client's cookie jar keeps only names and values. ``get_settings`` is
+    replaced where ``set_refresh_cookie`` looks it up, with a copy whose
+    ``REFRESH_TOKEN_EXPIRE_DAYS`` is 3, a value no setting has by default,
+    so ``Max-Age`` must be 259,200 seconds, whatever the environment
+    configures. It is read from the parsed header, because text such as
+    ``max-age=259200`` is also found in a header that says 2592000.
+    ``Secure`` is absent because tests don't run in production;
+    ``test_security.py`` covers the production case.
     """
+    three_day_settings = get_settings().model_copy(update={"refresh_token_expire_days": 3})
+    monkeypatch.setattr(security, "get_settings", lambda: three_day_settings)
+
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
+    assert response.status_code == 200
+
     set_cookie = response.headers["set-cookie"].lower()
+    parsed_cookie = SimpleCookie()
+    parsed_cookie.load(response.headers["set-cookie"])
 
     assert f"{REFRESH_COOKIE_NAME}=" in set_cookie
     assert "httponly" in set_cookie
     assert "samesite=strict" in set_cookie
     assert "path=/api/v1/auth" in set_cookie
-
-    expected_max_age = get_settings().refresh_token_expire_days * 24 * 60 * 60
-
-    assert f"max-age={expected_max_age}" in set_cookie
+    assert parsed_cookie[REFRESH_COOKIE_NAME]["max-age"] == "259200"
     assert "secure" not in set_cookie
 
 

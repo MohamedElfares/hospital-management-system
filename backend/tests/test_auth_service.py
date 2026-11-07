@@ -30,7 +30,6 @@ NEW_PASSWORD = "New-Password-123"
 INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
 PASSWORD_CHANGE_REQUIRED = "You must change your password before continuing."
-REFRESH_TOKEN_EXPIRE_DAYS = get_settings().refresh_token_expire_days
 
 # Every way a sign-in can fail. The only saved user is test@example.com with
 # PASSWORD, so ghost@example.com is truly unknown and the inactive-user case
@@ -126,6 +125,25 @@ def lookup_calls(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
 
     monkeypatch.setattr(service, "get_user_by_id", spy)
     return calls
+
+
+@pytest.fixture
+def three_day_refresh_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the auth service give each new refresh token three days to live.
+
+    ``get_settings`` is replaced where the auth service looks it up, with a
+    copy of the settings whose ``REFRESH_TOKEN_EXPIRE_DAYS`` is 3, a value
+    no setting has by default. A test that expects three days then fails if
+    the service writes a lifetime into the code or reads another setting,
+    whatever the environment configures. The access token is untouched,
+    because ``create_access_token`` reads the settings in
+    ``app.core.security``.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+    """
+    three_day_settings = get_settings().model_copy(update={"refresh_token_expire_days": 3})
+    monkeypatch.setattr(service, "get_settings", lambda: three_day_settings)
 
 
 def _save_refresh_token(db_session: Session, user: User, **overrides: object) -> str:
@@ -324,18 +342,20 @@ def test_the_repr_of_issued_tokens_shows_neither_token() -> None:
     assert issued_tokens.refresh_token not in shown
 
 
+@pytest.mark.usefixtures("three_day_refresh_tokens")
 def test_login_sets_the_refresh_token_to_expire_after_the_configured_days(
     db_session: Session,
     user: User,
 ) -> None:
     """The refresh token expires the configured number of days after sign-in.
 
-    The lifetime comes from the settings, so the test holds whatever value
-    the environment configures.
+    The service's settings say three days here, so a lifetime written into
+    the code, or read from another setting, fails, whatever the environment
+    configures.
     """
-    before = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    before = datetime.now(UTC) + timedelta(days=3)
     service.login(db_session, user.email, PASSWORD)
-    after = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    after = datetime.now(UTC) + timedelta(days=3)
 
     token = db_session.scalar(select(RefreshToken).where(RefreshToken.user_id == user.id))
 
@@ -1075,17 +1095,19 @@ def test_change_password_revokes_every_existing_session(db_session: Session, use
     assert second_token_row.revoked_at is not None
 
 
+@pytest.mark.usefixtures("three_day_refresh_tokens")
 def test_change_password_returns_a_working_session(db_session: Session, user: User) -> None:
     """The change returns a new session for the device that made it.
 
     The new refresh token belongs to the user, escapes the revocation of
     the old tokens, and expires the configured number of days after the
-    change: a fresh window, checked from both sides so a longer lifetime
-    fails too. The access token names the user.
+    change, three here: a fresh window, checked from both sides so a
+    longer lifetime fails too, and a lifetime written into the code fails
+    as well. The access token names the user.
     """
-    before = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    before = datetime.now(UTC) + timedelta(days=3)
     issued_tokens = service.change_password(db_session, user, _password_change())
-    after = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    after = datetime.now(UTC) + timedelta(days=3)
 
     token_row = _token_row(db_session, issued_tokens.refresh_token)
 

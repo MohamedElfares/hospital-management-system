@@ -358,20 +358,22 @@ def test_an_access_token_round_trips_to_the_user_id() -> None:
     assert decode_access_token(token) == user_id
 
 
-def test_an_access_token_holds_only_sub_iat_and_exp() -> None:
+def test_an_access_token_holds_only_sub_iat_and_exp(monkeypatch: pytest.MonkeyPatch) -> None:
     """A token carries exactly ``sub``, ``iat``, and ``exp``, with correct values.
 
     ``sub`` is the user's ID, ``iat`` is the time of creation, and ``exp``
     is one configured lifetime later. No other claim, such as the role or
     the email, may appear: the token can be read by anyone who holds it, and
-    those values would go stale. The lifetime is read from the settings, so
-    the test passes whatever ``ACCESS_TOKEN_EXPIRE_MINUTES`` the
-    environment sets; for the same reason, it can't tell the setting from
-    a lifetime written into the code that happens to equal it.
+    those values would go stale. ``get_settings`` is replaced where
+    ``create_access_token`` looks it up, with a copy whose
+    ``ACCESS_TOKEN_EXPIRE_MINUTES`` is 9, a value no setting has by
+    default, so a lifetime written into the code, or read from another
+    setting such as the refresh token's 7 days, fails here, whatever the
+    environment configures.
     """
-    settings = get_settings()
-    jwt_secret_key = settings.jwt_secret_key.get_secret_value()
-    access_token_expire_minutes = settings.access_token_expire_minutes
+    nine_minute_settings = get_settings().model_copy(update={"access_token_expire_minutes": 9})
+    monkeypatch.setattr(security, "get_settings", lambda: nine_minute_settings)
+    jwt_secret_key = nine_minute_settings.jwt_secret_key.get_secret_value()
 
     user_id = uuid.uuid4()
 
@@ -385,7 +387,7 @@ def test_an_access_token_holds_only_sub_iat_and_exp() -> None:
     assert payload["sub"] == str(user_id)
     assert payload["iat"] >= before
     assert payload["iat"] <= after
-    assert payload["exp"] - payload["iat"] == access_token_expire_minutes * 60
+    assert payload["exp"] - payload["iat"] == 9 * 60
 
 
 def test_an_expired_access_token_is_rejected() -> None:

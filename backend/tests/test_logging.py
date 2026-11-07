@@ -4,8 +4,10 @@
 is reused in one normalized form, and anything else is replaced by a new
 one. ``request_context_middleware`` writes one ``key=value`` line per
 request with the fields plan §12 asks for: the request ID, the signed-in
-user's ID, the method, the path, the status, and the duration. The unit
-tests call ``_resolve_request_id`` directly. The line tests send requests
+user's ID, the method, the path, the status, and the duration.
+``configure_logging`` sets the root logger's level from ``LOG_LEVEL`` and
+the format every line takes. The unit tests call ``_resolve_request_id``
+and ``configure_logging`` directly. The line tests send requests
 through the whole application and read the middleware's records with
 ``caplog``: they check what each field holds, what must stay out of the
 line (the query string, raw control characters, and a user from another
@@ -19,6 +21,9 @@ import logging
 # Matches the whole request log line against the plan's fields, and each generated ID
 # against the one form every request ID takes.
 import re
+
+# Return type of the root_logger fixture, which yields the logger and then restores it.
+from collections.abc import Iterator
 
 # Test framework: fixtures, parametrize, the usefixtures mark, and caplog's type.
 import pytest
@@ -40,6 +45,9 @@ from app.api.deps import CurrentUser
 
 # Chooses each request's ID; the unit tests call it directly.
 from app.core.logging import _resolve_request_id
+
+# Sets the root logger's level and line format; one test calls it directly.
+from app.core.logging import configure_logging
 
 # Signs an access token for the user, as sign-in does, so no test needs a password.
 from app.core.security import create_access_token
@@ -115,6 +123,31 @@ def gated_route(app: FastAPI) -> None:
         return {"user_id": str(user.id)}
 
     app.add_api_route(GATED_URL, gated, methods=["GET"])
+
+
+@pytest.fixture
+def root_logger() -> Iterator[logging.Logger]:
+    """Hand the test the root logger, and put its handlers and level back afterwards.
+
+    ``configure_logging`` removes every handler on the root logger,
+    pytest's among them, and sets the logger's level. A test that calls it
+    directly therefore restores both when it ends; otherwise the tests that
+    run after it would log through its handler, at its level.
+
+    Yields:
+        The root logger, with the handlers and level it had before the test.
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+
+    yield root
+
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    for handler in saved_handlers:
+        root.addHandler(handler)
+    root.setLevel(saved_level)
 
 
 def _auth_header(user: User) -> dict[str, str]:
@@ -226,6 +259,40 @@ def test_a_missing_or_invalid_header_gets_a_new_id_every_time(header_value: str 
     assert re.fullmatch(REQUEST_ID_PATTERN, first_request_id)
     assert re.fullmatch(REQUEST_ID_PATTERN, second_request_id)
     assert first_request_id != second_request_id
+
+
+def test_configuring_logging_twice_keeps_the_second_level_and_one_handler(
+    root_logger: logging.Logger,
+) -> None:
+    """A second call replaces the first one's level and handler, rather than being ignored.
+
+    ``LOG_LEVEL`` reaches the application only through
+    ``configure_logging``, which ``create_app`` calls each time it builds an
+    application, so the level of every call must take effect, through one
+    handler that puts the time, the level, and the logger's name in front
+    of each message. ``logging.basicConfig`` does nothing once the root
+    logger has a handler, which is why the function passes ``force=True``:
+    without it, neither call here would change anything, because pytest has
+    already put its own handlers on the root logger. Going from ERROR down
+    to DEBUG fails a call that keeps an earlier level, and one that ignores
+    its argument.
+    """
+    handlers_before = root_logger.handlers[:]
+
+    configure_logging("ERROR")
+    configure_logging("DEBUG")
+
+    added_handlers = [handler for handler in root_logger.handlers if handler not in handlers_before]
+    record = logging.makeLogRecord(
+        {"name": "app.example", "levelname": "WARNING", "msg": "Example message."}
+    )
+
+    assert root_logger.level == logging.DEBUG
+    assert len(added_handlers) == 1
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} WARNING app\.example Example message\.",
+        added_handlers[0].format(record),
+    )
 
 
 def test_request_log_line_has_the_plan_fields_and_no_query_string(

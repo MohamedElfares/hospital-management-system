@@ -215,7 +215,15 @@ closes when the last stage is done, so an interrupted run is obvious.
   unseen. Proposed line for `CLAUDE.md` under "Backend tests", yours to
   accept or reject: "Every log line that plan §12 requires or a docstring
   promises gets a test that captures it with `caplog` and checks its
-  level, its request ID, and what it must leave out."
+  level, its request ID, and what it must leave out." Accepted on
+  2026-11-08 (you said "yes" to both open proposals) and added to
+  `CLAUDE.md` under "Backend tests", word for word. Of the five log
+  lines in `app/`, three carry the request ID and have such a test: the
+  request line, the readiness failure, and the 500 handler. Two carry
+  none: the token-reuse alarm in `auth/service.py` and the unknown-hash
+  warning in `security.py`. Stages 18 to 20, which reach the reuse
+  tests, and the next `/review new`, which takes `security.py` again,
+  should log them.
 - **Stage 12b's findings fixed (2026-11-06):** R-045 (`5791b30`), R-046
   (`44d5731`), R-047 (`c89c3e9`), and R-048 (`33c698f`), written at your
   request ("fix the open in findings with recommendations and best

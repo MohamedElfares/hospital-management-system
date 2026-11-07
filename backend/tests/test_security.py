@@ -154,13 +154,33 @@ def test_a_hash_is_argon2_and_not_the_password() -> None:
 
     The ``$argon2id$`` prefix names the algorithm, which pwdlib reads back
     when it verifies, so a hasher switched to another algorithm, such as
-    bcrypt, fails here. The settings and the salt follow the prefix; this
-    test doesn't read them.
+    bcrypt, fails here. The settings and the salt follow the prefix, and
+    ``test_a_hash_uses_the_documented_argon2_settings`` reads them.
     """
     password_hash: str = hash_password(PASSWORD)
 
     assert password_hash.startswith("$argon2id$")
     assert password_hash != PASSWORD
+
+
+def test_a_hash_uses_the_documented_argon2_settings() -> None:
+    """A hash records the Argon2 settings ``hash_password`` documents.
+
+    The part before the salt names the variant, the version, and the
+    costs: ``m=65536`` KiB of memory (64 MiB), ``t=3`` passes over it, and
+    ``p=4`` lanes, the second option RFC 9106 recommends, which pwdlib's
+    ``recommended()`` gives today. Verifying reads the settings back from
+    each hash, so they decide what every guess costs someone who has stolen
+    the hashes. No other test reads them: with far cheaper settings the
+    rest of the suite passes, and runs faster. The 97 characters are that
+    part, a 16-byte salt, and a 32-byte digest, each encoded. A deliberate
+    change updates this test and the docstring together, and a pwdlib
+    release that changed its defaults fails here first.
+    """
+    password_hash = hash_password(PASSWORD)
+
+    assert password_hash.rsplit("$", 2)[0] == "$argon2id$v=19$m=65536,t=3,p=4"
+    assert len(password_hash) == 97
 
 
 def test_the_same_password_gets_a_different_hash_each_time() -> None:

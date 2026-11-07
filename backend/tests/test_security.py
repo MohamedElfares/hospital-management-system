@@ -99,6 +99,12 @@ JWT_ALGORITHM = "HS256"
 # needn't meet the password rule that the request schemas enforce.
 PASSWORD: str = "Password@1331"
 
+# One password in Unicode's two forms, written with escapes so the difference shows:
+# ä and ö as single characters (composed, NFC), and as a and o, each followed by a
+# combining diaeresis (decomposed, NFD).
+COMPOSED_PASSWORD = "Pässwörd123!"
+DECOMPOSED_PASSWORD = "Pässwörd123!"
+
 # The attributes the header that deletes the refresh cookie must share with the
 # header that set it: a browser matches the path, and clear_refresh_cookie keeps
 # the flags. The value and Max-Age differ on purpose.
@@ -250,14 +256,18 @@ def test_the_right_password_verifies() -> None:
         pytest.param("password@1331", "Password123", id="totally wrong"),
         pytest.param("S3cret", "s3cret", id="different case"),
         pytest.param("s3cret ", "s3cret", id="trailing space"),
+        pytest.param("ﬁle-cabinet-1", "file-cabinet-1", id="ligature"),
     ],
 )
 def test_a_wrong_password_is_rejected(submitted: str, stored: str) -> None:
     """A submitted password that differs from the stored one fails to verify.
 
-    Passwords are compared exactly, so even a small difference, such as a
-    letter's case or a trailing space, must be rejected rather than
-    normalized away.
+    Apart from the Unicode form, which
+    ``test_a_password_verifies_in_either_unicode_form`` covers, passwords
+    are compared exactly, so even a small difference, such as a letter's
+    case, a trailing space, or the fi ligature (U+FB01) where the stored
+    password has the two letters, must be rejected rather than normalized
+    away. NFC leaves the ligature as it is; NFKC would fold it into "fi".
     """
     password_hash: str = hash_password(stored)
 
@@ -268,12 +278,37 @@ def test_a_unicode_password_round_trips() -> None:
     """A password with non-ASCII characters hashes and then verifies.
 
     The password is typed in one Unicode form, with each accented letter as
-    a single character, and verified in that same form.
+    a single character, and verified in that same form;
+    ``test_a_password_verifies_in_either_unicode_form`` covers the other
+    form.
     """
     unicode_password = "Pässwörd123!"
     password_hash = hash_password(unicode_password)
 
     assert verify_password(unicode_password, password_hash) is True
+
+
+@pytest.mark.parametrize(
+    ("set_password", "typed_password"),
+    [
+        pytest.param(COMPOSED_PASSWORD, DECOMPOSED_PASSWORD, id="set-composed-typed-decomposed"),
+        pytest.param(DECOMPOSED_PASSWORD, COMPOSED_PASSWORD, id="set-decomposed-typed-composed"),
+    ],
+)
+def test_a_password_verifies_in_either_unicode_form(set_password: str, typed_password: str) -> None:
+    """A password matches its own hash when typed in the other Unicode form.
+
+    The two forms look the same on screen but are different strings, 12
+    and 14 code points long. ``hash_password`` and ``verify_password`` both
+    put a password in NFC, as NIST SP 800-63B-4 recommends, so the two
+    match in either order; each case fails if one of the two functions
+    skips that step.
+    """
+    assert set_password != typed_password
+
+    password_hash = hash_password(set_password)
+
+    assert verify_password(typed_password, password_hash) is True
 
 
 def test_a_very_long_password_round_trips() -> None:

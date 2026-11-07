@@ -121,9 +121,10 @@ class UserCreate(BaseModel):
     stripped of surrounding spaces, and a name of only spaces, or one that
     holds a control character such as NUL, is rejected before it reaches
     the database. The password is kept exactly as typed, spaces included,
-    because changing it would lock the user out. That is why the model has
-    no ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
-    password too.
+    because changing it would lock the user out; hashing only puts it in
+    Unicode NFC, which every password check does as well. That is why the
+    model has no ``str_strip_whitespace`` setting: it would strip the
+    ``SecretStr`` password too.
 
     The password follows the shared ``Password`` rule of 15 to 128
     characters with no composition rules (NIST SP 800-63B-4), the same rule

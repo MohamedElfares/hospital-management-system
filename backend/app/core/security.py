@@ -31,6 +31,9 @@ import logging
 # Cryptographically secure random values; refresh tokens and the dummy password.
 import secrets
 
+# Unicode normalization; every password is put in NFC before it is hashed or checked.
+import unicodedata
+
 # UUID type of user IDs; the token's subject is parsed back into one.
 import uuid
 
@@ -80,6 +83,31 @@ _JWT_ALGORITHM = "HS256"
 REFRESH_COOKIE_NAME = "refresh_token"
 
 
+def _normalize_password(password: str) -> str:
+    """Put a password in Unicode's NFC form before it is hashed or checked.
+
+    The same text can reach the API in two Unicode forms: an accented
+    letter as one character, its composed form, or as a base letter and a
+    combining mark, its decomposed form. They look the same on screen but
+    are different strings, so without this step a password set from one
+    device could fail from another. NIST SP 800-63B-4 warns that some
+    endpoints represent some characters differently, and recommends NFC
+    before hashing (§3.1.1.2). NFC composes every such pair. It leaves
+    compatibility characters, such as the fi ligature (U+FB01) and
+    full-width letters, as they are, because NIST asks for NFC rather than
+    NFKC, which would fold them into other characters. Text already in NFC,
+    every ASCII password included, comes back unchanged, so a hash made
+    before this step was added still verifies.
+
+    Args:
+        password: The password as typed.
+
+    Returns:
+        The same password in NFC.
+    """
+    return unicodedata.normalize("NFC", password)
+
+
 def hash_password(password: str) -> str:
     """Hash a password for storage in ``users.password_hash``.
 
@@ -88,8 +116,10 @@ def hash_password(password: str) -> str:
     algorithm, the settings, and a new random salt, so hashing the same
     password twice gives two different strings that both verify. Hashing
     takes tens of milliseconds on purpose, which makes guessing slow for an
-    attacker who has stolen the hashes. The password is used as given:
-    rules such as a minimum length belong in the request schema.
+    attacker who has stolen the hashes. The password is put in Unicode NFC
+    first, as ``verify_password`` puts every password it checks, and is
+    otherwise used as given: rules such as a minimum length belong in the
+    request schema.
 
     Args:
         password: The plain password. Never logged or stored.
@@ -98,7 +128,7 @@ def hash_password(password: str) -> str:
         The encoded hash: 97 characters with the current settings, well
         within the 255 that ``users.password_hash`` allows.
     """
-    return _password_hasher.hash(password)
+    return _password_hasher.hash(_normalize_password(password))
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -107,7 +137,9 @@ def verify_password(password: str, password_hash: str) -> bool:
     pwdlib reads the algorithm, settings, and salt from ``password_hash``,
     hashes ``password`` the same way, and compares the results in constant
     time, so the comparison doesn't reveal how much of the hash matched.
-    Passwords are compared exactly: case and surrounding spaces matter.
+    The password is put in Unicode NFC first, as every stored one was, so
+    the same text typed in another Unicode form matches. Otherwise
+    passwords are compared exactly: case and surrounding spaces matter.
 
     A stored value in a format pwdlib doesn't know, such as a bcrypt hash,
     an empty string, or other text, counts as a failed match instead of an
@@ -128,7 +160,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         the stored value isn't a usable hash.
     """
     try:
-        return _password_hasher.verify(password, password_hash)
+        return _password_hasher.verify(_normalize_password(password), password_hash)
     except UnknownHashError:
         logger.warning("Password hash uses an unknown or unsupported format")
         return False

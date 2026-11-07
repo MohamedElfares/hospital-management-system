@@ -246,12 +246,28 @@ def test_a_very_long_password_round_trips() -> None:
     belongs to the request schemas, and Argon2 takes a password of any
     practical length, where bcrypt uses only its first 72 bytes. The round
     trip shows that a long password is accepted, not that every character
-    counts: a hasher that cut it short would pass too.
+    counts, since a hasher that cut it short would pass too;
+    ``test_every_character_of_a_long_password_counts`` checks that.
     """
     long_password = "abc" * 1000
     password_hash = hash_password(long_password)
 
     assert verify_password(long_password, password_hash) is True
+
+
+def test_every_character_of_a_long_password_counts() -> None:
+    """A 128-character password fails when only its last character differs.
+
+    128 is the longest password the request schemas accept, so it is the
+    longest that can reach ``hash_password``. NIST SP 800-63B-4 requires a
+    verifier to check the entire password, never a truncated one
+    (§3.1.1.2). A hasher that kept only the first 72 characters, as bcrypt
+    keeps only the first 72 bytes, would let the last 56 count for nothing,
+    and would still pass every round trip.
+    """
+    password_hash = hash_password("a" * 127 + "b")
+
+    assert verify_password("a" * 128, password_hash) is False
 
 
 @pytest.mark.parametrize(

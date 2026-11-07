@@ -113,10 +113,11 @@ def verify_password(password: str, password_hash: str) -> bool:
     an empty string, or other text, counts as a failed match instead of an
     error. Sign-in then fails with the usual 401 rather than a 500, and a
     warning is logged so the bad row gets noticed. The warning is a fixed
-    message, and the exception isn't logged, because pwdlib puts the stored
-    value in it. A damaged value that still looks like an Argon2 hash is
-    different: pwdlib reports it as an ordinary mismatch, so it fails
-    without a warning.
+    message, and the exception isn't logged: pwdlib's message is generic,
+    and the stored value travels on the exception as its ``hash``
+    attribute, which must stay out of the log. A damaged value that still
+    looks like an Argon2 hash is different: pwdlib reports it as an
+    ordinary mismatch, so it fails without a warning.
 
     Args:
         password: The password the user submitted.

@@ -250,6 +250,22 @@ closes when the last stage is done, so an interrupted run is obvious.
   the reasoning stage 12c corrected in `tests/test_logging.py`:
   `get_test_db` commits the setup before each request, and the rollback
   removes it either way.
+- **Stage 12c's findings fixed (2026-11-08):** R-049 (`1a1560c`), R-050
+  (`73f3165`), and R-051 (`72244c0`), written at your request ("fix the
+  open in findings with recommendations and best practices"), one commit
+  each, in ID order, since none depends on another. The code under test
+  didn't change, so each new or changed test was run instead against the
+  broken copies of `logging.py` that had passed the whole suite, and each
+  copy failed it. R-049's test now pins both of `_resolve_request_id`'s
+  branches that generate an ID, and R-050's also checks the line format,
+  one step beyond its recommendation. The fixes change
+  `tests/test_logging.py` after stage 12c reviewed it at `0494955`, so the
+  next `/review new` takes it again. Each commit passes Ruff and the suite
+  on its own, run like CI in a clean worktree: 351, 352, then 352 tests,
+  with coverage at 99.86%, and with R-050's fixture in place the suite
+  also passes reversed, shuffled twice, and at `LOG_LEVEL=INFO`. The
+  `CLAUDE.md` line proposed in stage 12b still waits for your answer. No
+  finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

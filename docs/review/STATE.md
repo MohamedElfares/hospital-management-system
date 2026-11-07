@@ -47,3 +47,4 @@ with no row has never been reviewed and is always in scope.
 | `backend/tests/test_health.py` | `d8362d5` | 2026-11-06 | 1 |
 | `backend/tests/test_logging.py` | `0494955` | 2026-11-08 | 1 |
 | `backend/tests/test_package_layout.py` | `bf31a33` | 2026-11-06 | 1 |
+| `backend/tests/test_security.py` | `cc8e73f` | 2026-11-08 | 1 |

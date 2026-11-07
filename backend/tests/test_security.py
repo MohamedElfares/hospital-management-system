@@ -9,8 +9,9 @@ to reject as a wrong password. ``_make_token`` builds access tokens with
 PyJWT that are valid except for the one thing a rejection test changes,
 so each rejection comes from the check the test names. Refresh tokens
 are checked for their length, their characters, and their SHA-256 hash,
-and the cookie helpers for the header each one writes, with the
-``Secure`` flag checked in production through a copy of the settings.
+and the cookie helpers for the header each one writes, parsed so that
+each attribute is compared whole, and for the two headers agreeing, with
+the ``Secure`` flag checked in production through a copy of the settings.
 What the API does with these helpers, such as the 401 a bad token gets
 and the cookie a sign-in sets, is tested in ``tests/test_auth_api.py``.
 """
@@ -32,6 +33,12 @@ from datetime import datetime
 
 # Token lifetimes: the configured lifetime after iat, or a minute in the past.
 from datetime import timedelta
+
+# Type of one parsed cookie, with its value and attributes.
+from http.cookies import Morsel
+
+# Parses a Set-Cookie header the way a cookie jar does, so attributes are compared whole.
+from http.cookies import SimpleCookie
 
 # Type hint for claim values, which mix strings and datetimes.
 from typing import Any
@@ -92,6 +99,11 @@ JWT_ALGORITHM = "HS256"
 # needn't meet the password rule that the request schemas enforce.
 PASSWORD: str = "Password@1331"
 
+# The attributes the header that deletes the refresh cookie must share with the
+# header that set it: a browser matches the path, and clear_refresh_cookie keeps
+# the flags. The value and Max-Age differ on purpose.
+SHARED_COOKIE_ATTRIBUTES = ("path", "domain", "httponly", "samesite", "secure")
+
 # Shaped like a bcrypt hash ($2a$, cost 12), the kind of value an account hashed
 # before Argon2 would hold. pwdlib's recommended hasher identifies only Argon2.
 OLD_BCRYPT_HASH = "$2a$12$xmwWaOMD74tVfixmTpxpWe7oZiybi9crvSu0lbrbe9NXCx8CS1nq"
@@ -147,6 +159,31 @@ def _make_token(
         signing_key = settings.jwt_secret_key.get_secret_value()
 
     return jwt.encode(claims, signing_key, algorithm=algorithm)
+
+
+def _refresh_cookie(response: Response) -> Morsel[str]:
+    """Parse the refresh cookie out of a response's ``Set-Cookie`` header.
+
+    ``SimpleCookie`` reads the header the way a cookie jar does, so a test
+    compares each attribute whole. A check for the text
+    ``path=/api/v1/auth`` anywhere in the header would also pass
+    ``/api/v1/auth/``, which a browser treats as another cookie's path.
+
+    Args:
+        response: A response that one of the cookie helpers has written to.
+
+    Returns:
+        The ``refresh_token`` cookie. Its ``value`` is the token, and each
+        attribute is read by its lowercase name, such as
+        ``cookie["path"]``; ``httponly`` and ``secure`` are True when set
+        and an empty string when not.
+
+    Raises:
+        KeyError: If the header sets no ``refresh_token`` cookie.
+    """
+    cookie = SimpleCookie()
+    cookie.load(response.headers["set-cookie"])
+    return cookie["refresh_token"]
 
 
 def test_a_hash_is_argon2_and_not_the_password() -> None:
@@ -684,26 +721,65 @@ def test_the_refresh_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPa
 
 
 def test_clear_refresh_cookie_expires_the_refresh_cookie() -> None:
-    """Clearing sends the refresh cookie back empty, with ``Max-Age=0``.
+    """Clearing sends the refresh cookie back empty, with ``Max-Age=0``, on its exact path.
 
     A browser replaces a cookie only with one of the same name, domain, and
-    path, so the deleting header must name ``refresh_token`` and
-    ``Path=/api/v1/auth``, as ``set_refresh_cookie`` does, and ``Max-Age=0``
-    then deletes it. ``HttpOnly`` and ``SameSite=Strict`` are checked too:
-    deleting doesn't need them, but ``clear_refresh_cookie`` keeps the
-    cookie's flags, so the deleting header follows the same rules. Each
-    check looks for its text anywhere in the header, so a longer path, such
-    as ``/api/v1/auth/``, would also pass the path check.
+    path, so the deleting header must name ``refresh_token`` and exactly
+    ``/api/v1/auth``, as ``set_refresh_cookie`` does, and ``Max-Age=0``
+    then deletes it. A longer path, such as ``/api/v1/auth/``, would name
+    another cookie and leave the real one in the browser, so the header is
+    parsed and each attribute compared whole. ``HttpOnly`` and
+    ``SameSite=Strict`` are checked too: deleting doesn't need them, but
+    ``clear_refresh_cookie`` keeps the cookie's flags, so the deleting
+    header follows the same rules.
     """
     response = Response()
     clear_refresh_cookie(response)
-    cleared_cookie_header = response.headers["set-cookie"].lower()
+    cleared_cookie = _refresh_cookie(response)
 
-    assert "httponly" in cleared_cookie_header
-    assert "max-age=0" in cleared_cookie_header
-    assert "samesite=strict" in cleared_cookie_header
-    assert "path=/api/v1/auth" in cleared_cookie_header
-    assert cleared_cookie_header.startswith("refresh_token=")
+    assert cleared_cookie.value == ""
+    assert cleared_cookie["max-age"] == "0"
+    assert cleared_cookie["path"] == "/api/v1/auth"
+    assert cleared_cookie["httponly"] is True
+    assert cleared_cookie["samesite"] == "strict"
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        pytest.param("test", id="outside-production"),
+        pytest.param("production", id="in-production"),
+    ],
+)
+def test_clearing_the_refresh_cookie_repeats_its_path_and_flags(
+    environment: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deleting header carries the path and flags of the cookie it deletes.
+
+    ``clear_refresh_cookie`` promises that its attributes match
+    ``set_refresh_cookie``'s exactly: with another path, the browser takes
+    the deleting header for a different cookie and keeps the real one, and
+    the flags match by choice. The two headers are compared with each other
+    rather than with fixed values, so a change to either function alone
+    fails, in both branches of ``Secure``;
+    ``test_clear_refresh_cookie_expires_the_refresh_cookie`` pins the
+    values. ``get_settings`` is replaced with a copy for each environment,
+    as in the production tests.
+    """
+    environment_settings = get_settings().model_copy(update={"environment": environment})
+    monkeypatch.setattr(security, "get_settings", lambda: environment_settings)
+    set_response = Response()
+    set_refresh_cookie(set_response, "token")
+    clear_response = Response()
+    clear_refresh_cookie(clear_response)
+
+    set_cookie = _refresh_cookie(set_response)
+    cleared_cookie = _refresh_cookie(clear_response)
+
+    assert {name: cleared_cookie[name] for name in SHARED_COOKIE_ATTRIBUTES} == {
+        name: set_cookie[name] for name in SHARED_COOKIE_ATTRIBUTES
+    }
 
 
 def test_the_cleared_cookie_is_secure_in_production(monkeypatch: pytest.MonkeyPatch) -> None:

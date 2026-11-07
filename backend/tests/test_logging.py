@@ -16,11 +16,9 @@ tested in ``tests/test_errors.py``.
 # Log levels, for capturing the middleware's INFO records whatever LOG_LEVEL is.
 import logging
 
-# Matches the whole request log line against the pattern of the plan's fields.
+# Matches the whole request log line against the plan's fields, and each generated ID
+# against the one form every request ID takes.
 import re
-
-# Parses each generated request ID, which raises unless the value is a UUID.
-import uuid
 
 # Test framework: fixtures, parametrize, the usefixtures mark, and caplog's type.
 import pytest
@@ -58,6 +56,11 @@ ME_URL = "/api/v1/auth/me"
 
 # Already in the normalized form, so the line carries it unchanged.
 REQUEST_ID = "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
+
+# The one form every request ID takes, a lowercase UUID with dashes, as _resolve_request_id
+# promises. It is written out rather than built with uuid, so the test doesn't share the
+# logic of the code it checks.
+REQUEST_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 
 @pytest.fixture
@@ -204,19 +207,25 @@ def test_a_valid_uuid_is_reused_in_its_normalized_form(header_value: str, expect
         "not-a-uuid",
     ],
 )
-def test_a_missing_or_invalid_header_gets_a_generated_id(header_value: str | None) -> None:
-    """A missing header, or one that isn't a valid UUID, gets a generated ID instead.
+def test_a_missing_or_invalid_header_gets_a_new_id_every_time(header_value: str | None) -> None:
+    """A missing header, or one that isn't a valid UUID, gets a newly generated ID each time.
 
     Covers a missing header, an empty value, one containing a line break,
     an oversized one, and a malformed string. The value reaches the logs,
     so a line break could otherwise forge a second log entry and a huge
-    value would bloat every line. Parsing the result checks that the
-    replacement is a UUID, not the text that was sent; it can't tell a new
-    ID from one fixed in advance, or the normalized form from another
-    spelling.
+    value would bloat every line. Each value is resolved twice. Both IDs
+    must take the normalized form, so the log spells every ID one way, and
+    they must differ: an ID shared by every request that sent no header, or
+    by every one that sent a malformed one, would match all their log
+    lines, so none could be found. A missing header and an invalid one get
+    their IDs in two separate places, so the cases cover both.
     """
-    resolved = _resolve_request_id(header_value)
-    assert uuid.UUID(resolved)
+    first_request_id = _resolve_request_id(header_value)
+    second_request_id = _resolve_request_id(header_value)
+
+    assert re.fullmatch(REQUEST_ID_PATTERN, first_request_id)
+    assert re.fullmatch(REQUEST_ID_PATTERN, second_request_id)
+    assert first_request_id != second_request_id
 
 
 def test_request_log_line_has_the_plan_fields_and_no_query_string(

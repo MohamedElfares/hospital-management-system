@@ -176,9 +176,9 @@ def test_deleting_a_user_deletes_their_refresh_tokens(user: User, db_session: Se
     db_session.add(second_token)
     db_session.flush()
 
-    remaining = _count_tokens(db_session, user_id)
+    token_count_before = _count_tokens(db_session, user_id)
 
-    assert remaining == 2
+    assert token_count_before == 2
 
     db_session.delete(user)
     db_session.flush()

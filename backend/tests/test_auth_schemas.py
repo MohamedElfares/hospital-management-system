@@ -10,7 +10,7 @@ CURRENT_PASSWORD = "Old.Password123"
 NEW_PASSWORD = "New.Password123"
 
 
-def valid_password_change(**overrides: str) -> dict[str, str]:
+def _valid_values(**overrides: str) -> dict[str, str]:
     """Return valid ``PasswordChange`` input, replacing any given fields.
 
     Both defaults are valid, so each test changes only the field it is
@@ -40,11 +40,11 @@ def test_a_valid_password_change_is_accepted() -> None:
     Each value is read back with ``get_secret_value()``, so a schema that
     stripped, swapped, or rewrote a password fails here.
     """
-    data = valid_password_change()
-    password_change = PasswordChange(**data)
+    values = _valid_values()
+    data = PasswordChange(**values)
 
-    assert password_change.current_password.get_secret_value() == data["current_password"]
-    assert password_change.new_password.get_secret_value() == data["new_password"]
+    assert data.current_password.get_secret_value() == values["current_password"]
+    assert data.new_password.get_secret_value() == values["new_password"]
 
 
 @pytest.mark.parametrize(
@@ -63,10 +63,10 @@ def test_the_new_password_at_the_length_limits_is_accepted(new_password: str) ->
     rule's values are pinned by the ``UserCreate`` tests in
     ``tests/test_user_schemas.py``.
     """
-    data = valid_password_change(new_password=new_password)
-    password_change = PasswordChange(**data)
+    values = _valid_values(new_password=new_password)
+    data = PasswordChange(**values)
 
-    assert password_change.new_password.get_secret_value() == data["new_password"]
+    assert data.new_password.get_secret_value() == values["new_password"]
 
 
 @pytest.mark.parametrize(
@@ -82,10 +82,10 @@ def test_an_invalid_new_password_is_rejected(new_password: str) -> None:
     These are the first invalid lengths on each side, so a limit that is
     off by one in either direction fails one of the two boundary tests.
     """
-    data = valid_password_change(new_password=new_password)
+    values = _valid_values(new_password=new_password)
 
     with pytest.raises(ValidationError) as exc_info:
-        PasswordChange(**data)
+        PasswordChange(**values)
 
     assert any(error["loc"] == ("new_password",) for error in exc_info.value.errors())
 
@@ -97,10 +97,10 @@ def test_a_short_current_password_is_accepted() -> None:
     the rule, so the schema sets no minimum; a wrong one is rejected by
     the service instead.
     """
-    data = valid_password_change(current_password="W")
-    password_change = PasswordChange(**data)
+    values = _valid_values(current_password="W")
+    data = PasswordChange(**values)
 
-    assert password_change.current_password.get_secret_value() == "W"
+    assert data.current_password.get_secret_value() == "W"
 
 
 def test_a_too_long_current_password_is_rejected() -> None:
@@ -110,10 +110,10 @@ def test_a_too_long_current_password_is_rejected() -> None:
     can never be right, and rejecting it here spares the server an Argon2
     check on input of any size.
     """
-    data = valid_password_change(current_password="x" * (PASSWORD_MAX_LENGTH + 1))
+    values = _valid_values(current_password="x" * (PASSWORD_MAX_LENGTH + 1))
 
     with pytest.raises(ValidationError) as exc_info:
-        PasswordChange(**data)
+        PasswordChange(**values)
 
     assert any(error["loc"] == ("current_password",) for error in exc_info.value.errors())
 
@@ -124,13 +124,13 @@ def test_both_passwords_are_hidden_when_printed() -> None:
     The model is what ends up in logs and tracebacks, so ``repr`` and
     ``str`` of the whole model must hide both values.
     """
-    data = valid_password_change()
-    password_change = PasswordChange(**data)
+    values = _valid_values()
+    data = PasswordChange(**values)
 
-    assert NEW_PASSWORD not in str(password_change)
-    assert NEW_PASSWORD not in repr(password_change)
-    assert CURRENT_PASSWORD not in str(password_change)
-    assert CURRENT_PASSWORD not in repr(password_change)
+    assert NEW_PASSWORD not in str(data)
+    assert NEW_PASSWORD not in repr(data)
+    assert CURRENT_PASSWORD not in str(data)
+    assert CURRENT_PASSWORD not in repr(data)
 
 
 def test_the_login_form_shows_no_credentials_when_printed() -> None:

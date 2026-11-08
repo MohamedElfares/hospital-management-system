@@ -2,21 +2,23 @@
 
 Typer's ``CliRunner`` runs the command in this process with the options
 and typed input each test gives it, and collects its exit code and what it
-printed; ``result.output`` holds both streams together, as the screen
-would show them. Every test but the crash test puts
-``contextmanager(get_test_db)`` in place of the module's ``SessionLocal``,
-so the command gets the test's session and ends it as it ends its own:
-what the test set up is committed first, and whatever the command didn't
-commit is rolled back. Without that replacement, the command's first query
-would go to the development database, which the suite refuses.
+printed: ``result.stdout`` and ``result.stderr`` hold one stream each, and
+``result.output`` both together, as the screen would show them. Every
+test but the crash test puts ``contextmanager(get_test_db)`` in place of
+the module's ``SessionLocal``, so the command gets the test's session and
+ends it as it ends its own: what the test set up is committed first, and
+whatever the command didn't commit is rolled back. Without that
+replacement, the command's first query would go to the development
+database, which the suite refuses.
 
-The tests cover a successful run, with the email and name given as options
-or typed at the prompts; a short password and a name holding NUL, each
+The tests cover a successful run, which prints the new Admin's email and
+ID but never the password, with the email and name given as options or
+typed at the prompts; a short password and a name holding NUL, each
 refused by field without showing what was typed, and two passwords that
 don't match, with nothing saved in any of these cases; the refusal while
 an active Admin exists; and a crash, whose traceback must not show the
-typed password. The rules underneath are tested where they
-live: the service's in ``tests/test_user_service.py``, and the schema's in
+typed password. The rules underneath are tested where they live: the
+service's in ``tests/test_user_service.py``, and the schema's in
 ``tests/test_user_schemas.py``.
 """
 
@@ -67,32 +69,37 @@ ADMIN_EMAIL = "admin@example.com"
 ADMIN_FULL_NAME = "super user"
 
 
-def test_create_admin_creates_an_admin_and_prints_its_email(
+def test_create_admin_creates_an_admin_and_prints_its_email_and_id(
     db_session: Session,
     get_test_db: Callable[[], Iterator[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Valid input creates an Admin, prints its email, and saves it.
+    """Valid input creates an Admin and prints its email and ID, never the password.
 
-    The Admin is found afterwards only because the command committed it:
+    Plan §8.1 promises both values on success and the password nowhere, so
+    the success line is checked whole, with the ID of the account the test
+    finds afterwards, and the typed password must appear in neither stream.
+    The Admin is found only because the command committed it:
     ``get_test_db`` rolls back whatever the command left uncommitted when
     its ``with`` block ends, as closing a real session would.
     """
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
+    typed_password = "Correct-Password-1"
 
     result = CliRunner().invoke(
         cli.app,
         ["create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
-        input="Correct-Password-1\nCorrect-Password-1\n",
+        input=f"{typed_password}\n{typed_password}\n",
     )
 
     assert result.exit_code == 0
-    assert ADMIN_EMAIL in result.output
 
     admin = get_user_by_email(db_session, ADMIN_EMAIL)
 
     assert admin is not None
     assert admin.role is Role.ADMIN
+    assert f"Created Admin {ADMIN_EMAIL} (id {admin.id})\n" in result.stdout
+    assert typed_password not in result.output
 
 
 def test_create_admin_rejects_a_short_password_without_showing_it(

@@ -497,6 +497,34 @@ closes when the last stage is done, so an interrupted run is obvious.
   reuse tests in part 2 of `tests/test_auth_service.py`. Part 1, the
   constants, fixtures, helpers, and sign-in tests, has no log line, and
   R-081 records that none of its tests captures what a sign-in logs.
+- **Stage 18's findings fixed (2026-11-08):** R-078 (`db17080`), R-079
+  (`108f560`), R-080 (`3c86891`), and R-081 (`e9912ee`), written at your
+  request ("fix the open findings with recommendations and best
+  practices"), one commit each, in ID order, since none depends on
+  another. The code under test didn't change, so each new or changed test
+  was run instead against the broken copies that had passed the whole
+  suite, and each copy failed it. Three steps go beyond the
+  recommendations: R-078 shares its spy through a new fixture,
+  `password_check_calls`, which the unknown-email test now uses too;
+  R-079 compares the status as well, because a copy that raised a
+  subclass with status 403 passed the recommended checks; and R-081 adds
+  the same check through the API, because copies of the sign-in route
+  that logged a secret passed the service test. R-080 renames the test
+  it strengthens, so that its name says what it now checks; its commit
+  message was amended while still local, to keep that name whole, and
+  the tree is unchanged. Each commit passes Ruff and the suite on its
+  own, run like CI in a clean worktree: 390, 390, 390, then 392 tests,
+  with coverage at 99.86%, and the suite also passes reversed, shuffled
+  twice, and at `LOG_LEVEL=INFO`. Run against the fixed suite, all 12
+  copies the fixes target fail it: the 9 behind the findings, the status
+  copy, and the two route copies. No finding is open.
+- **Carried to stage 20 (from the stage 18 fixes):** the fixes change
+  part 1 of `tests/test_auth_service.py` after stage 18 reviewed it at
+  `360f3f1`, and the file gets its `STATE.md` row only when stage 20
+  ends. Record that row at `360f3f1`, so that the next `/review new`
+  takes the fixed tests in part 1 again, as it takes every file a fix
+  changed after its stage. `tests/test_auth_api.py` changed before stage
+  21, which reaches the new API test with the rest of the sign-in tests.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

@@ -183,9 +183,9 @@ def test_create_first_admin_recovers_access_when_every_admin_is_inactive(
     data = make_user_create(role=Role.ADMIN)
 
     # No exception: with no active Admin, recovery is allowed.
-    result = create_first_admin(db_session, data)
+    admin = create_first_admin(db_session, data)
 
-    assert result.role is Role.ADMIN
+    assert admin.role is Role.ADMIN
 
 
 def test_create_first_admin_always_creates_an_admin(db_session: Session) -> None:
@@ -203,9 +203,9 @@ def test_get_user_by_email_finds_an_existing_user(db_session: Session) -> None:
     db_session.add(user)
     db_session.flush()
 
-    result = get_user_by_email(db_session, user.email)
+    found_user = get_user_by_email(db_session, user.email)
 
-    assert result is user
+    assert found_user is user
 
 
 def test_get_user_by_email_ignores_case_and_surrounding_spaces(db_session: Session) -> None:
@@ -219,9 +219,9 @@ def test_get_user_by_email_ignores_case_and_surrounding_spaces(db_session: Sessi
     db_session.add(user)
     db_session.flush()
 
-    result = get_user_by_email(db_session, " Test@examPle.COM  ")
+    found_user = get_user_by_email(db_session, " Test@examPle.COM  ")
 
-    assert result is user
+    assert found_user is user
 
 
 @pytest.mark.parametrize(
@@ -296,9 +296,9 @@ def test_get_user_by_email_returns_none_for_an_unknown_email(db_session: Session
     db_session.add(user)
     db_session.flush()
 
-    result = get_user_by_email(db_session, "new.user@example.com")
+    found_user = get_user_by_email(db_session, "new.user@example.com")
 
-    assert result is None
+    assert found_user is None
 
 
 def test_get_user_by_email_returns_inactive_users_too(db_session: Session) -> None:
@@ -312,9 +312,9 @@ def test_get_user_by_email_returns_inactive_users_too(db_session: Session) -> No
     db_session.add(user)
     db_session.flush()
 
-    result = get_user_by_email(db_session, user.email)
+    found_user = get_user_by_email(db_session, user.email)
 
-    assert result is user
+    assert found_user is user
 
 
 def test_get_user_by_id_finds_an_existing_user(db_session: Session) -> None:
@@ -331,10 +331,10 @@ def test_get_user_by_id_finds_an_existing_user(db_session: Session) -> None:
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id(db_session, user.id)
+    found_user = get_user_by_id(db_session, user.id)
 
-    assert result is not None
-    assert result.id == user.id
+    assert found_user is not None
+    assert found_user.id == user.id
 
 
 def test_get_user_by_id_returns_none_for_an_unknown_id(db_session: Session) -> None:
@@ -365,11 +365,11 @@ def test_get_user_by_id_returns_inactive_users_too(db_session: Session) -> None:
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id(db_session, user.id)
+    found_user = get_user_by_id(db_session, user.id)
 
-    assert result is not None
-    assert result.id == user.id
-    assert result.is_active is False
+    assert found_user is not None
+    assert found_user.id == user.id
+    assert found_user.is_active is False
 
 
 def test_get_user_by_id_for_update_finds_an_existing_user(db_session: Session) -> None:
@@ -386,10 +386,10 @@ def test_get_user_by_id_for_update_finds_an_existing_user(db_session: Session) -
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id_for_update(db_session, user.id)
+    found_user = get_user_by_id_for_update(db_session, user.id)
 
-    assert result is not None
-    assert result.id == user.id
+    assert found_user is not None
+    assert found_user.id == user.id
 
 
 def test_get_user_by_id_for_update_returns_inactive_users_too(db_session: Session) -> None:
@@ -404,7 +404,7 @@ def test_get_user_by_id_for_update_returns_inactive_users_too(db_session: Sessio
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id_for_update(db_session, user.id)
+    found_user = get_user_by_id_for_update(db_session, user.id)
 
-    assert result is not None
-    assert result.is_active is False
+    assert found_user is not None
+    assert found_user.is_active is False

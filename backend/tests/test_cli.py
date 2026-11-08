@@ -108,8 +108,8 @@ def test_create_admin_refuses_when_an_active_admin_exists(
     """With an active Admin already committed, the command exits with code 1 and says why."""
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
-    user = make_user()
-    db_session.add(user)
+    existing_admin = make_user()
+    db_session.add(existing_admin)
     db_session.commit()
 
     result = CliRunner().invoke(
@@ -175,9 +175,9 @@ def test_create_admin_crash_output_never_shows_the_typed_password(
     # Typer replaces sys.excepthook when it runs; monkeypatch puts the original back afterward.
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)
 
-    with pytest.raises(SQLAlchemyError) as crash:
+    with pytest.raises(SQLAlchemyError) as exc_info:
         cli.app()
-    sys.excepthook(crash.type, crash.value, crash.tb)
+    sys.excepthook(exc_info.type, exc_info.value, exc_info.tb)
 
     output = capsys.readouterr()
     assert "Connection refused" in output.err

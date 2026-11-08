@@ -468,13 +468,16 @@ closes when the last stage is done, so an interrupted run is obvious.
   whole suite and both recommended tests. While fixing R-075, a
   `create-admin` that strips the typed password passed the whole suite
   too; it is the same gap at account creation, which R-075 left out, so
-  it is logged as R-077, open for your decision. The fixes change
+  it was logged as R-077 and fixed in `203eaf1` at your go-ahead
+  ("yes"): a CLI test types a password with a space at each end and
+  checks the saved hash against it as typed. The fixes change
   `tests/test_auth_schemas.py` after stage 17 reviewed it at `f46a105`,
-  so the next `/review new` takes it again; `tests/test_auth_api.py`
-  (stages 21 and 23) changed before its stages reach it. Each commit
-  passes Ruff and the suite on its own, run like CI in a clean worktree:
-  385, then 387 tests, with coverage at 99.86%, and the suite also passes
-  reversed, shuffled twice, and at `LOG_LEVEL=INFO`. R-077 is open.
+  and `tests/test_cli.py` after stage 15 (`acf3765`), so the next
+  `/review new` takes them again; `tests/test_auth_api.py` (stages 21 and
+  23) changed before its stages reach it. Each commit passes Ruff and the
+  suite on its own, run like CI in a clean worktree: 385, 387, then 388
+  tests, with coverage at 99.86%, and the suite also passes reversed,
+  shuffled twice, and at `LOG_LEVEL=INFO`. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

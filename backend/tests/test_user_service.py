@@ -5,16 +5,17 @@ test's own session, with no request or command around them, and read the
 results back in the same transaction. ``create_user`` saves the email,
 name, role, and must-change flag it is given, stores an Argon2id hash that
 verifies rather than the password, and turns a taken email into a
-``ConflictError``, whether its own check finds the duplicate or the
-database's unique constraint does. ``create_first_admin`` creates an
-active Admin who isn't asked to change the password they chose, forces
-the role to Admin, and refuses while an active Admin exists, but not when
-every Admin is deactivated. ``get_user_by_email`` finds an account however
-its address was typed, through the ``Email`` rule that ``UserCreate``
-stored it with, and returns None without a query for text that isn't an
-address; ``get_user_by_id`` and ``get_user_by_id_for_update`` find an
-account by its ID. Every lookup returns deactivated accounts too, because
-what deactivation means is each caller's decision.
+``ConflictError``: its own check finds the usual duplicate before the
+password is hashed, and the database's unique constraint catches one that
+slips past the check. ``create_first_admin`` creates an active Admin who
+isn't asked to change the password they chose, forces the role to Admin,
+and refuses while an active Admin exists, but not when every Admin is
+deactivated. ``get_user_by_email`` finds an account however its address
+was typed, through the ``Email`` rule that ``UserCreate`` stored it with,
+and returns None without a query for text that isn't an address;
+``get_user_by_id`` and ``get_user_by_id_for_update`` find an account by
+its ID. Every lookup returns deactivated accounts too, because what
+deactivation means is each caller's decision.
 
 Work a service flushed stays visible in the test's session whether or not
 the service committed it, so these tests can't see a missing ``commit()``;
@@ -151,23 +152,46 @@ def test_create_user_stores_a_hash_that_verifies_not_the_password(db_session: Se
     assert verify_password(PASSWORD, saved.password_hash)
 
 
-def test_create_user_rejects_an_email_that_is_taken(db_session: Session) -> None:
-    """A second account with a taken email is refused, and only the first remains.
+def test_create_user_rejects_a_taken_email_before_hashing_the_password(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A taken email is refused before the password is hashed, and only the first account remains.
 
     The same input is submitted twice: the first ``create_user`` commits,
     and the second is refused with the duplicate message, and saves
-    nothing. The service's own check finds this duplicate, before the
-    password is hashed, but the test can't tell: the unique constraint
-    behind the check refuses it with the same message, as
-    ``test_a_duplicate_caught_by_the_database_becomes_a_conflict`` shows.
+    nothing. The service checks the email before it hashes the password, so
+    a duplicate never costs an Argon2 hash. The unique constraint behind the
+    check would refuse it with the same message, as
+    ``test_a_duplicate_caught_by_the_database_becomes_a_conflict`` shows,
+    but only after the hashing, so once the first account is saved,
+    ``hash_password`` is replaced, where the service looks it up, with a spy
+    that records each call: an empty record shows that the check came first.
     """
     data = make_user_create()
     create_user(db_session, data, must_change_password=False)
+
+    hashed_passwords: list[str] = []
+
+    def record_hashing(password: str) -> str:
+        """Record the password the service would hash, instead of hashing it.
+
+        Args:
+            password: The plain password the service passed in.
+
+        Returns:
+            A stand-in for the hash, so that code which hashes before the
+            check still reaches the insert, which the constraint refuses.
+        """
+        hashed_passwords.append(password)
+        return "not-a-real-hash"
+
+    monkeypatch.setattr("app.modules.users.service.hash_password", record_hashing)
 
     with pytest.raises(ConflictError) as exc_info:
         create_user(db_session, data, must_change_password=False)
 
     assert exc_info.value.message == "A user with this email already exists."
+    assert hashed_passwords == []
     count = db_session.scalar(
         select(func.count()).select_from(User).where(User.email == data.email)
     )

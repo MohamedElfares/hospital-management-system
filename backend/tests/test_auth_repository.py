@@ -7,13 +7,14 @@ adds a token that the next flush inserts. The three lookups, the locking
 ones by hash and by ID and the unlocked one that returns only a token's
 user ID, each answer from the right token rather than from another
 user's token saved first, return None for a hash or ID that no token
-has, and answer for a revoked token too, because what a revoked token
-means is the service's decision. The two locking lookups also read the
-row again when the session holds a copy, so a caller sees the token as
-the database holds it once locked. ``revoke_all_refresh_tokens_for_user``
-revokes every unrevoked token of one user with the time it is given,
-leaves other users' tokens alone, and keeps the time of a token revoked
-earlier.
+has, and answer for a revoked or an expired token too, because what a
+token's state means is the service's decision: refresh checks reuse
+before expiry, so that an old stolen token still raises the alarm. The
+two locking lookups also read the row again when the session holds a
+copy, so a caller sees the token as the database holds it once locked.
+``revoke_all_refresh_tokens_for_user`` revokes every unrevoked token of
+one user with the time it is given, leaves other users' tokens alone,
+and keeps the time of a token revoked earlier.
 
 The locks can only be seen from a second connection, so
 ``tests/test_auth_concurrency.py`` tests them, and what the service does
@@ -30,7 +31,7 @@ from datetime import UTC
 # Date and time type; now(UTC) is the revocation time a test records.
 from datetime import datetime
 
-# Puts the second revocation five days after the first.
+# Moves times by days: a second revocation five days later, an expiry a day ago.
 from datetime import timedelta
 
 # Builds an unsaved refresh token for a saved user, unrevoked unless a test says otherwise.
@@ -53,6 +54,30 @@ from app.modules.auth import repository
 
 # The refresh_tokens table's ORM model; the read-back queries select it.
 from app.modules.auth.models import RefreshToken
+
+
+def _save_expired_token(db_session: Session) -> RefreshToken:
+    """Save a user and a refresh token of theirs that expired a day ago.
+
+    The token is otherwise as the factory builds it, unrevoked and never
+    rotated, so the only state a lookup could hold against it is its
+    expiry.
+
+    Args:
+        db_session: The test's session; the rows are flushed, not committed.
+
+    Returns:
+        The saved, expired token.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    token = make_refresh_token(user.id, expires_at=datetime.now(UTC) - timedelta(days=1))
+    db_session.add(token)
+    db_session.flush()
+
+    return token
 
 
 def test_an_added_refresh_token_is_saved_on_flush(db_session: Session) -> None:
@@ -150,6 +175,21 @@ def test_a_revoked_token_is_still_found_by_its_hash(db_session: Session) -> None
     assert found_token.revoked_at == now
 
 
+def test_an_expired_token_is_still_found_by_its_hash(db_session: Session) -> None:
+    """The hash lookup returns a token whose expiry has passed.
+
+    Refresh checks reuse before expiry, so a rotated token raises the
+    alarm however old it is. A lookup that skipped expired tokens would
+    hand refresh nothing to check, and an old stolen token would get a
+    quiet 401 instead of the alarm.
+    """
+    token = _save_expired_token(db_session)
+
+    found_token = repository.get_refresh_token_by_hash_for_update(db_session, token.token_hash)
+
+    assert found_token is token
+
+
 def test_a_locked_token_lookup_reads_the_row_as_it_is_now(db_session: Session) -> None:
     """The locking lookup replaces a copy of the token the session already holds.
 
@@ -210,6 +250,19 @@ def test_a_token_can_be_found_by_its_id_whatever_its_state(db_session: Session) 
     assert found_token.id == target_token.id
     assert found_token.user_id == user.id
     assert found_token.revoked_at == revoked_at
+
+
+def test_an_expired_token_is_still_found_by_its_id(db_session: Session) -> None:
+    """The ID lookup returns a token whose expiry has passed.
+
+    As with a revoked token, sign-out looks a replacement up whatever its
+    state and decides itself what that state means.
+    """
+    token = _save_expired_token(db_session)
+
+    found_token = repository.get_refresh_token_by_id_for_update(db_session, token.id)
+
+    assert found_token is token
 
 
 def test_an_unknown_id_finds_no_token(db_session: Session) -> None:
@@ -280,6 +333,21 @@ def test_the_user_of_a_token_is_found_by_its_hash(db_session: Session) -> None:
     )
 
     assert found_user_id == user.id
+
+
+def test_the_user_of_an_expired_token_is_still_found_by_its_hash(db_session: Session) -> None:
+    """The owner lookup returns the user of a token whose expiry has passed.
+
+    Refresh finds the token's user first, to lock the user's row before it
+    checks anything, so an owner lookup that skipped expired tokens would
+    end refresh before its reuse check, and an old stolen token would raise
+    no alarm.
+    """
+    token = _save_expired_token(db_session)
+
+    found_user_id = repository.get_refresh_token_user_id_by_hash(db_session, token.token_hash)
+
+    assert found_user_id == token.user_id
 
 
 def test_an_unknown_hash_finds_no_user_id(db_session: Session) -> None:

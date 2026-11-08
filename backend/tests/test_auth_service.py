@@ -833,6 +833,47 @@ def test_an_expired_token_does_not_revoke_the_others(db_session: Session, user: 
     assert other_device_row.revoked_at is None
 
 
+def test_an_expired_rotated_token_still_raises_the_alarm(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rotated token presented after it expired still ends every session of its user.
+
+    Reuse is checked before expiry, so a stolen copy that comes back after
+    its session ran out raises the alarm like any other, as ADR-0004 says:
+    a rotated token raises one every time it comes back. The rotated token
+    and its replacement share an expiry a day in the past, as a refresh
+    copies it, and the other device's token is unexpired. A refresh that
+    checked expiry first, or a token lookup that skipped expired tokens,
+    would answer the same 401 with no warning and no revocation.
+    """
+    expires_at = datetime.now(UTC) - timedelta(days=1)
+    replacement_row = _token_row(
+        db_session, _save_refresh_token(db_session, user, expires_at=expires_at)
+    )
+    raw_rotated_token = _save_refresh_token(
+        db_session,
+        user,
+        expires_at=expires_at,
+        revoked_at=expires_at - timedelta(days=1),
+        replaced_by_id=replacement_row.id,
+    )
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with caplog.at_level("WARNING"), pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_rotated_token)
+
+    other_device_row = _token_row(db_session, raw_other_device_token)
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+
+    assert exc_info.value.message == INVALID_TOKEN
+    assert other_device_row.revoked_at is not None
+    assert len(warnings) == 1
+    assert str(user.id) in warnings[0].getMessage()
+    assert raw_rotated_token not in caplog.text
+
+
 def test_reuse_leaves_other_users_tokens_alone(db_session: Session, user: User) -> None:
     """Reuse ends the sessions of the token's owner and nobody else.
 

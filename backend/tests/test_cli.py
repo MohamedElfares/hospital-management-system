@@ -13,7 +13,8 @@ database, which the suite refuses.
 
 The tests cover a successful run, which prints the new Admin's email and
 ID but never the password, with the email and name given as options or
-typed at the prompts; a short password and a name holding NUL, each
+typed at the prompts, and which saves a password typed with spaces
+around it with its spaces; a short password and a name holding NUL, each
 refused by field without showing what was typed, and two passwords that
 don't match, with nothing saved in any of these cases; the refusal while
 an active Admin exists; and a crash, whose traceback must not show the
@@ -63,6 +64,9 @@ from app import cli
 # The role enum; the saved account must be an Admin.
 from app.core.permissions import Role
 
+# Checks the saved hash against the password as typed, as sign-in does.
+from app.core.security import verify_password
+
 # The repository's exact-email lookup; reads back what the command saved.
 from app.modules.users.repository import get_user_by_email
 
@@ -102,6 +106,36 @@ def test_create_admin_creates_an_admin_and_prints_its_email_and_id(
     assert admin.role is Role.ADMIN
     assert f"Created Admin {ADMIN_EMAIL} (id {admin.id})\n" in result.stdout
     assert typed_password not in result.output
+
+
+def test_create_admin_keeps_the_spaces_around_the_password(
+    db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A password typed with a space at each end is saved with its spaces.
+
+    ``UserCreate`` keeps such a password, and sign-in checks the password
+    as typed, so the command must hand the schema what the prompt read. One
+    that stripped it would save a password the Admin never typed, and the
+    Admin couldn't sign in; the command would then refuse to create
+    another, because an active Admin exists. The saved hash is checked
+    against the password as typed, as sign-in checks it.
+    """
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
+        input=" Correct-Password-1 \n Correct-Password-1 \n",
+    )
+
+    assert result.exit_code == 0
+
+    admin = get_user_by_email(db_session, ADMIN_EMAIL)
+
+    assert admin is not None
+    assert verify_password(" Correct-Password-1 ", admin.password_hash)
 
 
 def test_create_admin_rejects_a_short_password_without_showing_it(

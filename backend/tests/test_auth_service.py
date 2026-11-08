@@ -11,8 +11,9 @@ and present raw refresh tokens, as a browser would; the helpers save only
 a token's hash, as the service does, and read a row back by its raw value.
 
 Sign-in returns an access token that names the user and stores only the
-hash of a new refresh token, one per sign-in, which expires after the
-configured number of days. It records the sign-in time, accepts the email
+hash of a new refresh token, which expires after the configured number of
+days; each sign-in adds a session of its own and leaves the user's others
+working. It records the sign-in time, accepts the email
 in any case and with spaces around it, and lets a user with a pending
 password change in. Every failed sign-in raises the very same
 ``AuthenticationError`` and writes nothing, and an unknown email and a
@@ -576,14 +577,17 @@ def test_login_succeeds_while_a_password_change_is_pending(db_session: Session) 
     assert decode_access_token(issued_tokens.access_token) == user.id
 
 
-def test_each_login_issues_a_new_refresh_token(db_session: Session, user: User) -> None:
-    """Two sign-ins save two rows and return two different refresh tokens.
+def test_each_login_issues_a_new_refresh_token_and_keeps_the_earlier_ones(
+    db_session: Session,
+    user: User,
+) -> None:
+    """Two sign-ins save two rows, return two different tokens, and revoke neither.
 
-    A new sign-in never reuses or overwrites an earlier token's row, so
-    each device a user signs in on gets a session of its own. The test
-    can't see whether the first token still works afterwards: a sign-in
-    that revoked the user's other tokens before issuing its own would pass
-    it.
+    A new sign-in never reuses, overwrites, or ends an earlier session, so
+    each device a user signs in on keeps a session of its own. Both rows
+    are read back after the second sign-in and must still be unrevoked, so
+    a sign-in that ended the user's other sessions fails. The revocation
+    times are compared as a list, so a failure shows which row was revoked.
     """
     first_login = service.login(db_session, user.email, PASSWORD)
     second_login = service.login(db_session, user.email, PASSWORD)
@@ -591,6 +595,7 @@ def test_each_login_issues_a_new_refresh_token(db_session: Session, user: User) 
 
     assert len(token_rows) == 2
     assert first_login.refresh_token != second_login.refresh_token
+    assert [token_row.revoked_at for token_row in token_rows] == [None, None]
 
 
 @pytest.mark.parametrize(("email", "password", "is_active"), FAILED_LOGINS)

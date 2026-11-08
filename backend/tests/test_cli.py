@@ -12,9 +12,10 @@ would go to the development database, which the suite refuses.
 
 The tests cover a successful run, with the email and name given as options
 or typed at the prompts; a short password and a name holding NUL, each
-refused by field without showing what was typed, with nothing saved; the
-refusal while an active Admin exists; and a crash, whose traceback must
-not show the typed password. The rules underneath are tested where they
+refused by field without showing what was typed, and two passwords that
+don't match, with nothing saved in any of these cases; the refusal while
+an active Admin exists; and a crash, whose traceback must not show the
+typed password. The rules underneath are tested where they
 live: the service's in ``tests/test_user_service.py``, and the schema's in
 ``tests/test_user_schemas.py``.
 """
@@ -119,6 +120,32 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     assert result.exit_code == 1
     assert "password: must be 15 to 128 characters." in result.output
     assert "short-pw-11" not in result.output
+    assert get_user_by_email(db_session, ADMIN_EMAIL) is None
+
+
+def test_create_admin_refuses_passwords_that_do_not_match(
+    db_session: Session,
+    get_test_db: Callable[[], Iterator[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two different passwords at the two prompts are refused, and nothing is saved.
+
+    The password is asked for twice so that a typo can't give the only
+    active Admin a password nobody knows: the command would then refuse to
+    create another, because an active Admin exists. Click answers a
+    mismatch with its error and asks again; the typed input ends there, so
+    the command aborts with exit code 1 before it opens a session.
+    """
+    monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["create-admin", "--email", ADMIN_EMAIL, "--full-name", ADMIN_FULL_NAME],
+        input="Correct-Password-1\nCorrect-Password-2\n",
+    )
+
+    assert result.exit_code == 1
+    assert "Error: The two entered values do not match." in result.output
     assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
 

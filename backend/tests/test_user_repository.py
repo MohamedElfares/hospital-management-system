@@ -10,20 +10,25 @@ first shows that the ID lookups filter on the ID rather than returning
 the first row. The locking lookup also reads the row again when the
 session holds a copy, so a caller that locks a user sees what the
 database holds. ``exists_active_admin`` reports True for an active Admin,
-and False for an empty table, a deactivated Admin, and an active Doctor.
-``create_user`` only adds the user to the session; the test's flush
-writes it, as the users service's own flush does.
+and False for an empty table, a deactivated Admin, an active account of
+every other role, and a deactivated Admin beside an active Doctor, the
+recovery case ``create-admin`` exists for. ``create_user`` only adds the
+user to the session; the test's flush writes it, as the users service's
+own flush does.
 
 The lock that ``get_user_by_id_for_update`` takes can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests it, in
 races where a reuse alarm or a password change waits for a refresh or a
-sign-in that holds it.
-The users service's lookups, which normalize a typed email before this
-query sees it, are tested in ``tests/test_user_service.py``.
+sign-in that holds it. The users service's lookups, which normalize a
+typed email before this query sees it, are tested in
+``tests/test_user_service.py``.
 """
 
 # Random UUIDs; an ID that no saved account has.
 import uuid
+
+# Test framework: parametrize runs the active-Admin check once for every role but Admin.
+import pytest
 
 # Builds an unsaved User; the tests save the accounts they look up, and decoys beside them.
 from factories import make_user
@@ -34,7 +39,7 @@ from sqlalchemy import text
 # Type of the db_session fixture.
 from sqlalchemy.orm import Session
 
-# The role enum; builds the Admins and the Doctor that the active-Admin check tells apart.
+# The role enum; builds the Admins and the other roles that the active-Admin check tells apart.
 from app.core.permissions import Role
 
 # Adds a new user to the session; under test with the email lookup that finds it.
@@ -125,13 +130,39 @@ def test_an_inactive_admin_is_not_counted(db_session: Session) -> None:
     assert has_active_admin is False
 
 
-def test_an_active_doctor_is_not_counted_as_an_admin(db_session: Session) -> None:
-    """An active user with another role doesn't count as an Admin.
+@pytest.mark.parametrize("role", [role for role in Role if role is not Role.ADMIN])
+def test_an_active_user_of_another_role_is_not_counted_as_an_admin(
+    db_session: Session,
+    role: Role,
+) -> None:
+    """An active user of any role but Admin doesn't count as an Admin.
 
-    This proves the role condition is part of the query.
+    This proves the role condition is part of the query, and that it names
+    Admin alone: every other role is tried, so a check that also counted a
+    Manager, the other role that manages accounts, fails its case.
     """
-    doctor = make_user(role=Role.DOCTOR)
+    user = make_user(role=role)
 
+    create_user(db_session, user)
+    db_session.flush()
+
+    assert exists_active_admin(db_session) is False
+
+
+def test_an_inactive_admin_beside_an_active_doctor_is_not_counted(db_session: Session) -> None:
+    """A deactivated Admin next to an active Doctor still means no active Admin.
+
+    This is the recovery case ``create-admin`` exists for: every Admin is
+    deactivated while the rest of the staff are still active. The check
+    must find one account that is both an Admin and active, so a query
+    that took the role from one row and the active flag from another would
+    report an active Admin here and refuse the recovery. The tests above
+    save at most one account each, so only this one can see that.
+    """
+    inactive_admin = make_user(role=Role.ADMIN, is_active=False)
+    doctor = make_user(email="doctor@example.com", role=Role.DOCTOR)
+
+    create_user(db_session, inactive_admin)
     create_user(db_session, doctor)
     db_session.flush()
 

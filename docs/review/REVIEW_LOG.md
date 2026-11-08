@@ -372,6 +372,27 @@ closes when the last stage is done, so an interrupted run is obvious.
   `found_user`, as stage 15 renamed them in `tests/test_user_service.py`.
   Its `found`, the boolean `exists_active_admin` returns, falls under the
   boolean rule instead.
+- **Stage 15's findings fixed (2026-11-08):** R-065 (`5906bf8`), R-066
+  (`9074852`), R-067 (`dca6417`), R-068 (`00d32ba`), and R-069
+  (`8133e37`), written at your request ("fix the open in findings with
+  recommendations and best practices"), one commit each, in ID order,
+  since none depends on another. The code under test didn't change, so
+  each new or changed test was run instead against the broken copies
+  that had passed the whole suite, and each copy failed it. One step
+  differs from the logged recommendations: R-067's tests compare the
+  whole of `result.stderr` with the one line expected, rather than
+  finding the message there and not on stdout, which also refuses
+  Pydantic's whole error printed beside it. R-066 and R-068 renamed the
+  tests they strengthened, so that each name states what its test now
+  checks. R-069's open row, recorded in `f7c48df`, showed the
+  recommended escapes as the raw characters themselves, because they were
+  turned into characters while the row was being written; its settled row
+  has them as committed. The fixes change `tests/test_cli.py` and
+  `tests/test_user_service.py` after stage 15 reviewed them at
+  `acf3765`, so the next `/review new` takes them again. Each commit
+  passes Ruff and the suite on its own, run like CI in a clean worktree:
+  367 tests each time, with coverage at 99.86%, and the suite also passes
+  reversed, shuffled twice, and at `LOG_LEVEL=INFO`. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

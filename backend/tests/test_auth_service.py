@@ -1,40 +1,132 @@
+"""Tests for the auth service: sign-in, sessions, sign-out, and password changes.
+
+The tests call the service's functions directly with ``db_session``, the
+test's own session, so every use case runs against PostgreSQL inside the
+test's transaction. A use case's ``commit()`` releases only a savepoint of
+that transaction, so the rollback at the end of the test removes what it
+saved, and what it flushed without committing stays visible to the test:
+a test that must see a commit rolls the session back itself first, as a
+request's session is rolled back when the request ends. The tests hold
+and present raw refresh tokens, as a browser would; the helpers save only
+a token's hash, as the service does, and read a row back by its raw value.
+
+Sign-in returns an access token that names the user and stores only the
+hash of a new refresh token, one per sign-in, which expires after the
+configured number of days. It records the sign-in time, accepts the email
+in any case and with spaces around it, and lets a user with a pending
+password change in. Every failed sign-in raises ``AuthenticationError``
+with the same message and writes nothing, and an unknown email still runs
+the password check. A valid access token is turned back into the active
+user it names, looked up once by the ID inside it; every other token gets
+the same error, and one that doesn't decode gets it before any lookup.
+Refresh rotates the token and keeps its expiry. A rotated token presented again revokes every
+token of its user, commits that, and logs one warning without the token,
+however old it is, while every other unusable token is refused with the
+same error and no alarm. Sign-out revokes only the presented token, or
+the replacement of one a refresh has rotated, and ignores a token it
+can't use. A password change refuses a wrong current password or an
+unchanged new one with a 400; otherwise it replaces the hash, clears the
+forced-change flag, ends every session, and starts a new one, all
+committed. The password-change gate refuses a user with a pending change
+with a 403 and a code of its own.
+
+The row locks that keep concurrent requests apart can only be seen from a
+second connection, so ``tests/test_auth_concurrency.py`` tests them. The
+routes, the cookie, and the response bodies are tested in
+``tests/test_auth_api.py``, the token and password functions in
+``tests/test_security.py``, and the queries in
+``tests/test_auth_repository.py``.
+"""
+
+# Random UUIDs: an ID no user has; also the type of the IDs the lookup spy records.
 import uuid
+
+# UTC time zone; every time a test builds is timezone-aware UTC, as the service's are.
 from datetime import UTC
+
+# The current time: bounds for a sign-in time or an expiry, and a saved token's own times.
 from datetime import datetime
+
+# Moves a time by days, minutes, or seconds: a lifetime ahead, or an expiry in the past.
 from datetime import timedelta
 
+# Test framework: fixtures, marks, raises, and the monkeypatch and caplog types.
 import pytest
+
+# Builds an unsaved refresh token for a saved user; the helpers give it a real token's hash.
 from factories import make_refresh_token
+
+# Builds an unsaved User: the user fixture's account, and the other accounts some tests save.
 from factories import make_user
+
+# Builds the queries that read token rows back after a use case.
 from sqlalchemy import select
+
+# Type of the db_session fixture, the session every use case here runs in.
 from sqlalchemy.orm import Session
 
+# Cached settings; three_day_refresh_tokens copies them with a refresh lifetime of its own.
 from app.core.config import get_settings
+
+# What a failed sign-in or a rejected token raises, which the API answers with 401.
 from app.core.errors import AuthenticationError
+
+# What a refused password change raises, which the API answers with 400.
 from app.core.errors import BadRequestError
+
+# Machine-readable error codes; a refused change's and a pending change's codes are checked.
 from app.core.errors import ErrorCode
+
+# What the password-change gate raises, which the API answers with 403.
 from app.core.errors import PermissionDeniedError
+
+# Signs an access token for a user ID, for the tests that start from one.
 from app.core.security import create_access_token
+
+# Verifies an access token and returns the user ID it names; checks what a use case returns.
 from app.core.security import decode_access_token
+
+# Makes a random refresh token: the raw value a saved hash comes from, or one never saved.
 from app.core.security import generate_refresh_token
+
+# Hashes a password with Argon2id, so the user fixture's account can sign in.
 from app.core.security import hash_password
+
+# Hashes a refresh token as the service stores it; saves a token and finds its row.
 from app.core.security import hash_refresh_token
+
+# Checks a password against a stored hash; tells which password a changed hash belongs to.
 from app.core.security import verify_password
+
+# The auth service, under test, as a module, so monkeypatch can replace names it looks up.
 from app.modules.auth import service
+
+# The refresh_tokens table's ORM model; the read-back queries select it.
 from app.modules.auth.models import RefreshToken
+
+# Validated password change input; _password_change builds one, as the route receives it.
 from app.modules.auth.schemas import PasswordChange
+
+# The users table's ORM model; the type of the user fixture and of what a lookup returns.
 from app.modules.users.models import User
 
+# The user fixture's password, and a valid new one that differs from it.
 PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
+
+# The messages a user sees, written out rather than imported from the service, so a
+# changed text fails here. INVALID_TOKEN is decode_access_token's message too.
 INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
 PASSWORD_CHANGE_REQUIRED = "You must change your password before continuing."
 
-# Every way a sign-in can fail. The only saved user is test@example.com with
-# PASSWORD, so ghost@example.com is truly unknown and the inactive-user case
-# reaches the is_active check with the right password. The last case shows a
-# wrong password on a deactivated account gets the very same answer.
+# The ways a sign-in can fail while no other request changes the account, as
+# the email and password typed and whether the saved account is active. The
+# only saved user is test@example.com with PASSWORD, so ghost@example.com is
+# truly unknown, and the inactive-user case passes the password check and
+# reaches the is_active check. The last case shows that a wrong password on a
+# deactivated account gets the same error and message. An account that
+# changes during the check is tested in tests/test_auth_concurrency.py.
 FAILED_LOGINS = [
     pytest.param("test@example.com", "Wrong-Password-1", True, id="wrong-password"),
     pytest.param("ghost@example.com", PASSWORD, True, id="unknown-email"),
@@ -42,10 +134,12 @@ FAILED_LOGINS = [
     pytest.param("test@example.com", "Wrong-Password-1", False, id="inactive-wrong-password"),
 ]
 
-# Every way a refresh can fail without being reuse. Each name is turned into
-# the value to present by _present_token, because some cases need a saved
-# token and a plain list of values can't build one. Reuse is tested apart,
-# since it is the one failure that writes.
+# Each way a refresh can fail without a revoked token, by name; _present_token
+# turns a name into the value to present, because some cases need a saved
+# token, which a plain list of values can't build. Revoked tokens have tests
+# of their own: a rotated one presented again is reuse, the one failure that
+# writes, and one revoked without rotation must raise no alarm. An owner
+# deleted while refresh waits is tested in tests/test_auth_concurrency.py.
 UNUSABLE_REFRESH_TOKENS = [
     pytest.param("missing", id="missing"),
     pytest.param("empty", id="empty"),
@@ -54,10 +148,12 @@ UNUSABLE_REFRESH_TOKENS = [
     pytest.param("inactive-user", id="inactive-user"),
 ]
 
-# Every way a password change is refused, each with the field it replaces in
-# the otherwise valid input and the message the user sees. The wrong current
-# password is valid as a password, so the refusal comes from the service's
-# check against the stored hash, not from the schema.
+# Both ways the service refuses a password change with a 400, each as the
+# field it replaces in the otherwise valid input and the message the user
+# sees. The wrong current password passes the schema, which limits only its
+# length, so the refusal comes from the service's check against the stored
+# hash. An account deactivated or deleted since the request's authentication
+# gets a 401 instead, tested in tests/test_auth_concurrency.py.
 REJECTED_PASSWORD_CHANGES = [
     pytest.param(
         {"current_password": "Wrong-Password-1"},
@@ -77,8 +173,12 @@ def user(db_session: Session) -> User:
     """Save an active user, test@example.com, whose password is ``PASSWORD``.
 
     The hash is real, unlike ``make_user``'s default, which can never sign
-    in. The user is flushed, not committed, so the test's rollback removes
-    it.
+    in. The database supplies both flags, as for any new account: the user
+    is active and must still change their password. Flushing sends the
+    ``INSERT`` and gives the user its ID, which the tokens and access
+    tokens name. A use case's commit only releases a savepoint of the
+    test's transaction, so the rollback at the end of the test removes the
+    user with everything else.
 
     Args:
         db_session: The test's session.
@@ -95,31 +195,41 @@ def user(db_session: Session) -> User:
 
 @pytest.fixture
 def lookup_calls(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
-    """Spy on the auth service's user lookup and return the ids it receives.
+    """Spy on the auth service's user lookup and return the IDs it receives.
 
-    The auth service imported ``get_user_by_id`` by name, which copied it
-    into its own namespace, and that copy is what it calls. So the spy
-    replaces it there: patching the users service instead would leave the
-    auth service calling the real function, and the list would stay empty
-    whatever happened. The spy records each id, then runs the real lookup
-    and returns its result, so the code under test behaves exactly as
-    usual. ``monkeypatch`` puts the real function back after the test.
+    The auth service imported ``get_user_by_id`` by name, which gave it a
+    name of its own for the users service's function, and it calls the
+    function through that name. So the spy replaces it there: patching the
+    users service instead would rebind only the users service's name, the
+    auth service would still call the real function, and the list would
+    stay empty whatever happened. The spy records each ID, then runs the
+    real lookup and returns its result, so the code under test behaves
+    exactly as usual. ``monkeypatch`` puts the real function back after the
+    test.
 
     The list is returned before any lookup happens and filled in as the
     test runs, so the test reads it after acting: ``[]`` means no lookup,
-    ``[user.id]`` means exactly one, for that id.
+    ``[user.id]`` means exactly one, for that ID.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
 
     Returns:
-        The list the spy appends each looked-up id to, in call order.
+        The list the spy appends each looked-up ID to, in call order.
     """
     calls: list[uuid.UUID] = []
     real_get_user_by_id = service.get_user_by_id
 
     def spy(session: Session, user_id: uuid.UUID) -> User | None:
-        """Record the id being looked up, then run the real lookup."""
+        """Record the ID being looked up, then run the real lookup.
+
+        Args:
+            session: The session the auth service passes, handed on unchanged.
+            user_id: The ID the auth service looks up.
+
+        Returns:
+            The real ``get_user_by_id``'s answer: the user, or None.
+        """
         calls.append(user_id)
         return real_get_user_by_id(session, user_id)
 
@@ -129,15 +239,16 @@ def lookup_calls(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
 
 @pytest.fixture
 def three_day_refresh_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the auth service give each new refresh token three days to live.
+    """Make the auth service give each new session's refresh token three days to live.
 
     ``get_settings`` is replaced where the auth service looks it up, with a
     copy of the settings whose ``REFRESH_TOKEN_EXPIRE_DAYS`` is 3, a value
     no setting has by default. A test that expects three days then fails if
     the service writes a lifetime into the code or reads another setting,
-    whatever the environment configures. The access token is untouched,
-    because ``create_access_token`` reads the settings in
-    ``app.core.security``.
+    whatever the environment configures. Sign-in and a password change read
+    the lifetime, while refresh keeps the old token's expiry. The access
+    token is untouched, because ``create_access_token`` reads the settings
+    in ``app.core.security``.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -151,12 +262,15 @@ def _save_refresh_token(db_session: Session, user: User, **overrides: object) ->
 
     The row stores only the hash, as the service does, and the raw value
     is returned because that is what a client presents from its cookie.
-    Overrides let a test save a token that is already revoked or expired.
+    Without overrides the token is as the factory builds it: unrevoked,
+    never rotated, and expiring seven days from now. Overrides let a test
+    save a token that is already expired, revoked, or rotated.
 
     Args:
         db_session: The test's session; the row is flushed, not committed.
         user: The saved user who owns the token.
-        **overrides: Columns to set, such as ``expires_at`` or ``revoked_at``.
+        **overrides: Columns to set, such as ``expires_at``, ``revoked_at``,
+            or ``replaced_by_id``.
 
     Returns:
         The raw refresh token whose hash was saved.
@@ -178,11 +292,12 @@ def _save_rotated_token(db_session: Session, user: User) -> str:
     """Save a refresh token that was already rotated and return its raw value.
 
     Rotation revokes a token and links it to the token that replaced it, so
-    this saves the replacement first, then the old token with both
-    ``revoked_at`` and ``replaced_by_id`` set. Presenting the old token again
-    is reuse: only a rotated token coming back proves a copy exists. A token
-    revoked any other way, by sign-out or a password change, has no
-    replacement, so it can't stand in for reuse.
+    this saves the replacement first, unrevoked, then the old token with
+    both ``revoked_at`` and ``replaced_by_id`` set; both expire seven days
+    from now. Presenting the old token again is reuse: only a rotated token
+    coming back proves a copy exists. A token revoked any other way, by
+    sign-out or a password change, has no replacement, so it can't stand in
+    for reuse.
 
     Args:
         db_session: The test's session; the rows are flushed, not committed.
@@ -204,17 +319,18 @@ def _save_rotated_token(db_session: Session, user: User) -> str:
 def _present_token(db_session: Session, user: User, case: str) -> str | None:
     """Build the refresh token value a test presents for one failure case.
 
-    ``missing`` and ``empty`` are what arrives without a usable cookie, and
-    ``unknown`` is a well-formed token that was never saved. ``expired``
-    and ``inactive-user`` save a real token, so the failure comes from the
-    expiry or the account and not from the lookup. An unrecognized name
-    raises instead of returning None, so a typo can't quietly turn a case
-    into ``missing``.
+    ``missing`` and ``empty`` are what arrives without a usable cookie: no
+    cookie at all, or one with an empty value. ``unknown`` is a well-formed
+    token that was never saved. ``expired`` saves a token that ran out a
+    second ago, and ``inactive-user`` saves a valid token, then deactivates
+    its owner, so the failure comes from the expiry or the account and not
+    from the lookup. An unrecognized name raises instead of returning None,
+    so a typo can't quietly turn a case into ``missing``.
 
     Args:
         db_session: The test's session.
         user: The saved user who owns any token created here.
-        case: One of the ids in ``UNUSABLE_REFRESH_TOKENS``.
+        case: One of the IDs in ``UNUSABLE_REFRESH_TOKENS``.
 
     Returns:
         The raw token to pass to ``refresh``, or None for a missing cookie.
@@ -247,16 +363,19 @@ def _token_row(db_session: Session, raw_token: str) -> RefreshToken:
     does and reads the row back, so callers only ever pass raw tokens and
     can't mix up a raw token with a hash.
 
-    ``populate_existing`` makes the query overwrite any copy of the row the
-    session already holds, so the test sees the values in the database
-    rather than a stale object. Without it, a bulk UPDATE such as
-    ``revoke_all_refresh_tokens_for_user`` could leave an earlier copy
-    showing old values.
+    ``populate_existing`` makes the query overwrite whatever the session
+    already holds for the row, so the test reads the stored values even
+    where the session's copy is out of date. In these tests every change
+    goes through the session, which keeps its copies up to date: the bulk
+    ``UPDATE`` of ``revoke_all_refresh_tokens_for_user`` updates the values
+    the session has loaded, and a query fills in those it hasn't. Only a
+    row changed behind the session's back, such as by raw SQL, would leave
+    a plain query showing old values.
 
     Args:
         db_session: The test's database session.
-        raw_token: The raw refresh token, as returned by
-            ``_save_refresh_token`` or ``service.refresh``.
+        raw_token: The raw refresh token, as ``_save_refresh_token`` or a
+            use case such as ``service.refresh`` returns it.
 
     Returns:
         The token's row.
@@ -281,6 +400,8 @@ def _password_change(
     By default it holds the fixture's real password and a different, valid
     new one, so ``change_password`` succeeds. A test that checks a rejection
     replaces only the value it is about, so a failure points at that value.
+    ``PasswordChange`` validates both, as it does the route's input, so a
+    new password must follow the password rule.
 
     Args:
         current_password: The password the user claims to sign in with now.
@@ -306,11 +427,12 @@ def test_login_returns_an_access_token_for_the_user(db_session: Session, user: U
 
 
 def test_login_stores_only_the_hash_of_the_refresh_token(db_session: Session, user: User) -> None:
-    """Sign-in saves exactly one token row, holding the hash, not the token.
+    """Sign-in saves exactly one token row, holding the token's hash, not the token.
 
     The stored hash must equal the hash of the token the client receives,
-    because refreshing will look the row up that way. The table is read
-    without a filter, so a token saved for the wrong user would be caught.
+    because refreshing looks the row up that way, and the stored value must
+    not be the raw token. The table is read without a filter and the row's
+    owner is checked, so a token saved for the wrong user fails the test.
     """
     issued_tokens = service.login(db_session, user.email, PASSWORD)
 
@@ -325,11 +447,15 @@ def test_login_stores_only_the_hash_of_the_refresh_token(db_session: Session, us
 
 
 def test_the_repr_of_issued_tokens_shows_neither_token() -> None:
-    """Printing or logging the tokens a sign-in returns shows neither of them.
+    """The ``repr`` of the tokens a use case returns shows neither of them.
 
-    ``str()``, f-strings, and a log call's ``%s`` all fall back to
-    ``repr``, so a stray print or log line would otherwise write both
-    credentials out in full, and a refresh token works for days.
+    ``IssuedTokens`` is what sign-in, refresh, and a password change return.
+    It defines no ``__str__``, so ``str()``, f-strings, and a log call's
+    ``%s`` all fall back to this ``repr``, and a stray print or log line
+    would otherwise write both credentials out in full; a refresh token
+    works for days. The instance holds a real access token and a real
+    refresh token, long random strings, so finding either in the text can
+    only mean it leaked.
     """
     issued_tokens = service.IssuedTokens(
         access_token=create_access_token(uuid.uuid4()),
@@ -351,7 +477,9 @@ def test_login_sets_the_refresh_token_to_expire_after_the_configured_days(
 
     The service's settings say three days here, so a lifetime written into
     the code, or read from another setting, fails, whatever the environment
-    configures.
+    configures. The expiry must fall between three days after the moments
+    just before and just after the sign-in, so a longer or a shorter
+    lifetime fails too.
     """
     before = datetime.now(UTC) + timedelta(days=3)
     service.login(db_session, user.email, PASSWORD)
@@ -365,7 +493,9 @@ def test_login_sets_the_refresh_token_to_expire_after_the_configured_days(
 def test_login_records_the_sign_in_time(db_session: Session, user: User) -> None:
     """A successful sign-in sets ``last_login_at`` to the current time.
 
-    The user is refreshed, so the value checked is the one in the database.
+    The time must fall between the moments just before and just after the
+    sign-in. The user is read back from the database first, so the time
+    checked is the one saved, not only the one set on the object.
     """
     before = datetime.now(UTC)
     service.login(db_session, user.email, PASSWORD)
@@ -377,18 +507,24 @@ def test_login_records_the_sign_in_time(db_session: Session, user: User) -> None
 
 
 def test_login_ignores_email_case_and_surrounding_spaces(db_session: Session, user: User) -> None:
-    """An email typed in mixed case with spaces around it still signs the user in."""
+    """An email typed in mixed case with spaces around it still signs the user in.
+
+    The account was saved as ``test@example.com``. Sign-in looks the typed
+    text up in the form account creation stores, so the access token names
+    that account.
+    """
     issued_tokens = service.login(db_session, "   Test@Example.COM   ", PASSWORD)
 
     assert decode_access_token(issued_tokens.access_token) == user.id
 
 
 def test_login_succeeds_while_a_password_change_is_pending(db_session: Session) -> None:
-    """A user with a temporary password can sign in.
+    """A user who must still change their password can sign in.
 
     They need a session to choose a new password; the API, not sign-in,
-    blocks their other requests until they do. The flag is set explicitly
-    so the test doesn't depend on the column's default.
+    blocks their other requests until they do. The flag is set explicitly,
+    so the test doesn't depend on the database default that the ``user``
+    fixture's account gets.
     """
     user = make_user(password_hash=hash_password(PASSWORD), must_change_password=True)
     db_session.add(user)
@@ -400,10 +536,13 @@ def test_login_succeeds_while_a_password_change_is_pending(db_session: Session) 
 
 
 def test_each_login_issues_a_new_refresh_token(db_session: Session, user: User) -> None:
-    """Two sign-ins create two rows with two different refresh tokens.
+    """Two sign-ins save two rows and return two different refresh tokens.
 
-    A new sign-in never reuses or replaces an earlier token, so a user can
-    stay signed in on several devices.
+    A new sign-in never reuses or overwrites an earlier token's row, so
+    each device a user signs in on gets a session of its own. The test
+    can't see whether the first token still works afterwards: a sign-in
+    that revoked the user's other tokens before issuing its own would pass
+    it.
     """
     first_login = service.login(db_session, user.email, PASSWORD)
     second_login = service.login(db_session, user.email, PASSWORD)
@@ -420,10 +559,13 @@ def test_a_failed_login_raises_the_generic_error(
     password: str,
     is_active: bool,
 ) -> None:
-    """Every kind of failed sign-in raises the same error with the same message.
+    """Every kind of failed sign-in raises ``AuthenticationError`` with the same message.
 
-    Wrong password, unknown email, and deactivated account must be
-    indistinguishable, so a caller can't discover accounts or their state.
+    A wrong password, an unknown email, and a deactivated account must look
+    the same, so a caller can't discover which emails have accounts or
+    which accounts are deactivated. Only the class and the message are
+    compared: an error that carried a code or details of its own for one
+    kind, which the API would send in the 401's body, would pass.
     """
     user = make_user(password_hash=hash_password(PASSWORD), is_active=is_active)
     db_session.add(user)
@@ -444,8 +586,10 @@ def test_a_failed_login_writes_nothing(
 ) -> None:
     """A failed sign-in saves no refresh token and leaves ``last_login_at`` unset.
 
-    The error is raised before anything is added, so nothing is written
-    even though the service would otherwise commit.
+    Each case is set up as in the generic-error test. Afterwards the user is
+    read back from the database and the tokens are counted in the same
+    session, so a sign-in time the service saved before it failed would
+    show, and so would a token it only added to the session.
     """
     user = make_user(password_hash=hash_password(PASSWORD), is_active=is_active)
     db_session.add(user)
@@ -467,16 +611,28 @@ def test_an_unknown_email_still_runs_the_password_check(
 ) -> None:
     """An unknown email still goes through the password check, with no hash.
 
-    ``verify_login_password`` is replaced where the service looks it up, and the
-    spy records one call with None: the path that verifies against the
-    dummy hash, so an unknown email takes as long as a wrong password. The
-    cost of that path is tested in ``test_security.py``.
+    ``verify_login_password`` is replaced where the service looks it up, and
+    the spy records exactly one call, with None: the path that checks the
+    password against the dummy hash, so an unknown email takes as long as a
+    wrong password. The cost of that path is tested in
+    ``tests/test_security.py``. Only the unknown email is spied on, so a
+    sign-in that refused a deactivated account before checking its password
+    would pass every test here.
     """
     calls: list[str | None] = []
     real_check = service.verify_login_password
 
     def spy(password: str, password_hash: str | None) -> bool:
-        """Record the hash being checked, then run the real check."""
+        """Record the hash being checked, then run the real check.
+
+        Args:
+            password: The typed password, handed on unchanged.
+            password_hash: The stored hash the service passes, or None
+                when no account has the email.
+
+        Returns:
+            The real ``verify_login_password``'s answer.
+        """
         calls.append(password_hash)
         return real_check(password, password_hash)
 

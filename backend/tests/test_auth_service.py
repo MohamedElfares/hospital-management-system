@@ -300,9 +300,9 @@ def test_login_returns_an_access_token_for_the_user(db_session: Session, user: U
     Decoding proves the token is signed with the right key, hasn't expired,
     and carries the user's ID as a UUID.
     """
-    result = service.login(db_session, user.email, PASSWORD)
+    issued_tokens = service.login(db_session, user.email, PASSWORD)
 
-    assert decode_access_token(result.access_token) == user.id
+    assert decode_access_token(issued_tokens.access_token) == user.id
 
 
 def test_login_stores_only_the_hash_of_the_refresh_token(db_session: Session, user: User) -> None:
@@ -312,16 +312,16 @@ def test_login_stores_only_the_hash_of_the_refresh_token(db_session: Session, us
     because refreshing will look the row up that way. The table is read
     without a filter, so a token saved for the wrong user would be caught.
     """
-    result = service.login(db_session, user.email, PASSWORD)
+    issued_tokens = service.login(db_session, user.email, PASSWORD)
 
-    tokens = db_session.scalars(select(RefreshToken)).all()
+    token_rows = db_session.scalars(select(RefreshToken)).all()
 
-    assert len(tokens) == 1
-    token = tokens[0]
+    assert len(token_rows) == 1
+    token_row = token_rows[0]
 
-    assert token.token_hash == hash_refresh_token(result.refresh_token)
-    assert token.token_hash != result.refresh_token
-    assert token.user_id == user.id
+    assert token_row.token_hash == hash_refresh_token(issued_tokens.refresh_token)
+    assert token_row.token_hash != issued_tokens.refresh_token
+    assert token_row.user_id == user.id
 
 
 def test_the_repr_of_issued_tokens_shows_neither_token() -> None:
@@ -357,9 +357,9 @@ def test_login_sets_the_refresh_token_to_expire_after_the_configured_days(
     service.login(db_session, user.email, PASSWORD)
     after = datetime.now(UTC) + timedelta(days=3)
 
-    token = db_session.scalar(select(RefreshToken).where(RefreshToken.user_id == user.id))
+    token_row = db_session.scalar(select(RefreshToken).where(RefreshToken.user_id == user.id))
 
-    assert before <= token.expires_at <= after
+    assert before <= token_row.expires_at <= after
 
 
 def test_login_records_the_sign_in_time(db_session: Session, user: User) -> None:
@@ -378,12 +378,12 @@ def test_login_records_the_sign_in_time(db_session: Session, user: User) -> None
 
 def test_login_ignores_email_case_and_surrounding_spaces(db_session: Session, user: User) -> None:
     """An email typed in mixed case with spaces around it still signs the user in."""
-    result = service.login(db_session, "   Test@Example.COM   ", PASSWORD)
+    issued_tokens = service.login(db_session, "   Test@Example.COM   ", PASSWORD)
 
-    assert decode_access_token(result.access_token) == user.id
+    assert decode_access_token(issued_tokens.access_token) == user.id
 
 
-def test_a_user_who_must_change_their_password_can_still_log_in(db_session: Session) -> None:
+def test_login_succeeds_while_a_password_change_is_pending(db_session: Session) -> None:
     """A user with a temporary password can sign in.
 
     They need a session to choose a new password; the API, not sign-in,
@@ -394,9 +394,9 @@ def test_a_user_who_must_change_their_password_can_still_log_in(db_session: Sess
     db_session.add(user)
     db_session.flush()
 
-    result = service.login(db_session, user.email, PASSWORD)
+    issued_tokens = service.login(db_session, user.email, PASSWORD)
 
-    assert decode_access_token(result.access_token) == user.id
+    assert decode_access_token(issued_tokens.access_token) == user.id
 
 
 def test_each_login_issues_a_new_refresh_token(db_session: Session, user: User) -> None:
@@ -407,9 +407,9 @@ def test_each_login_issues_a_new_refresh_token(db_session: Session, user: User) 
     """
     first_login = service.login(db_session, user.email, PASSWORD)
     second_login = service.login(db_session, user.email, PASSWORD)
-    tokens = db_session.scalars(select(RefreshToken)).all()
+    token_rows = db_session.scalars(select(RefreshToken)).all()
 
-    assert len(tokens) == 2
+    assert len(token_rows) == 2
     assert first_login.refresh_token != second_login.refresh_token
 
 
@@ -455,9 +455,9 @@ def test_a_failed_login_writes_nothing(
         service.login(db_session, email, password)
 
     db_session.refresh(user)
-    tokens = db_session.scalars(select(RefreshToken)).all()
+    token_rows = db_session.scalars(select(RefreshToken)).all()
 
-    assert len(tokens) == 0
+    assert len(token_rows) == 0
     assert user.last_login_at is None
 
 

@@ -4,15 +4,22 @@ The tests save users built by ``make_user`` into the test database, whose
 schema the migrations built, and read them back, through the ORM or, where
 the point is what the database refuses or stores on its own, with raw SQL.
 They cover the safe defaults a new account gets, timestamps that read back
-timezone-aware, an email that is unique and stored lowercase, a role that
-SQLAlchemy checks before any SQL is sent and the database checks again,
-the four columns with no default refusing NULL, and a role stored as its
-value that reads back as a ``Role`` member. Each refusal by the database
+timezone-aware, an ``updated_at`` that each update through the ORM moves,
+an email that is unique and stored lowercase, a role that SQLAlchemy
+checks before any SQL is sent and the database checks again, the four
+columns with no default refusing NULL, and a role stored as its value
+that reads back as a ``Role`` member. Each refusal by the database
 is checked by the constraint or column it names, so a test can't pass
 because some other rule failed. What the users service does with these
 rules, such as turning a taken email into a ``ConflictError``, is tested
 in ``tests/test_user_service.py``.
 """
+
+# UTC time zone; the backdated updated_at is a UTC instant, as the column holds.
+from datetime import UTC
+
+# Builds the long-past time the update test backdates updated_at to.
+from datetime import datetime
 
 # PostgreSQL's error classes in the driver; each refusal is checked by its exact class.
 import psycopg
@@ -71,9 +78,8 @@ def test_a_new_user_gets_timezone_aware_timestamps(db_session: Session) -> None:
     The database fills both with ``now()`` on insert. They are
     ``TIMESTAMPTZ`` columns, which hold an instant rather than a wall-clock
     time, so the driver returns them with a time zone, as plan §7 asks.
-    The test doesn't check that an update moves ``updated_at``: ``now()``
-    is the transaction's start time, and every test runs inside one
-    transaction, so an update writes the same instant the insert did.
+    What an update does to ``updated_at`` is
+    ``test_an_update_moves_updated_at_to_now``'s case.
     """
     user = make_user()
 
@@ -85,6 +91,39 @@ def test_a_new_user_gets_timezone_aware_timestamps(db_session: Session) -> None:
     assert user.updated_at.tzinfo is not None
     assert user.created_at is not None
     assert user.created_at.tzinfo is not None
+
+
+def test_an_update_moves_updated_at_to_now(db_session: Session) -> None:
+    """An update through the ORM sets ``updated_at`` to ``now()`` again.
+
+    ``TimestampMixin``'s ``onupdate`` adds ``updated_at = now()`` to every
+    ``UPDATE`` SQLAlchemy builds, so the column tells when the row last
+    changed (plan §7). ``now()`` is the transaction's start time, and the
+    test runs inside one transaction, so an update writes the instant the
+    insert wrote, and comparing the value before and after would show no
+    change. The row is therefore first backdated with raw SQL, which skips
+    ``onupdate``, and checked to hold the old time. After a change of name
+    through the ORM, ``updated_at`` must be back at ``created_at``, the
+    insert's ``now()``; without ``onupdate``, the reloaded row would still
+    hold the old time.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    backdated = datetime(2000, 1, 1, tzinfo=UTC)
+    stored_updated_at = db_session.execute(
+        text("UPDATE users SET updated_at = :backdated WHERE id = :user_id RETURNING updated_at"),
+        {"backdated": backdated, "user_id": user.id},
+    ).scalar_one()
+
+    assert stored_updated_at == backdated
+
+    user.full_name = "Renamed User"
+    db_session.flush()
+    db_session.refresh(user)
+
+    assert user.updated_at == user.created_at
 
 
 def test_two_users_cannot_share_an_email(db_session: Session) -> None:

@@ -3,11 +3,12 @@
 These are unit tests: they build the schema directly, with no database and
 no request, as ``create-admin`` builds it. ``_valid_values`` supplies input
 that passes every rule, and each test changes one field. The email comes
-out lowercase, and a malformed one is refused. The full name is stripped,
-must be 1 to 255 characters long, and is refused when it holds a control
-character, while a zero-width non-joiner is kept. The password is kept
-exactly as typed, must be 15 to 128 characters long, and stays hidden when
-the model is printed. The role must be a ``Role`` value. Each refusal is
+out lowercase, and a malformed one is refused. The full name is stripped
+of surrounding whitespace, tabs and line breaks included, before it is
+checked, must be 1 to 255 characters long, and is refused when it holds a
+control character, while a zero-width non-joiner is kept. The password is
+kept exactly as typed, must be 15 to 128 characters long, and stays hidden
+when the model is printed. The role must be a ``Role`` value. Each refusal is
 checked by the field it names. The same email rule at sign-in is tested
 in ``tests/test_user_service.py``; ``PasswordChange``, which shares the
 password rule, in ``tests/test_auth_schemas.py``; and ``UserRead``, through
@@ -93,6 +94,30 @@ def test_the_name_is_stripped_of_surrounding_spaces() -> None:
 @pytest.mark.parametrize(
     "full_name",
     [
+        pytest.param("Ana\n", id="trailing-line-break"),
+        pytest.param("Ana\r\n", id="trailing-crlf"),
+        pytest.param("\tAna\t", id="surrounding-tabs"),
+    ],
+)
+def test_a_tab_or_line_break_around_the_name_is_stripped(full_name: str) -> None:
+    """A tab or a line break around the name is stripped, not refused.
+
+    Both are control characters, which a name may not contain, but they
+    are whitespace too, and the name is stripped before
+    ``_reject_control_characters`` runs, as its docstring says. So a name
+    pasted with a trailing line break, a Windows line ending included, is
+    stored as the name alone, where a check that ran before the stripping
+    would refuse it.
+    """
+    values = _valid_values(full_name=full_name)
+    data = UserCreate(**values)
+
+    assert data.full_name == "Ana"
+
+
+@pytest.mark.parametrize(
+    "full_name",
+    [
         pytest.param("a" * 1, id="1 character"),
         pytest.param("a" * 255, id="255 characters"),
     ],
@@ -143,6 +168,8 @@ def test_a_name_with_a_control_character_is_rejected(full_name: str) -> None:
     the others are common C0 controls, DEL, and a C1 control. Each sits
     between two letters, where stripping can't remove it, and the message
     shows the control-character check refused the name, not another rule.
+    At the edges, a tab or a line break is stripped instead, as
+    ``test_a_tab_or_line_break_around_the_name_is_stripped`` checks.
     """
     values = _valid_values(full_name=full_name)
     with pytest.raises(ValidationError) as exc_info:

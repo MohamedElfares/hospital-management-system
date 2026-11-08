@@ -443,6 +443,32 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     return pause
 
 
+def _pause_after_the_owner_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
+    """Make the held request stop just after refresh has found its token's user.
+
+    Refresh reads the token's user through the repository module before it
+    takes any lock, so a request stopped here holds no lock at all: its
+    first lock is the user's row, which it asks for next.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+
+    Returns:
+        The pause the held request will stop at.
+    """
+    pause = _Pause()
+    real_lookup = repository.get_refresh_token_user_id_by_hash
+
+    def lookup_then_pause(session: Session, token_hash: str) -> uuid.UUID | None:
+        """Find the token's user as usual, then stop the held request."""
+        user_id = real_lookup(session, token_hash)
+        pause.wait_here()
+        return user_id
+
+    monkeypatch.setattr(repository, "get_refresh_token_user_id_by_hash", lookup_then_pause)
+    return pause
+
+
 def _pause_after_the_replacement_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     """Make the held request stop just after a sign-out has found and locked a replacement.
 
@@ -724,6 +750,8 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
 # before the user would hold only the token at the second point, and it and
 # the competing request would then wait for each other until PostgreSQL
 # aborted one, so the second point is what pins the order of the two locks.
+# That the lookup before them takes no lock at all is pinned by
+# test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user.
 HELD_REFRESH_PAUSES = [
     pytest.param(_pause_before_issuing_tokens, id="held-before-issuing-tokens"),
     pytest.param(_pause_after_the_token_lookup, id="held-after-locking-the-token"),
@@ -819,6 +847,45 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
         _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
         IssuedTokens,
     )
+
+
+def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: sessionmaker[Session],
+    committed_user: User,
+) -> None:
+    """A refresh takes no lock before it locks the user, so a password change never waits for it.
+
+    The refresh is held right after its first lookup, which reads only the
+    token's user. A password change of the same user must then finish
+    without waiting: ``lock_timeout`` turns any wait into an error. If that
+    lookup locked the token, the held refresh would go on to wait for the
+    user's lock while holding the token, and a password change, holding
+    the user's lock, would wait for the token: a deadlock, which PostgreSQL
+    ends by aborting one of them with an error. Released after the change,
+    the refresh finds its token revoked and is refused.
+    """
+    raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = _pause_after_the_owner_lookup(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
+        held_refresh = pool.submit(_refresh_in_new_session, session_factory, raw_token)
+
+        try:
+            assert pause.reached.wait(TIMEOUT_SECONDS), "the refresh never reached its pause"
+
+            with session_factory() as session:
+                session.execute(text("SET LOCAL lock_timeout = '1s'"))
+                signed_in_user = session.get(User, committed_user.id)
+                assert signed_in_user is not None
+                data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+
+                service.change_password(session, signed_in_user, data)
+        finally:
+            pause.released.set()
+
+    with pytest.raises(AuthenticationError):
+        held_refresh.result()
 
 
 def test_a_password_change_is_checked_against_a_change_committed_after_loading(

@@ -331,6 +331,33 @@ closes when the last stage is done, so an interrupted run is obvious.
   and the `PasswordChange` built from it is `password_change`. Under
   `NAMING.md`'s new `values` row, your choice in stage 14, they become
   `_valid_values`, `values`, and `data`.
+- **Stage 14's findings fixed (2026-11-08):** R-061 (`b85b6ba`), R-062
+  (`74098c0`), R-063 (`d2be109`), and R-064 (`b8e5e2a`), written at your
+  request ("fix the open in findings with recommendations and best
+  practices"), one commit each, in ID order, since none depends on
+  another. The code under test didn't change, so each new test was run
+  instead against the broken copy that had passed the whole suite, and
+  each copy failed it: the mixin without `onupdate`, the name check run
+  before the stripping, and, for R-064's new test, an email rule that
+  refuses a display name. Two steps go beyond the recommendations:
+  R-061's test first checks that the row really holds the backdated
+  time, so it can't pass vacuously, and R-062's adds a Windows line
+  ending. R-063 changes no value: `tests/test_security.py`'s whole AST is
+  identical. R-064 keeps the display-name form and documents it, and plan
+  §8.1 now says sign-in counts an account's attempts under the
+  normalized email, for IAM-3 (#16). The fixes change
+  `tests/test_user_model.py` and `tests/test_user_schemas.py` after
+  stage 14 reviewed them at `442fa6b`, so the next `/review new` takes
+  them again, with `tests/test_security.py`, `users/schemas.py`, and
+  `users/service.py`, which were due already. Each commit passes Ruff
+  and the suite on its own, run like CI in a clean worktree: 362, 365,
+  365, then 366 tests, with coverage at 99.86%, and the suite also passes
+  reversed, shuffled twice, and at `LOG_LEVEL=INFO`. No finding is open.
+- **Carried to stage 16 (from R-061):** `TimestampMixin`'s docstring says
+  `onupdate` also reaches a bulk `update()`, such as the one in
+  `revoke_all_refresh_tokens_for_user`. R-061's test covers only an
+  update through the ORM, so stage 16 should check whether any test sees
+  that revocation move `refresh_tokens.updated_at`.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

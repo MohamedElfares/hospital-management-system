@@ -14,8 +14,8 @@ Sign-in returns an access token that names the user and stores only the
 hash of a new refresh token, one per sign-in, which expires after the
 configured number of days. It records the sign-in time, accepts the email
 in any case and with spaces around it, and lets a user with a pending
-password change in. Every failed sign-in raises ``AuthenticationError``
-with the same message and writes nothing, and an unknown email and a
+password change in. Every failed sign-in raises the very same
+``AuthenticationError`` and writes nothing, and an unknown email and a
 deactivated account still run the password check. A valid access token is turned back into the active
 user it names, looked up once by the ID inside it; every other token gets
 the same error, and one that doesn't decode gets it before any lookup.
@@ -125,8 +125,8 @@ PASSWORD_CHANGE_REQUIRED = "You must change your password before continuing."
 # only saved user is test@example.com with PASSWORD, so ghost@example.com is
 # truly unknown, and the inactive-user case passes the password check and
 # reaches the is_active check. The last case shows that a wrong password on a
-# deactivated account gets the same error and message. An account that
-# changes during the check is tested in tests/test_auth_concurrency.py.
+# deactivated account gets the very same error. An account that changes
+# during the check is tested in tests/test_auth_concurrency.py.
 FAILED_LOGINS = [
     pytest.param("test@example.com", "Wrong-Password-1", True, id="wrong-password"),
     pytest.param("ghost@example.com", PASSWORD, True, id="unknown-email"),
@@ -600,13 +600,14 @@ def test_a_failed_login_raises_the_generic_error(
     password: str,
     is_active: bool,
 ) -> None:
-    """Every kind of failed sign-in raises ``AuthenticationError`` with the same message.
+    """Every kind of failed sign-in raises the very same error.
 
     A wrong password, an unknown email, and a deactivated account must look
     the same, so a caller can't discover which emails have accounts or
-    which accounts are deactivated. Only the class and the message are
-    compared: an error that carried a code or details of its own for one
-    kind, which the API would send in the 401's body, would pass.
+    which accounts are deactivated. The status, the code, the message, and
+    the details are all compared, because the API sends each of them in
+    the 401, so an error that carried a code or details of its own for one
+    kind fails.
     """
     user = make_user(password_hash=hash_password(PASSWORD), is_active=is_active)
     db_session.add(user)
@@ -615,7 +616,12 @@ def test_a_failed_login_raises_the_generic_error(
     with pytest.raises(AuthenticationError) as exc_info:
         service.login(db_session, email, password)
 
-    assert exc_info.value.message == INVALID_CREDENTIALS
+    error = exc_info.value
+
+    assert error.status_code == 401
+    assert error.code == ErrorCode.AUTHENTICATION_FAILED
+    assert error.message == INVALID_CREDENTIALS
+    assert error.details == []
 
 
 @pytest.mark.parametrize(("email", "password", "is_active"), FAILED_LOGINS)

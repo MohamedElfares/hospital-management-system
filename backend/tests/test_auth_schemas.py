@@ -7,13 +7,14 @@ password rule, and the boundary tests build their lengths from the rule's
 constants, whose values the ``UserCreate`` tests in
 ``tests/test_user_schemas.py`` pin. Both passwords are kept exactly as
 typed, spaces at either end included. The current password has only the
-maximum, so a short one passes, and both passwords stay hidden when the
-model is printed. ``LoginForm`` shows neither the email nor the password
-when printed. Each refusal is checked by the field it names. The form's
-length limits, the 422 bodies, and a sign-in and a password change with
-spaces around the passwords are tested through the API in
-``tests/test_auth_api.py``, and the service's refusals of a wrong current
-password and an unchanged one in ``tests/test_auth_service.py``.
+maximum, so any length up to it passes, an empty one included, and both
+passwords stay hidden when the model is printed. ``LoginForm`` shows
+neither the email nor the password when printed. Each refusal is checked
+by the field it names. The form's length limits, the 422 bodies, and a
+sign-in and a password change with spaces around the passwords are
+tested through the API in ``tests/test_auth_api.py``, and the service's
+refusals of a wrong current password and an unchanged one in
+``tests/test_auth_service.py``.
 """
 
 # Test framework: parametrize for the lengths at each limit, and raises.
@@ -139,19 +140,31 @@ def test_an_invalid_new_password_is_rejected(new_password: str) -> None:
     assert any(error["loc"] == ("new_password",) for error in exc_info.value.errors())
 
 
-def test_a_short_current_password_is_accepted() -> None:
-    """A one-character current password passes validation.
+@pytest.mark.parametrize(
+    "current_password",
+    [
+        pytest.param("", id="0 characters"),
+        pytest.param("W", id="1 character"),
+        pytest.param("x" * PASSWORD_MAX_LENGTH, id=f"{PASSWORD_MAX_LENGTH} characters"),
+    ],
+)
+def test_a_current_password_of_any_length_up_to_the_maximum_is_accepted(
+    current_password: str,
+) -> None:
+    """Current passwords from empty to the rule's longest pass validation unchanged.
 
     The current password is checked against the stored hash, not against
-    the rule, so the schema sets no minimum, and a password set under an
-    older, shorter minimum can still be changed. A wrong one, however
-    short, is refused by the service instead. A minimum of one character
-    would still pass here: no test types an empty current password.
+    the rule, so the schema sets no minimum: an empty or a one-character
+    password passes here, and the service refuses it as wrong, and a
+    password set under an older, shorter minimum can still be changed. The
+    longest case is the rule's maximum, built from the shared constant, as
+    its ID is: no password can be set longer, and one that long signs in,
+    so a lower maximum here would leave its owner unable to change it.
     """
-    values = _valid_values(current_password="W")
+    values = _valid_values(current_password=current_password)
     data = PasswordChange(**values)
 
-    assert data.current_password.get_secret_value() == "W"
+    assert data.current_password.get_secret_value() == current_password
 
 
 def test_a_too_long_current_password_is_rejected() -> None:
@@ -159,10 +172,9 @@ def test_a_too_long_current_password_is_rejected() -> None:
 
     No password can be set longer than 128 characters, the rule's maximum,
     so a longer one can never be right, and refusing it here spares the
-    service an Argon2 check that could only fail. Only the length one over
-    the limit is tested: no test sends a current password of exactly 128
-    characters, so a maximum one lower, which would refuse a user's own
-    128-character password, would go unseen.
+    service an Argon2 check that could only fail. With the 128-character
+    case of ``test_a_current_password_of_any_length_up_to_the_maximum_is_accepted``,
+    it pins the limit from both sides.
     """
     values = _valid_values(current_password="x" * (PASSWORD_MAX_LENGTH + 1))
 

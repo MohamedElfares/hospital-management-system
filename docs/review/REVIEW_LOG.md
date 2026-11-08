@@ -421,6 +421,31 @@ closes when the last stage is done, so an interrupted run is obvious.
   then commit its revocation before it issues the new token. That
   repositories never commit is a layer rule this review checks, and both
   repositories keep it.
+- **Stage 16's findings fixed (2026-11-08):** R-070 (`1f58fa7`), R-071
+  (`f4dd26a`), R-072 (`b6bfdc9`), R-073 (`9a584e7`), and R-074
+  (`fabac35`), written at your request ("fix the open in findings with
+  recommendations and best practices"), one commit each, in ID order,
+  since none depends on another. The code under test didn't change, so
+  each new or changed test was run instead against the broken copies
+  that had passed the whole suite, and each copy failed it. One step
+  differs from the logged recommendations: R-073's password change runs
+  with `lock_timeout` at 1 s, as the failed sign-in test's does, so any
+  wait fails it at once rather than a timer deciding. R-071 adds a
+  sentence on `=` to `get_user_by_email`'s docstring, and R-074 a pointer
+  to R-061's test docstring; neither changes code. R-070 renames the
+  active-Doctor test it parametrizes, so that its name says what it now
+  checks. The fixes change `tests/test_user_repository.py` and
+  `tests/test_auth_repository.py` after stage 16 reviewed them at
+  `f8b131a`, and `app/modules/users/repository.py` and
+  `tests/test_user_model.py`, which the next `/review new` takes anyway;
+  `tests/test_auth_service.py` (stage 19) and
+  `tests/test_auth_concurrency.py` (stage 25) changed before their stages
+  reach them. Two commit messages were amended while still local, one to
+  keep a test name whole and one to drop a stray draft line; the trees
+  are unchanged. Each commit passes Ruff and the suite on its own, run
+  like CI in a clean worktree: 374, 376, 380, 381, then 382 tests, with
+  coverage at 99.86%, and the suite also passes reversed, shuffled twice,
+  and at `LOG_LEVEL=INFO`. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

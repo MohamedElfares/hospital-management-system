@@ -15,8 +15,8 @@ hash of a new refresh token, one per sign-in, which expires after the
 configured number of days. It records the sign-in time, accepts the email
 in any case and with spaces around it, and lets a user with a pending
 password change in. Every failed sign-in raises ``AuthenticationError``
-with the same message and writes nothing, and an unknown email still runs
-the password check. A valid access token is turned back into the active
+with the same message and writes nothing, and an unknown email and a
+deactivated account still run the password check. A valid access token is turned back into the active
 user it names, looked up once by the ID inside it; every other token gets
 the same error, and one that doesn't decode gets it before any lookup.
 Refresh rotates the token and keeps its expiry. A rotated token presented again revokes every
@@ -234,6 +234,47 @@ def lookup_calls(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
         return real_get_user_by_id(session, user_id)
 
     monkeypatch.setattr(service, "get_user_by_id", spy)
+    return calls
+
+
+@pytest.fixture
+def password_check_calls(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Spy on the auth service's password check and return the hashes it receives.
+
+    ``verify_login_password`` is replaced where the auth service looks it
+    up, for the reason ``lookup_calls`` gives. The spy records the stored
+    hash each check is given, or None when no account has the email, then
+    runs the real check and returns its answer, so a sign-in behaves
+    exactly as usual. A sign-in that skips the check, or runs it twice,
+    shows in the list. ``monkeypatch`` puts the real check back after the
+    test.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+
+    Returns:
+        The list the spy appends each checked hash to, in call order:
+        ``[None]`` means one check against the dummy hash, and
+        ``[user.password_hash]`` one check against that account's hash.
+    """
+    calls: list[str | None] = []
+    real_verify_login_password = service.verify_login_password
+
+    def spy(password: str, password_hash: str | None) -> bool:
+        """Record the hash being checked, then run the real check.
+
+        Args:
+            password: The typed password, handed on unchanged.
+            password_hash: The stored hash the service passes, or None
+                when no account has the email.
+
+        Returns:
+            The real ``verify_login_password``'s answer.
+        """
+        calls.append(password_hash)
+        return real_verify_login_password(password, password_hash)
+
+    monkeypatch.setattr(service, "verify_login_password", spy)
     return calls
 
 
@@ -607,41 +648,52 @@ def test_a_failed_login_writes_nothing(
 
 def test_an_unknown_email_still_runs_the_password_check(
     db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
+    password_check_calls: list[str | None],
 ) -> None:
     """An unknown email still goes through the password check, with no hash.
 
-    ``verify_login_password`` is replaced where the service looks it up, and
-    the spy records exactly one call, with None: the path that checks the
-    password against the dummy hash, so an unknown email takes as long as a
-    wrong password. The cost of that path is tested in
-    ``tests/test_security.py``. Only the unknown email is spied on, so a
-    sign-in that refused a deactivated account before checking its password
-    would pass every test here.
+    The ``password_check_calls`` spy records exactly one check, with None:
+    the path that checks the password against the dummy hash, so an unknown
+    email takes as long as a wrong password. The cost of that path is
+    tested in ``tests/test_security.py``.
     """
-    calls: list[str | None] = []
-    real_check = service.verify_login_password
-
-    def spy(password: str, password_hash: str | None) -> bool:
-        """Record the hash being checked, then run the real check.
-
-        Args:
-            password: The typed password, handed on unchanged.
-            password_hash: The stored hash the service passes, or None
-                when no account has the email.
-
-        Returns:
-            The real ``verify_login_password``'s answer.
-        """
-        calls.append(password_hash)
-        return real_check(password, password_hash)
-
-    monkeypatch.setattr(service, "verify_login_password", spy)
-
     with pytest.raises(AuthenticationError) as exc_info:
         service.login(db_session, "ghost@example.com", PASSWORD)
 
-    assert calls == [None]
+    assert password_check_calls == [None]
+    assert exc_info.value.message == INVALID_CREDENTIALS
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param(PASSWORD, id="right-password"),
+        pytest.param("Wrong-Password-1", id="wrong-password"),
+    ],
+)
+def test_a_deactivated_account_still_runs_the_password_check(
+    db_session: Session,
+    password_check_calls: list[str | None],
+    password: str,
+) -> None:
+    """A deactivated account's password is checked once, against its own hash.
+
+    The password is checked before the account's ``is_active`` flag, so a
+    deactivated account takes as long to refuse as a wrong password on an
+    active one, and the response time can't reveal which emails belong to
+    deactivated accounts. A sign-in that refused the account before the
+    check would answer without that cost, and the spy would record nothing.
+    The right password is tried as well as a wrong one, because only the
+    right one passes the check and reaches the ``is_active`` check.
+    """
+    user = make_user(password_hash=hash_password(PASSWORD), is_active=False)
+    db_session.add(user)
+    db_session.flush()
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        service.login(db_session, user.email, password)
+
+    assert password_check_calls == [user.password_hash]
     assert exc_info.value.message == INVALID_CREDENTIALS
 
 

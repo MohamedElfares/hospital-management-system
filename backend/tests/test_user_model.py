@@ -193,8 +193,8 @@ def test_the_role_is_stored_as_its_value(db_session: Session) -> None:
     db_session.add(user)
     db_session.flush()
 
-    role = db_session.execute(
+    stored_role = db_session.execute(
         text("SELECT role FROM users WHERE id = :user_id"), {"user_id": user.id}
     ).scalar_one()
 
-    assert role == "doctor"
+    assert stored_role == "doctor"

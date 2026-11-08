@@ -51,9 +51,11 @@ from pydantic import StringConstraints
 from app.core.permissions import Role
 
 # The one email rule: email-validator's checks and normal form, then
-# lowercase. UserCreate stores an email in this form, and the users service
-# puts the email typed at sign-in through the same rule, so the two can
-# never disagree about how an address is written.
+# lowercase. EmailStr also takes an address with a display name, such as
+# "Eve <eve@example.com>", and keeps only the address. UserCreate stores an
+# email in this form, and the users service puts the email typed at sign-in
+# through the same rule, so the two can never disagree about how an address
+# is written.
 Email = Annotated[EmailStr, AfterValidator(str.lower)]
 
 # The users.email column's size, so no account's email is longer. Sign-in
@@ -114,17 +116,21 @@ class UserCreate(BaseModel):
     The email follows the shared ``Email`` rule. ``EmailStr`` checks the
     address with email-validator and returns its normalized form:
     surrounding spaces dropped, Unicode in NFC form, and the domain mapped
-    to its standard form, so full-width letters there become ASCII. The
-    address is then lowercased, which satisfies the database's lowercase
-    CHECK. Sign-in applies the same rule to the email it is given, so the
-    account is found however its address was typed. The full name is
-    stripped of surrounding spaces, and a name of only spaces, or one that
-    holds a control character such as NUL, is rejected before it reaches
-    the database. The password is kept exactly as typed, spaces included,
-    because changing it would lock the user out; hashing only puts it in
-    Unicode NFC, which every password check does as well. That is why the
-    model has no ``str_strip_whitespace`` setting: it would strip the
-    ``SecretStr`` password too.
+    to its standard form, so full-width letters there become ASCII. It also
+    takes the display-name form that mail programs write, such as
+    ``Eve <eve@example.com>``, and keeps only the address inside the angle
+    brackets. The address is then lowercased, which satisfies the
+    database's lowercase CHECK. Sign-in applies the same rule to the email
+    it is given, so the account is found however its address was typed, a
+    display name around it included; that is harmless, because the password
+    still decides every sign-in. The full name is stripped of surrounding
+    whitespace, and a name of only spaces, or one that holds a control
+    character such as NUL, is rejected before it reaches the database. The
+    password is kept exactly as typed, spaces included, because changing it
+    would lock the user out; hashing only puts it in Unicode NFC, which
+    every password check does as well. That is why the model has no
+    ``str_strip_whitespace`` setting: it would strip the ``SecretStr``
+    password too.
 
     The password follows the shared ``Password`` rule of 15 to 128
     characters with no composition rules (NIST SP 800-63B-4), the same rule

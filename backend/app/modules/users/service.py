@@ -155,8 +155,9 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     the users repository. Sign-in passes the raw form value, so the text
     first goes through the ``Email`` rule that ``UserCreate`` stores
     addresses with: ``" Admin@Example.COM "`` becomes ``admin@example.com``,
-    and an address typed with full-width letters or a decomposed accent
-    becomes the form that was stored. Matching the stored form exactly is
+    an address typed with full-width letters or a decomposed accent
+    becomes the form that was stored, and ``Eve <admin@example.com>``
+    becomes the address alone. Matching the stored form exactly is
     what lets the repository use the unique index on ``email``.
 
     Text that isn't a valid address returns None without a query. No account

@@ -3,15 +3,16 @@
 These are unit tests: they build the schema directly, with no database and
 no request, as ``create-admin`` builds it. ``_valid_values`` supplies input
 that passes every rule, and each test changes one field. The email comes
-out lowercase, and a malformed one is refused. The full name is stripped
-of surrounding whitespace, tabs and line breaks included, before it is
-checked, must be 1 to 255 characters long, and is refused when it holds a
-control character, while a zero-width non-joiner is kept. The password is
-kept exactly as typed, must be 15 to 128 characters long, and stays hidden
-when the model is printed. The role must be a ``Role`` value. Each refusal is
-checked by the field it names. The same email rule at sign-in is tested
-in ``tests/test_user_service.py``; ``PasswordChange``, which shares the
-password rule, in ``tests/test_auth_schemas.py``; and ``UserRead``, through
+out lowercase and without a display name around it, and a malformed one is
+refused. The full name is stripped of surrounding whitespace, tabs and line
+breaks included, before it is checked, must be 1 to 255 characters long,
+and is refused when it holds a control character, while a zero-width
+non-joiner is kept. The password is kept exactly as typed, must be 15 to
+128 characters long, and stays hidden when the model is printed. The role
+must be a ``Role`` value. Each refusal is checked by the field it names.
+The same email rule at sign-in is tested in ``tests/test_user_service.py``;
+``PasswordChange``, which shares the password rule, in
+``tests/test_auth_schemas.py``; and ``UserRead``, through
 ``GET /auth/me``, in ``tests/test_auth_api.py``.
 """
 
@@ -78,6 +79,23 @@ def test_a_malformed_email_is_rejected() -> None:
         UserCreate(**values)
 
     assert exc_info.value.errors()[0]["loc"] == ("email",)
+
+
+def test_a_display_name_around_the_email_is_dropped() -> None:
+    """An address written with a display name comes out as the address alone.
+
+    Pydantic's ``EmailStr`` takes the ``Name <address>`` form that mail
+    programs write and keeps only the address inside the angle brackets,
+    which the ``Email`` rule then lowercases. Sign-in applies the same rule,
+    so ``Eve <test@example.com>`` reaches that account too, which is
+    harmless, because the password still decides every sign-in. The test
+    pins the form, so a Pydantic release that stopped taking it would fail
+    here instead of changing sign-in unseen.
+    """
+    values = _valid_values(email="Eve <Test@example.com>")
+    data = UserCreate(**values)
+
+    assert data.email == "test@example.com"
 
 
 def test_the_name_is_stripped_of_surrounding_spaces() -> None:

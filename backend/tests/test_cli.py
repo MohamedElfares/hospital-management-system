@@ -17,7 +17,9 @@ typed at the prompts; a short password and a name holding NUL, each
 refused by field without showing what was typed, and two passwords that
 don't match, with nothing saved in any of these cases; the refusal while
 an active Admin exists; and a crash, whose traceback must not show the
-typed password. The rules underneath are tested where they live: the
+typed password. Each refusal of the command's own is the whole of
+``result.stderr``, where the command prints it, and the success line is
+on ``result.stdout``. The rules underneath are tested where they live: the
 service's in ``tests/test_user_service.py``, and the schema's in
 ``tests/test_user_schemas.py``.
 """
@@ -109,12 +111,14 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
 ) -> None:
     """An 11-character password is refused with the rule, never shown, and nothing is saved.
 
-    The command prints the rule rather than Pydantic's message, which would
-    give the typed password's length, and prints only each error's field
-    and message, because Pydantic's whole error holds the rejected input.
-    The test password is a string that can't appear in the output by
-    chance, so its absence shows that neither the prompt nor the error
-    printed it.
+    The rule is the only line on stderr, where the command prints every
+    refusal. It is the rule rather than Pydantic's message, which would
+    give the typed password's length, and only each error's field and
+    message are printed, because Pydantic's whole error holds the rejected
+    input; comparing all of stderr would also catch that error printed
+    beside the rule. The test password is a string that can't appear in
+    the output by chance, so its absence shows that neither the prompt nor
+    the error printed it.
     """
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
@@ -125,7 +129,7 @@ def test_create_admin_rejects_a_short_password_without_showing_it(
     )
 
     assert result.exit_code == 1
-    assert "password: must be 15 to 128 characters." in result.output
+    assert result.stderr == "password: must be 15 to 128 characters.\n"
     assert "short-pw-11" not in result.output
     assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
@@ -165,8 +169,9 @@ def test_create_admin_rejects_a_control_character_in_the_name(
 
     PostgreSQL can't store NUL, so a name holding one must be refused by
     validation, with the field named, rather than end the command with a
-    database error. A real command line can't carry NUL in an option, so
-    the name comes through the prompt.
+    database error; the field and its message are the only line on stderr.
+    A real command line can't carry NUL in an option, so the name comes
+    through the prompt.
     """
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
@@ -177,7 +182,9 @@ def test_create_admin_rejects_a_control_character_in_the_name(
     )
 
     assert result.exit_code == 1
-    assert "full_name: Value error, must not contain control characters" in result.output
+    assert result.stderr == (
+        "full_name: Value error, must not contain control characters, such as tabs or line breaks\n"
+    )
     assert get_user_by_email(db_session, ADMIN_EMAIL) is None
 
 
@@ -190,7 +197,8 @@ def test_create_admin_refuses_when_an_active_admin_exists(
 
     ``make_user``'s default account is an Admin, active by the column's
     default, committed as an earlier run of the command would have left
-    it. The message is the service's ``ConflictError``, printed as it is.
+    it. The message is the service's ``ConflictError``, printed as it is,
+    and the only line on stderr.
     """
     monkeypatch.setattr(cli, "SessionLocal", contextmanager(get_test_db))
 
@@ -205,7 +213,9 @@ def test_create_admin_refuses_when_an_active_admin_exists(
     )
 
     assert result.exit_code == 1
-    assert "An active Admin already exists" in result.output
+    assert result.stderr == (
+        "An active Admin already exists. Create more Admins through the API.\n"
+    )
 
 
 def test_create_admin_prompts_for_a_missing_email_and_name(

@@ -388,6 +388,26 @@ def test_login_with_a_password_of_the_longest_allowed_length_succeeds(
     assert response.status_code == 200
 
 
+def test_login_with_spaces_around_the_password_succeeds(
+    db_session: Session,
+    client: TestClient,
+) -> None:
+    """An account whose password has a space at each end signs in with it as typed.
+
+    ``UserCreate`` keeps such a password, so its hash includes the spaces,
+    and the form and the service must hand the password to the check as it
+    arrived: either one stripping it would lock the account out.
+    """
+    spaced_password = " Correct-Password-1 "
+    user = make_user(password_hash=hash_password(spaced_password))
+    db_session.add(user)
+    db_session.flush()
+
+    response = client.post(LOGIN_URL, data={"username": user.email, "password": spaced_password})
+
+    assert response.status_code == 200
+
+
 def test_login_with_an_email_of_the_longest_allowed_length_reaches_the_service(
     client: TestClient,
 ) -> None:
@@ -883,6 +903,36 @@ def test_only_the_new_password_signs_in(user: User, client: TestClient) -> None:
     new_login = client.post(LOGIN_URL, data={"username": user.email, "password": NEW_PASSWORD})
 
     assert old_login.status_code == 401
+    assert new_login.status_code == 200
+
+
+def test_change_password_keeps_the_spaces_around_both_passwords(
+    db_session: Session,
+    client: TestClient,
+) -> None:
+    """A current and a new password with a space at each end are both used as typed.
+
+    The current password, saved with its spaces, is accepted as typed, and
+    the new one is saved with its spaces, so it then signs in as typed.
+    Stripping either password anywhere between the request and the hash,
+    in the schema or in the service, fails here: a stripped current
+    password is refused as wrong, and a stripped new one no longer matches
+    what the user signs in with.
+    """
+    user = make_user(password_hash=hash_password(" Correct-Password-1 "))
+    db_session.add(user)
+    db_session.flush()
+
+    response = client.post(
+        CHANGE_PASSWORD_URL,
+        json={"current_password": " Correct-Password-1 ", "new_password": " New-Password-123 "},
+        headers=_auth_header(user),
+    )
+    new_login = client.post(
+        LOGIN_URL, data={"username": user.email, "password": " New-Password-123 "}
+    )
+
+    assert response.status_code == 200
     assert new_login.status_code == 200
 
 

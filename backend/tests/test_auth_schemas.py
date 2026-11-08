@@ -5,11 +5,13 @@ no request. ``_valid_values`` supplies a password change that passes every
 rule, and each test changes one field. The new password follows the shared
 password rule, and the boundary tests build their lengths from the rule's
 constants, whose values the ``UserCreate`` tests in
-``tests/test_user_schemas.py`` pin. The current password has only the
+``tests/test_user_schemas.py`` pin. Both passwords are kept exactly as
+typed, spaces at either end included. The current password has only the
 maximum, so a short one passes, and both passwords stay hidden when the
 model is printed. ``LoginForm`` shows neither the email nor the password
 when printed. Each refusal is checked by the field it names. The form's
-length limits and the 422 bodies are tested through the API in
+length limits, the 422 bodies, and a sign-in and a password change with
+spaces around the passwords are tested through the API in
 ``tests/test_auth_api.py``, and the service's refusals of a wrong current
 password and an unchanged one in ``tests/test_auth_service.py``.
 """
@@ -66,14 +68,32 @@ def test_a_valid_password_change_is_accepted() -> None:
 
     Each value is read back with ``get_secret_value()``, so a schema that
     swapped the two fields, or changed a character of either, fails here.
-    Neither default has a space at either end, so this can't see a schema
-    that strips them, which would lock out a user whose password has one.
+    Neither default has a space at either end; whether spaces are kept is
+    ``test_both_passwords_are_kept_exactly_as_typed``'s case.
     """
     values = _valid_values()
     data = PasswordChange(**values)
 
     assert data.current_password.get_secret_value() == values["current_password"]
     assert data.new_password.get_secret_value() == values["new_password"]
+
+
+def test_both_passwords_are_kept_exactly_as_typed() -> None:
+    """A space at either end of either password is kept.
+
+    Spaces are part of a password: ``UserCreate`` keeps them, so a stored
+    hash can include them, and sign-in checks the password as typed. A
+    schema that stripped the current password would refuse the user's own
+    password as wrong, and one that stripped the new password would save a
+    password the user never typed, which they couldn't then sign in with.
+    Pydantic's ``str_strip_whitespace`` setting would do both, because it
+    strips a ``SecretStr`` too.
+    """
+    values = _valid_values(current_password=" Old.Password123 ", new_password=" New.Password123 ")
+    data = PasswordChange(**values)
+
+    assert data.current_password.get_secret_value() == " Old.Password123 "
+    assert data.new_password.get_secret_value() == " New.Password123 "
 
 
 @pytest.mark.parametrize(

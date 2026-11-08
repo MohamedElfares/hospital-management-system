@@ -41,6 +41,7 @@ with no row has never been reviewed and is always in scope.
 | `backend/migrations/versions/feee06ced45e_create_users_table.py` | `2a1b18b` | 2026-11-04 | 1 |
 | `backend/tests/conftest.py` | `a459df1` | 2026-11-06 | 1 |
 | `backend/tests/factories.py` | `a459df1` | 2026-11-06 | 1 |
+| `backend/tests/test_cli.py` | `acf3765` | 2026-11-08 | 1 |
 | `backend/tests/test_conftest.py` | `bf31a33` | 2026-11-06 | 1 |
 | `backend/tests/test_database.py` | `bf31a33` | 2026-11-06 | 1 |
 | `backend/tests/test_errors.py` | `d8362d5` | 2026-11-06 | 1 |
@@ -50,3 +51,4 @@ with no row has never been reviewed and is always in scope.
 | `backend/tests/test_security.py` | `cc8e73f` | 2026-11-08 | 1 |
 | `backend/tests/test_user_model.py` | `442fa6b` | 2026-11-08 | 1 |
 | `backend/tests/test_user_schemas.py` | `442fa6b` | 2026-11-08 | 1 |
+| `backend/tests/test_user_service.py` | `acf3765` | 2026-11-08 | 1 |

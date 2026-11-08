@@ -28,11 +28,11 @@ def test_an_added_refresh_token_is_saved_on_flush(db_session: Session) -> None:
     repository.create_refresh_token(db_session, token)
     db_session.flush()
 
-    result = db_session.scalar(
+    found_token = db_session.scalar(
         select(RefreshToken).where(RefreshToken.token_hash == token.token_hash)
     )
 
-    assert result is token
+    assert found_token is token
 
 
 def test_a_token_can_be_found_by_its_hash(db_session: Session) -> None:
@@ -232,9 +232,11 @@ def test_the_user_of_a_token_is_found_by_its_hash(db_session: Session) -> None:
     db_session.add(target_token)
     db_session.flush()
 
-    user_id = repository.get_refresh_token_user_id_by_hash(db_session, target_token.token_hash)
+    found_user_id = repository.get_refresh_token_user_id_by_hash(
+        db_session, target_token.token_hash
+    )
 
-    assert user_id == user.id
+    assert found_user_id == user.id
 
 
 def test_an_unknown_hash_finds_no_user_id(db_session: Session) -> None:

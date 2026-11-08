@@ -19,10 +19,10 @@ def test_an_added_user_can_be_found_by_email(db_session: Session) -> None:
     create_user(db_session, user)
     db_session.flush()
 
-    database_user = get_user_by_email(db_session, user.email)
+    found_user = get_user_by_email(db_session, user.email)
 
-    assert database_user is not None
-    assert database_user.id == user.id
+    assert found_user is not None
+    assert found_user.id == user.id
 
 
 def test_an_unknown_email_finds_no_user(db_session: Session) -> None:
@@ -36,16 +36,16 @@ def test_an_unknown_email_finds_no_user(db_session: Session) -> None:
     create_user(db_session, user)
     db_session.flush()
 
-    database_user = get_user_by_email(db_session, "unknownmail@example.com")
+    found_user = get_user_by_email(db_session, "unknownmail@example.com")
 
-    assert database_user is None
+    assert found_user is None
 
 
 def test_an_empty_table_has_no_active_admin(db_session: Session) -> None:
     """With no users at all, no active Admin exists: a fresh database allows ``create-admin``."""
-    found = exists_active_admin(db_session)
+    has_active_admin = exists_active_admin(db_session)
 
-    assert found is False
+    assert has_active_admin is False
 
 
 def test_an_active_admin_is_found(db_session: Session) -> None:
@@ -55,9 +55,9 @@ def test_an_active_admin_is_found(db_session: Session) -> None:
     create_user(db_session, admin)
     db_session.flush()
 
-    admin_exist = exists_active_admin(db_session)
+    has_active_admin = exists_active_admin(db_session)
 
-    assert admin_exist is True
+    assert has_active_admin is True
 
 
 def test_an_inactive_admin_is_not_counted(db_session: Session) -> None:
@@ -70,9 +70,9 @@ def test_an_inactive_admin_is_not_counted(db_session: Session) -> None:
     create_user(db_session, admin)
     db_session.flush()
 
-    admin_exist = exists_active_admin(db_session)
+    has_active_admin = exists_active_admin(db_session)
 
-    assert admin_exist is False
+    assert has_active_admin is False
 
 
 def test_an_active_doctor_is_not_counted_as_an_admin(db_session: Session) -> None:
@@ -104,10 +104,10 @@ def test_an_added_user_can_be_found_by_id(db_session: Session) -> None:
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id(db_session, user.id)
+    found_user = get_user_by_id(db_session, user.id)
 
-    assert result is not None
-    assert result.id == user.id
+    assert found_user is not None
+    assert found_user.id == user.id
 
 
 def test_an_unknown_id_finds_no_user(db_session: Session) -> None:
@@ -142,10 +142,10 @@ def test_a_locked_lookup_finds_the_user_by_id(db_session: Session) -> None:
     db_session.flush()
     db_session.expunge_all()
 
-    result = get_user_by_id_for_update(db_session, user.id)
+    found_user = get_user_by_id_for_update(db_session, user.id)
 
-    assert result is not None
-    assert result.id == user.id
+    assert found_user is not None
+    assert found_user.id == user.id
 
 
 def test_a_locked_lookup_of_an_unknown_id_finds_no_user(db_session: Session) -> None:
@@ -180,7 +180,7 @@ def test_a_locked_lookup_reads_the_user_as_the_database_holds_it_now(db_session:
     assert stale_copy is not None
     assert stale_copy.full_name == "Old Name"
 
-    result = get_user_by_id_for_update(db_session, user.id)
+    found_user = get_user_by_id_for_update(db_session, user.id)
 
-    assert result is user
+    assert found_user is user
     assert user.full_name == "New Name"

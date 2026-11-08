@@ -260,6 +260,40 @@ def test_the_refresh_token_never_appears_in_the_body(user: User, client: TestCli
     assert refresh_token not in response.text
 
 
+def test_login_logs_neither_the_passwords_nor_the_tokens(
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A sign-in through the API logs no password, stored hash, or token at any level.
+
+    The service test of the same name sees only the service. Here the
+    route, the middleware, and the error handler run too, and every record
+    down to DEBUG is captured, the test client's own included. A successful
+    sign-in and one with a wrong password are sent, and neither password,
+    the account's stored hash, nor either token the successful one returned
+    may appear in the captured text: the access token from the body, and
+    the refresh token from the cookie.
+    """
+    with caplog.at_level("DEBUG"):
+        response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+        failed_response = client.post(
+            LOGIN_URL, data={"username": user.email, "password": "Wrong-Password-1"}
+        )
+
+    assert response.status_code == 200
+    assert failed_response.status_code == 401
+
+    access_token = response.json()["access_token"]
+    refresh_token = response.cookies[REFRESH_COOKIE_NAME]
+
+    assert PASSWORD not in caplog.text
+    assert "Wrong-Password-1" not in caplog.text
+    assert user.password_hash not in caplog.text
+    assert access_token not in caplog.text
+    assert refresh_token not in caplog.text
+
+
 def test_wrong_credentials_return_the_standard_401(user: User, client: TestClient) -> None:
     """A wrong password gets a 401 in the standard error format and no cookie.
 

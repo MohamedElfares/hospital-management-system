@@ -17,7 +17,8 @@ working. It records the sign-in time, accepts the email
 in any case and with spaces around it, and lets a user with a pending
 password change in. Every failed sign-in raises the very same
 ``AuthenticationError`` and writes nothing, and an unknown email and a
-deactivated account still run the password check. A valid access token is turned back into the active
+deactivated account still run the password check. No sign-in logs a
+password, the stored hash, or a token. A valid access token is turned back into the active
 user it names, looked up once by the ID inside it; every other token gets
 the same error, and one that doesn't decode gets it before any lookup.
 Refresh rotates the token and keeps its expiry. A rotated token presented again revokes every
@@ -706,6 +707,37 @@ def test_a_deactivated_account_still_runs_the_password_check(
 
     assert password_check_calls == [user.password_hash]
     assert exc_info.value.message == INVALID_CREDENTIALS
+
+
+def test_login_logs_neither_the_passwords_nor_the_tokens(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No sign-in, successful or failed, logs a password, the stored hash, or a token.
+
+    Plan §12 says passwords are never logged, and ``CLAUDE.md`` says the
+    same of password hashes and tokens. A successful sign-in, one with a
+    wrong password, and one for an unknown email run while every record
+    down to DEBUG is captured, so a stray log line at any level shows.
+    Neither password typed, the account's stored hash, nor either token the
+    successful sign-in issued may appear in the captured text. The test of
+    the same name in ``tests/test_auth_api.py`` checks the route's logs.
+    """
+    with caplog.at_level("DEBUG"):
+        issued_tokens = service.login(db_session, user.email, PASSWORD)
+
+        with pytest.raises(AuthenticationError):
+            service.login(db_session, user.email, "Wrong-Password-1")
+
+        with pytest.raises(AuthenticationError):
+            service.login(db_session, "ghost@example.com", PASSWORD)
+
+    assert PASSWORD not in caplog.text
+    assert "Wrong-Password-1" not in caplog.text
+    assert user.password_hash not in caplog.text
+    assert issued_tokens.access_token not in caplog.text
+    assert issued_tokens.refresh_token not in caplog.text
 
 
 def test_a_valid_token_returns_its_user(db_session: Session, user: User) -> None:

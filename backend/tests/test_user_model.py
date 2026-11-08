@@ -105,7 +105,8 @@ def test_an_update_moves_updated_at_to_now(db_session: Session) -> None:
     ``onupdate``, and checked to hold the old time. After a change of name
     through the ORM, ``updated_at`` must be back at ``created_at``, the
     insert's ``now()``; without ``onupdate``, the reloaded row would still
-    hold the old time.
+    hold the old time. The bulk ``update()`` that revokes all of a user's
+    refresh tokens has its own test in ``tests/test_auth_repository.py``.
     """
     user = make_user()
     db_session.add(user)

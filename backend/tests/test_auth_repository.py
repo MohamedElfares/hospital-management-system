@@ -14,7 +14,8 @@ two locking lookups also read the row again when the session holds a
 copy, so a caller sees the token as the database holds it once locked.
 ``revoke_all_refresh_tokens_for_user`` revokes every unrevoked token of
 one user with the time it is given, leaves other users' tokens alone,
-and keeps the time of a token revoked earlier.
+keeps the time of a token revoked earlier, and moves each revoked
+token's ``updated_at`` to ``now()``.
 
 The locks can only be seen from a second connection, so
 ``tests/test_auth_concurrency.py`` tests them, and what the service does
@@ -43,7 +44,7 @@ from factories import make_user
 # Builds the queries that read tokens back after a flush or a revocation.
 from sqlalchemy import select
 
-# Raw SQL; revokes a token while the session's copy still reads unrevoked.
+# Raw SQL; revokes a token, or backdates its updated_at, past the session and onupdate.
 from sqlalchemy import text
 
 # Type of the db_session fixture.
@@ -462,3 +463,43 @@ def test_revoke_all_refresh_tokens_keeps_the_time_of_already_revoked_tokens(
     ).scalar_one()
 
     assert kept_token.revoked_at == now
+
+
+def test_revoke_all_refresh_tokens_moves_updated_at_to_now(db_session: Session) -> None:
+    """The bulk revocation sets each revoked token's ``updated_at`` to ``now()``.
+
+    ``TimestampMixin``'s ``onupdate`` adds ``updated_at = now()`` to this
+    ``UPDATE`` statement too, not only to the updates a flush writes, so
+    the column tells when a revoked token last changed. ``now()`` is the
+    transaction's start time and stays fixed for the test, so the token is
+    first backdated with raw SQL, which skips ``onupdate``, and checked to
+    hold the old time, as ``test_an_update_moves_updated_at_to_now`` in
+    ``tests/test_user_model.py`` does for an update through the ORM. After
+    the revocation, ``updated_at`` must be back at ``created_at``, the
+    insert's ``now()``. A mixin that set the column in a mapper event
+    instead would pass that test and fail this one, because a mapper event
+    runs only when the session flushes an object.
+    """
+    user = make_user()
+    db_session.add(user)
+    db_session.flush()
+
+    token = make_refresh_token(user.id)
+    db_session.add(token)
+    db_session.flush()
+
+    backdated = datetime(2000, 1, 1, tzinfo=UTC)
+    stored_updated_at = db_session.execute(
+        text(
+            "UPDATE refresh_tokens SET updated_at = :backdated "
+            "WHERE id = :token_id RETURNING updated_at"
+        ),
+        {"backdated": backdated, "token_id": token.id},
+    ).scalar_one()
+
+    assert stored_updated_at == backdated
+
+    repository.revoke_all_refresh_tokens_for_user(db_session, user.id, datetime.now(UTC))
+    db_session.refresh(token)
+
+    assert token.updated_at == token.created_at

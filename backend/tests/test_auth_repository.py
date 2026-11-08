@@ -1,15 +1,57 @@
+"""Tests for the auth repository: the queries on the ``refresh_tokens`` table.
+
+The tests call the repository's functions directly with ``db_session``,
+the test's own session, and flush what they save, so every query runs
+against PostgreSQL inside the test's transaction. ``create_refresh_token``
+adds a token that the next flush inserts. The three lookups, the locking
+ones by hash and by ID and the unlocked one that returns only a token's
+user ID, each answer from the right token rather than from another
+user's token saved first, return None for a hash or ID that no token
+has, and answer for a revoked token too, because what a revoked token
+means is the service's decision. The two locking lookups also read the
+row again when the session holds a copy, so a caller sees the token as
+the database holds it once locked. ``revoke_all_refresh_tokens_for_user``
+revokes every unrevoked token of one user with the time it is given,
+leaves other users' tokens alone, and keeps the time of a token revoked
+earlier.
+
+The locks can only be seen from a second connection, so
+``tests/test_auth_concurrency.py`` tests them, and what the service does
+with each token these queries return is tested in
+``tests/test_auth_service.py``.
+"""
+
+# Random UUIDs; an ID that no saved token has.
 import uuid
+
+# UTC time zone; revocation times are timezone-aware UTC, as the service passes them.
 from datetime import UTC
+
+# Date and time type; now(UTC) is the revocation time a test records.
 from datetime import datetime
+
+# Puts the second revocation five days after the first.
 from datetime import timedelta
 
+# Builds an unsaved refresh token for a saved user, unrevoked unless a test says otherwise.
 from factories import make_refresh_token
+
+# Builds an unsaved User, the owner every token needs.
 from factories import make_user
+
+# Builds the queries that read tokens back after a flush or a revocation.
 from sqlalchemy import select
+
+# Raw SQL; revokes a token while the session's copy still reads unrevoked.
 from sqlalchemy import text
+
+# Type of the db_session fixture.
 from sqlalchemy.orm import Session
 
+# The auth repository, under test; called as repository.<function>, as the service calls it.
 from app.modules.auth import repository
+
+# The refresh_tokens table's ORM model; the read-back queries select it.
 from app.modules.auth.models import RefreshToken
 
 
@@ -18,7 +60,8 @@ def test_an_added_refresh_token_is_saved_on_flush(db_session: Session) -> None:
 
     A query by its hash returns the very same object, so the row in the
     table is this token and not merely some match. ``create_refresh_token``
-    itself doesn't flush or commit; the test flushes, as the service will.
+    only adds the token to the session, so the test flushes, as the auth
+    service's next flush or commit does.
     """
     user = make_user()
     db_session.add(user)
@@ -139,7 +182,7 @@ def test_a_locked_token_lookup_reads_the_row_as_it_is_now(db_session: Session) -
 
 
 def test_a_token_can_be_found_by_its_id_whatever_its_state(db_session: Session) -> None:
-    """An id lookup returns the token with that id, revoked or not.
+    """An ID lookup returns the token with that ID, even a revoked one.
 
     The decoy belongs to another user and is saved first, so a lookup that
     returned the wrong row would show it. The target is revoked, because
@@ -170,7 +213,7 @@ def test_a_token_can_be_found_by_its_id_whatever_its_state(db_session: Session) 
 
 
 def test_an_unknown_id_finds_no_token(db_session: Session) -> None:
-    """An id that no token has returns None, even with a token in the table."""
+    """An ID that no token has returns None, even with a token in the table."""
     user = make_user()
     db_session.add(user)
     db_session.flush()
@@ -182,7 +225,7 @@ def test_an_unknown_id_finds_no_token(db_session: Session) -> None:
 
 
 def test_a_locked_token_lookup_by_id_reads_the_row_as_it_is_now(db_session: Session) -> None:
-    """The locking id lookup replaces a copy of the token the session already holds.
+    """The locking ID lookup replaces a copy of the token the session already holds.
 
     As in the hash lookup's test, the copy is read back first, so it holds
     every column, and the token is then revoked through plain SQL, which
@@ -211,7 +254,7 @@ def test_a_locked_token_lookup_by_id_reads_the_row_as_it_is_now(db_session: Sess
 
 
 def test_the_user_of_a_token_is_found_by_its_hash(db_session: Session) -> None:
-    """The owner lookup returns the user of the token with that hash, revoked or not.
+    """The owner lookup returns the user of the token with that hash, even a revoked one.
 
     The decoy belongs to another user and is saved first, so a lookup that
     ignored the hash would return the wrong user. The target token is
@@ -256,9 +299,12 @@ def test_revoke_all_refresh_tokens_revokes_every_active_token_of_the_user(
 ) -> None:
     """Every unrevoked token of the user is revoked with exactly the given time.
 
-    The tokens are read back with a new query, because the UPDATE changes
-    the database directly. Comparing with the exact time shows the
-    repository records the service's time rather than its own clock.
+    The tokens are read back with a query. The session created them
+    without a ``revoked_at`` value, so it never loaded one, and the
+    ``UPDATE`` leaves such a token as it is: ``first_token.revoked_at``
+    would still read None. The query fills the value in from the stored
+    row. Comparing with the exact time shows the repository records the
+    service's time rather than its own clock.
     """
     now = datetime.now(UTC)
     user = make_user()
@@ -290,7 +336,8 @@ def test_revoke_all_refresh_tokens_leaves_other_users_tokens_alone(db_session: S
     """Revoking one user's tokens leaves another user's token unrevoked.
 
     A missing user filter would end every session in the hospital at
-    once, so this checks the bystander's token directly after the update.
+    once, so this reads the bystander's stored revocation time after the
+    update, which the query fills in as it does in the test above.
     """
     now = datetime.now(UTC)
     revoked_user = make_user()
@@ -323,7 +370,12 @@ def test_revoke_all_refresh_tokens_keeps_the_time_of_already_revoked_tokens(
 
     The token is saved already revoked, then revoked again five days
     later. Its time must not move, so the history of when each token was
-    rotated or revoked survives a later mass revocation.
+    rotated or revoked survives a later mass revocation. The session holds
+    only a weak reference to a saved object, and the test never keeps the
+    token in a variable, so the token is gone from the session after the
+    flush and the query reads the stored time. A token kept in a variable
+    would come back as the session holds it, and the test could no longer
+    see what the ``UPDATE`` stored.
     """
     now = datetime.now(UTC)
     later = now + timedelta(days=5)

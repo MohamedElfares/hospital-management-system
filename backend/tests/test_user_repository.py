@@ -1,19 +1,65 @@
+"""Tests for the users repository: the queries behind every account lookup.
+
+The tests call the repository's functions directly with ``db_session``,
+the test's own session, and flush what they save, so every query runs
+against PostgreSQL inside the test's transaction. ``get_user_by_email``
+finds an account by its stored email, and ``get_user_by_id`` and
+``get_user_by_id_for_update`` by its ID; each returns None for an email
+or ID that no account has, with accounts in the table, and a decoy saved
+first shows that the ID lookups filter on the ID rather than returning
+the first row. The locking lookup also reads the row again when the
+session holds a copy, so a caller that locks a user sees what the
+database holds. ``exists_active_admin`` reports True for an active Admin,
+and False for an empty table, a deactivated Admin, and an active Doctor.
+``create_user`` only adds the user to the session; the test's flush
+writes it, as the users service's own flush does.
+
+The lock that ``get_user_by_id_for_update`` takes can only be seen from a
+second connection, so ``tests/test_auth_concurrency.py`` tests it, in
+races where a reuse alarm or a password change waits for a refresh or a
+sign-in that holds it.
+The users service's lookups, which normalize a typed email before this
+query sees it, are tested in ``tests/test_user_service.py``.
+"""
+
+# Random UUIDs; an ID that no saved account has.
 import uuid
 
+# Builds an unsaved User; the tests save the accounts they look up, and decoys beside them.
 from factories import make_user
+
+# Raw SQL; changes a stored name while the session's copy keeps the old one.
 from sqlalchemy import text
+
+# Type of the db_session fixture.
 from sqlalchemy.orm import Session
 
+# The role enum; builds the Admins and the Doctor that the active-Admin check tells apart.
 from app.core.permissions import Role
+
+# Adds a new user to the session; under test with the email lookup that finds it.
 from app.modules.users.repository import create_user
+
+# The check that create-admin runs before it creates an Admin, under test.
 from app.modules.users.repository import exists_active_admin
+
+# The email lookup that sign-in reaches through the users service, under test.
 from app.modules.users.repository import get_user_by_email
+
+# The plain ID lookup, under test; it also returns the stale copy the locking lookup replaces.
 from app.modules.users.repository import get_user_by_id
+
+# The locking ID lookup that auth takes before it changes a user's sessions, under test.
 from app.modules.users.repository import get_user_by_id_for_update
 
 
 def test_an_added_user_can_be_found_by_email(db_session: Session) -> None:
-    """A user added and flushed is returned by an email lookup, as the same row."""
+    """A user added and flushed is returned by an email lookup, as the same row.
+
+    A query by email always reaches the database, even though the session
+    holds the user, so the condition on the email is what finds the row;
+    the next test shows that the query doesn't return a row for any email.
+    """
     user = make_user()
 
     create_user(db_session, user)
@@ -49,7 +95,11 @@ def test_an_empty_table_has_no_active_admin(db_session: Session) -> None:
 
 
 def test_an_active_admin_is_found(db_session: Session) -> None:
-    """One active Admin is enough for the check to report True."""
+    """One active Admin is enough for the check to report True.
+
+    The account is active through the column's server default, as every
+    new account is.
+    """
     admin = make_user(role=Role.ADMIN)
 
     create_user(db_session, admin)
@@ -89,9 +139,9 @@ def test_an_active_doctor_is_not_counted_as_an_admin(db_session: Session) -> Non
 
 
 def test_an_added_user_can_be_found_by_id(db_session: Session) -> None:
-    """A saved user is returned by an id lookup, and not the other saved user.
+    """A saved user is returned by an ID lookup, and not the other saved user.
 
-    The decoy is added first, so a lookup that ignored the id and returned
+    The decoy is added first, so a lookup that ignored the ID and returned
     the first row would return the decoy and fail. The session is emptied
     before the lookup, so the user is read from the database, not from the
     session's memory.
@@ -111,10 +161,11 @@ def test_an_added_user_can_be_found_by_id(db_session: Session) -> None:
 
 
 def test_an_unknown_id_finds_no_user(db_session: Session) -> None:
-    """An id that no user has returns None, even with users in the table.
+    """An ID that no user has returns None, even with users in the table.
 
-    Because two users exist, any lookup that returned "some user" instead
-    of the matching one would fail here, whatever order the rows come in.
+    With rows to return, a lookup that ignored the ID and returned any user
+    would fail here, whatever order the rows come in; the decoy saved
+    first matters only to the test above, where the ID does match a user.
     """
     user = make_user()
     decoy_user = make_user(email="other@example.com")
@@ -128,11 +179,13 @@ def test_an_unknown_id_finds_no_user(db_session: Session) -> None:
 
 
 def test_a_locked_lookup_finds_the_user_by_id(db_session: Session) -> None:
-    """The locking lookup returns the user with the id, not the decoy saved first.
+    """The locking lookup returns the user with the ID, not the decoy saved first.
 
-    The session is emptied before the lookup, so the user is read from the
-    database. The lock itself is tested in ``test_auth_concurrency.py``,
-    where a second connection can wait for it.
+    The lookup queries the database whatever the session holds, and the
+    session is emptied first, so the user comes back as a new object built
+    from the stored row. The lock itself is tested in
+    ``tests/test_auth_concurrency.py``, where a second connection can wait
+    for it.
     """
     decoy_user = make_user(email="other@example.com")
     user = make_user()
@@ -149,7 +202,7 @@ def test_a_locked_lookup_finds_the_user_by_id(db_session: Session) -> None:
 
 
 def test_a_locked_lookup_of_an_unknown_id_finds_no_user(db_session: Session) -> None:
-    """An id that no user has returns None from the locking lookup too."""
+    """An ID that no user has returns None from the locking lookup too."""
     db_session.add(make_user())
     db_session.flush()
     db_session.expunge_all()
@@ -163,8 +216,9 @@ def test_a_locked_lookup_reads_the_user_as_the_database_holds_it_now(db_session:
     The name changes in the database through plain SQL, which leaves the
     session's copy as it was. The ordinary lookup returns that stale copy
     from memory, which shows the setup works; the locking lookup reads the
-    row again and updates the same object, so a caller that locks a user
-    always sees the latest committed values, such as a new password hash.
+    row again and updates the same object, so a caller that waited for the
+    lock sees what the transaction it waited for committed, such as a new
+    password hash.
     """
     user = make_user(full_name="Old Name")
     db_session.add(user)

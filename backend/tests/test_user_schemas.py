@@ -185,11 +185,12 @@ def test_a_name_with_a_zero_width_non_joiner_is_accepted() -> None:
     """An invisible formatting character in the name is kept as given.
 
     The value holds U+200C, the zero-width non-joiner, between ``Ana`` and
-    ``Smith``. It is a formatting character, not a control character, and
+    ``Smith``, written as an escape because the character itself is
+    invisible. It is a formatting character, not a control character, and
     some scripts, Persian among them, need it inside names. The check must
     refuse control characters only.
     """
-    full_name = "Ana‌Smith"
+    full_name = "Ana\u200cSmith"
     values = _valid_values(full_name=full_name)
     data = UserCreate(**values)
 

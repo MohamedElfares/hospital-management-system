@@ -107,10 +107,10 @@ JWT_ALGORITHM = "HS256"
 PASSWORD: str = "Password@1331"
 
 # One password in Unicode's two forms, written with escapes so the difference shows:
-# ä and ö as single characters (composed, NFC), and as a and o, each followed by a
-# combining diaeresis (decomposed, NFD).
-COMPOSED_PASSWORD = "Pässwörd123!"
-DECOMPOSED_PASSWORD = "Pässwörd123!"
+# ä (U+00E4) and ö (U+00F6) as single characters (composed, NFC), and as a and o,
+# each followed by U+0308, the combining diaeresis (decomposed, NFD).
+COMPOSED_PASSWORD = "P\u00e4ssw\u00f6rd123!"
+DECOMPOSED_PASSWORD = "Pa\u0308sswo\u0308rd123!"
 
 # The attributes the header that deletes the refresh cookie must share with the
 # header that set it: a browser matches the path, and clear_refresh_cookie keeps
@@ -259,7 +259,7 @@ def test_the_right_password_verifies() -> None:
         pytest.param("password@1331", "Password123", id="totally wrong"),
         pytest.param("S3cret", "s3cret", id="different case"),
         pytest.param("s3cret ", "s3cret", id="trailing space"),
-        pytest.param("ﬁle-cabinet-1", "file-cabinet-1", id="ligature"),
+        pytest.param("\ufb01le-cabinet-1", "file-cabinet-1", id="ligature"),
     ],
 )
 def test_a_wrong_password_is_rejected(submitted: str, stored: str) -> None:
@@ -285,7 +285,7 @@ def test_a_unicode_password_round_trips() -> None:
     ``test_a_password_verifies_in_either_unicode_form`` covers the other
     form.
     """
-    unicode_password = "Pässwörd123!"
+    unicode_password = "P\u00e4ssw\u00f6rd123!"
     password_hash = hash_password(unicode_password)
 
     assert verify_password(unicode_password, password_hash) is True

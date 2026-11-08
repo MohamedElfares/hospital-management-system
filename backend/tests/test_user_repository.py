@@ -3,18 +3,19 @@
 The tests call the repository's functions directly with ``db_session``,
 the test's own session, and flush what they save, so every query runs
 against PostgreSQL inside the test's transaction. ``get_user_by_email``
-finds an account by its stored email, and ``get_user_by_id`` and
-``get_user_by_id_for_update`` by its ID; each returns None for an email
-or ID that no account has, with accounts in the table, and a decoy saved
-first shows that the ID lookups filter on the ID rather than returning
-the first row. The locking lookup also reads the row again when the
-session holds a copy, so a caller that locks a user sees what the
-database holds. ``exists_active_admin`` reports True for an active Admin,
-and False for an empty table, a deactivated Admin, an active account of
-every other role, and a deactivated Admin beside an active Doctor, the
-recovery case ``create-admin`` exists for. ``create_user`` only adds the
-user to the session; the test's flush writes it, as the users service's
-own flush does.
+finds an account by its stored email, and only by that exact text, so
+``%`` and ``_`` in a typed email are no wildcards; ``get_user_by_id`` and
+``get_user_by_id_for_update`` find one by its ID. Each returns None for
+an email or ID that no account has, with accounts in the table, and a
+decoy saved first shows that the ID lookups filter on the ID rather than
+returning the first row. The locking lookup also reads the row again
+when the session holds a copy, so a caller that locks a user sees what
+the database holds. ``exists_active_admin`` reports True for an active
+Admin, and False for an empty table, a deactivated Admin, an active
+account of every other role, and a deactivated Admin beside an active
+Doctor, the recovery case ``create-admin`` exists for. ``create_user``
+only adds the user to the session; the test's flush writes it, as the
+users service's own flush does.
 
 The lock that ``get_user_by_id_for_update`` takes can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests it, in
@@ -27,7 +28,7 @@ typed email before this query sees it, are tested in
 # Random UUIDs; an ID that no saved account has.
 import uuid
 
-# Test framework: parametrize runs the active-Admin check once for every role but Admin.
+# Test framework: parametrize runs the role check for every role but Admin, and the wildcards.
 import pytest
 
 # Builds an unsaved User; the tests save the accounts they look up, and decoys beside them.
@@ -90,6 +91,33 @@ def test_an_unknown_email_finds_no_user(db_session: Session) -> None:
     found_user = get_user_by_email(db_session, "unknownmail@example.com")
 
     assert found_user is None
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        pytest.param("%@example.com", id="percent"),
+        pytest.param("t_st@example.com", id="underscore"),
+    ],
+)
+def test_a_wildcard_character_in_the_email_matches_no_other_address(
+    db_session: Session,
+    email: str,
+) -> None:
+    """An email with ``%`` or ``_`` finds no account but one with that exact text.
+
+    The ``Email`` rule accepts both characters before the @, so sign-in
+    passes them to this lookup. ``LIKE`` and ``ILIKE``, the usual way to
+    make a lookup case-insensitive, read them as wildcards: there,
+    ``%@example.com`` and ``t_st@example.com`` would find
+    ``test@example.com``, and sign-in would check the typed password
+    against that account. The lookup compares with ``=``, so neither finds
+    the saved account.
+    """
+    create_user(db_session, make_user())
+    db_session.flush()
+
+    assert get_user_by_email(db_session, email) is None
 
 
 def test_an_empty_table_has_no_active_admin(db_session: Session) -> None:

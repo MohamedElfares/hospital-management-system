@@ -32,6 +32,9 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     Emails are stored lowercase, and this function doesn't change the value
     it receives, so callers must pass an already normalized email, as
     ``UserCreate`` and the users service's ``get_user_by_email`` produce.
+    The comparison is ``=``, never ``LIKE`` or ``ILIKE``: the ``Email`` rule
+    accepts ``%`` and ``_`` before the @, and as wildcards they would let a
+    typed pattern such as ``%@example.com`` find someone else's account.
     The unique constraint guarantees at most one match. Inactive users are
     returned too; filtering is the caller's decision.
 

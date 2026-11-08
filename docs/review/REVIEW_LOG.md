@@ -456,6 +456,25 @@ closes when the last stage is done, so an interrupted run is obvious.
   `replaced_by_id`, added in a migration alone, can't reach a token the
   application saves either, because SQLAlchemy writes NULL into both
   columns on every insert (probed).
+- **Stage 17's findings fixed (2026-11-08):** R-075 (`774b302`) and
+  R-076 (`02bf551`), written at your request ("fix the open findings with
+  recommendations and best practices"), one commit each, in ID order,
+  since neither depends on the other. The code under test didn't change,
+  so each new or changed test was run instead against the broken copies
+  that had passed the whole suite, and each copy failed it. One step goes
+  beyond the recommendations: R-075 adds a password change through the
+  API with spaces around both passwords, because copies of the auth
+  service that strip either password in `change_password` passed the
+  whole suite and both recommended tests. While fixing R-075, a
+  `create-admin` that strips the typed password passed the whole suite
+  too; it is the same gap at account creation, which R-075 left out, so
+  it is logged as R-077, open for your decision. The fixes change
+  `tests/test_auth_schemas.py` after stage 17 reviewed it at `f46a105`,
+  so the next `/review new` takes it again; `tests/test_auth_api.py`
+  (stages 21 and 23) changed before its stages reach it. Each commit
+  passes Ruff and the suite on its own, run like CI in a clean worktree:
+  385, then 387 tests, with coverage at 99.86%, and the suite also passes
+  reversed, shuffled twice, and at `LOG_LEVEL=INFO`. R-077 is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

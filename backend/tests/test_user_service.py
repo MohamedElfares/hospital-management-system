@@ -358,8 +358,8 @@ def test_get_user_by_email_ignores_case_and_surrounding_spaces(db_session: Sessi
 @pytest.mark.parametrize(
     "typed_email",
     [
-        pytest.param("Test@ＥＸＡＭＰＬＥ.com", id="full-width-domain"),
-        pytest.param(unicodedata.normalize("NFD", "José@example.com"), id="decomposed-accent"),
+        pytest.param("Test@\uff25\uff38\uff21\uff2d\uff30\uff2c\uff25.com", id="full-width-domain"),
+        pytest.param(unicodedata.normalize("NFD", "Jos\u00e9@example.com"), id="decomposed-accent"),
     ],
 )
 def test_get_user_by_email_finds_an_address_that_user_create_rewrote(
@@ -374,6 +374,9 @@ def test_get_user_by_email_finds_an_address_that_user_create_rewrote(
     whose accented e is the one code point U+00E9. The first assertion
     shows the stored form differs from the text merely stripped and
     lowercased, so only the shared ``Email`` rule can make the lookup match.
+    Both values are written as escapes, because full-width letters look
+    like ASCII ones, and a raw accent can't show whether it is one code
+    point or two.
     """
     stored_email = make_user_create(email=typed_email).email
     user = make_user(email=stored_email)

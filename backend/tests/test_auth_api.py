@@ -384,6 +384,9 @@ def test_the_refresh_cookie_holds_the_stored_token(
     later refresh with this cookie will find the row.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert response.status_code == 200
+
     raw_refresh_token = response.cookies[REFRESH_COOKIE_NAME]
     token_rows = db_session.scalars(select(RefreshToken)).all()
 
@@ -398,6 +401,9 @@ def test_the_refresh_token_never_appears_in_the_body(user: User, client: TestCli
     must stay in the ``HttpOnly`` cookie, out of reach of page scripts.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert response.status_code == 200
+
     refresh_token = response.cookies[REFRESH_COOKIE_NAME]
 
     assert refresh_token not in response.text
@@ -539,9 +545,11 @@ def test_login_without_a_username_is_a_validation_error(client: TestClient) -> N
     the service runs.
     """
     response = client.post(LOGIN_URL, data={"password": PASSWORD})
-    error = response.json()["error"]
 
     assert response.status_code == 422
+
+    error = response.json()["error"]
+
     assert error["code"] == ErrorCode.VALIDATION_ERROR
     assert error["message"] == "The request contains invalid data."
     assert [detail["field"] for detail in error["details"]] == ["body.username"]
@@ -561,9 +569,11 @@ def test_login_with_a_json_body_is_a_validation_error(
     was issued.
     """
     response = client.post(LOGIN_URL, json={"username": user.email, "password": PASSWORD})
-    error = response.json()["error"]
 
     assert response.status_code == 422
+
+    error = response.json()["error"]
+
     assert error["code"] == ErrorCode.VALIDATION_ERROR
     assert error["message"] == "The request contains invalid data."
     assert "set-cookie" not in response.headers
@@ -593,9 +603,11 @@ def test_login_with_an_overlong_field_is_a_validation_error(
     form = {"username": user.email, "password": PASSWORD, field: value}
 
     response = client.post(LOGIN_URL, data=form)
-    error = response.json()["error"]
 
     assert response.status_code == 422
+
+    error = response.json()["error"]
+
     assert [(detail["field"], detail["type"]) for detail in error["details"]] == [
         (f"body.{field}", "string_too_long")
     ]
@@ -715,9 +727,11 @@ def test_me_without_a_token_is_the_standard_401(
     ``WWW-Authenticate: Bearer`` header that tells clients how to sign in.
     """
     response = client.get(ME_URL)
-    body = response.json()["error"]
 
     assert response.status_code == 401
+
+    body = response.json()["error"]
+
     assert body["code"] == "AUTHENTICATION_FAILED"
     assert body["message"] == "Not authenticated"
     assert response.headers["www-authenticate"] == "Bearer"
@@ -784,9 +798,10 @@ def test_me_rejects_an_unusable_authorization_header(
         headers={"Authorization": authorization},
     )
 
+    assert response.status_code == 401
+
     body = response.json()["error"]
 
-    assert response.status_code == 401
     assert body["code"] == "AUTHENTICATION_FAILED"
     assert body["message"] == message
 
@@ -804,9 +819,11 @@ def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: 
     db_session.flush()
 
     response = client.get(ME_URL, headers=headers)
-    body = response.json()["error"]
 
     assert response.status_code == 401
+
+    body = response.json()["error"]
+
     assert body["code"] == "AUTHENTICATION_FAILED"
     assert body["message"] == "Invalid or expired token."
 
@@ -915,9 +932,11 @@ def test_refresh_without_a_cookie_is_the_standard_401(client: TestClient) -> Non
     request reaches the service, which reports it as unauthenticated.
     """
     refresh_response = client.post(REFRESH_URL)
-    error = refresh_response.json()["error"]
 
     assert refresh_response.status_code == 401
+
+    error = refresh_response.json()["error"]
+
     assert error["code"] == "AUTHENTICATION_FAILED"
     assert error["message"] == "Invalid or expired token."
     assert "set-cookie" not in refresh_response.headers
@@ -932,9 +951,11 @@ def test_refresh_with_an_unknown_cookie_is_the_standard_401(client: TestClient) 
     """
     client.cookies.set(REFRESH_COOKIE_NAME, generate_refresh_token(), path="/api/v1/auth")
     refresh_response = client.post(REFRESH_URL)
-    error = refresh_response.json()["error"]
 
     assert refresh_response.status_code == 401
+
+    error = refresh_response.json()["error"]
+
     assert error["code"] == "AUTHENTICATION_FAILED"
     assert error["message"] == "Invalid or expired token."
     assert "set-cookie" not in refresh_response.headers
@@ -962,17 +983,19 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
     client.cookies.clear()
     client.cookies.set(REFRESH_COOKIE_NAME, old_token, path="/api/v1/auth")
     reuse_response = client.post(REFRESH_URL)
-    reuse_error = reuse_response.json()["error"]
 
     client.cookies.clear()
     client.cookies.set(REFRESH_COOKIE_NAME, new_token, path="/api/v1/auth")
     after_reuse_response = client.post(REFRESH_URL)
-    after_reuse_error = after_reuse_response.json()["error"]
 
     assert reuse_response.status_code == 401
+    assert after_reuse_response.status_code == 401
+
+    reuse_error = reuse_response.json()["error"]
+    after_reuse_error = after_reuse_response.json()["error"]
+
     assert reuse_error["code"] == "AUTHENTICATION_FAILED"
     assert reuse_error["message"] == "Invalid or expired token."
-    assert after_reuse_response.status_code == 401
     assert after_reuse_error["code"] == "AUTHENTICATION_FAILED"
     assert after_reuse_error["message"] == "Invalid or expired token."
 
@@ -1080,6 +1103,9 @@ def test_logout_never_logs_the_refresh_token(
     the cookie reached the route and the check isn't empty.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
     headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
     raw_refresh_token = login_response.cookies[REFRESH_COOKIE_NAME]
 
@@ -1178,21 +1204,26 @@ def test_change_password_sets_a_new_refresh_cookie(user: User, client: TestClien
     the old one, and ``/auth/refresh`` accepts it.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
-    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
 
+    assert login_response.status_code == 200
+
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
     response = client.post(
         CHANGE_PASSWORD_URL,
         json=_password_change_body(),
         headers={"Authorization": f"Bearer {login_response.json()['access_token']}"},
     )
-    set_cookie_headers = response.headers.get_list("set-cookie")
-    new_cookie = response.cookies[REFRESH_COOKIE_NAME]
-    refresh_response = client.post(REFRESH_URL)
-
-    cookie_attributes = set_cookie_headers[0].lower()
 
     assert response.status_code == 200
+
+    set_cookie_headers = response.headers.get_list("set-cookie")
+
     assert len(set_cookie_headers) == 1
+
+    new_cookie = response.cookies[REFRESH_COOKIE_NAME]
+    cookie_attributes = set_cookie_headers[0].lower()
+    refresh_response = client.post(REFRESH_URL)
+
     assert new_cookie != old_cookie
     assert "httponly" in cookie_attributes
     assert "samesite=strict" in cookie_attributes
@@ -1207,13 +1238,17 @@ def test_change_password_ends_the_old_session(user: User, client: TestClient) ->
     thief would still hold it, and ``/auth/refresh`` refuses it.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
-    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
 
-    client.post(
+    assert login_response.status_code == 200
+
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+    change_response = client.post(
         CHANGE_PASSWORD_URL,
         json=_password_change_body(),
         headers={"Authorization": f"Bearer {login_response.json()['access_token']}"},
     )
+
+    assert change_response.status_code == 200
 
     client.cookies.clear()
     client.cookies.set(REFRESH_COOKIE_NAME, old_cookie, path="/api/v1/auth")
@@ -1268,6 +1303,9 @@ def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: Tes
     response = client.post(
         CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
     )
+
+    assert response.status_code == 200
+
     new_cookie = response.cookies[REFRESH_COOKIE_NAME]
 
     assert new_cookie not in response.text
@@ -1335,9 +1373,11 @@ def test_a_refused_change_is_a_400_without_a_cookie(
         json=_password_change_body(**overrides),
         headers=_auth_header(user),
     )
-    error = response.json()["error"]
 
     assert response.status_code == 400
+
+    error = response.json()["error"]
+
     assert error["code"] == ErrorCode.BAD_REQUEST
     assert error["message"] == message
     assert "set-cookie" not in response.headers
@@ -1356,9 +1396,11 @@ def test_an_invalid_body_is_a_validation_error(
     password can't end up in logs or in the browser's network panel.
     """
     response = client.post(CHANGE_PASSWORD_URL, json=body, headers=_auth_header(user))
-    fields = [detail["field"] for detail in response.json()["error"]["details"]]
 
     assert response.status_code == 422
+
+    fields = [detail["field"] for detail in response.json()["error"]["details"]]
+
     assert field in fields
     for password in body.values():
         assert password not in response.text
@@ -1435,10 +1477,16 @@ def test_another_device_refreshing_after_a_change_keeps_this_session(
     only the phone refreshing first can show a false alarm.
     """
     phone_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert phone_login.status_code == 200
+
     phone_cookie = phone_login.cookies[REFRESH_COOKIE_NAME]
 
     client.cookies.clear()
     laptop_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert laptop_login.status_code == 200
+
     change_response = client.post(
         CHANGE_PASSWORD_URL,
         json=_password_change_body(),
@@ -1477,9 +1525,11 @@ def test_a_pending_password_change_blocks_other_routes(
     db_session.flush()
 
     response = client.get(GATED_URL, headers=_auth_header(user))
-    error = response.json()["error"]
 
     assert response.status_code == 403
+
+    error = response.json()["error"]
+
     assert error["code"] == ErrorCode.PASSWORD_CHANGE_REQUIRED
     assert error["message"] == "You must change your password before continuing."
 

@@ -42,11 +42,12 @@ session, and a second sign-out keeps the first revocation time, the
 replacement's when the token was rotated. A password change stores a
 hash only the new password matches, clears the forced-change flag,
 revokes every session the user had, and starts a new one with a fresh
-window, all committed, and leaves every other account alone; a wrong
-current password or an unchanged new one gets a 400 with a message of
-its own and writes nothing. The password-change gate refuses a user
-with a pending change with a 403 and a code of its own, and lets every
-other user through.
+window, all in one commit, so a change whose commit fails saves
+nothing, and leaves every other account alone; a wrong current
+password or an unchanged new one gets a 400 with a message of its own
+and writes nothing. The password-change gate refuses a user with a
+pending change with a 403 and a code of its own, and lets every other
+user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -85,6 +86,9 @@ from factories import make_user
 
 # Builds the queries that read token rows back after a use case.
 from sqlalchemy import select
+
+# What a commit that breaks a unique constraint raises; the failed password change expects it.
+from sqlalchemy.exc import IntegrityError
 
 # Type of the db_session fixture, the session every use case here runs in.
 from sqlalchemy.orm import Session
@@ -1653,8 +1657,8 @@ def test_the_password_change_is_committed(db_session: Session, user: User) -> No
     stored values; after a commit it has nothing to undo, so ``user`` keeps
     the values the commit saved. The earlier tests can't see a missing
     commit, because the changes are still in the session there. Nor can
-    this one see how many commits the change made: one that saved the new
-    password before it revoked the sessions would pass (R-090).
+    this one see how many commits the change made;
+    ``test_a_password_change_that_fails_at_its_commit_saves_nothing`` does.
     """
     issued_tokens = service.change_password(db_session, user, _password_change())
 
@@ -1665,6 +1669,47 @@ def test_the_password_change_is_committed(db_session: Session, user: User) -> No
     assert verify_password(NEW_PASSWORD, user.password_hash)
     assert user.must_change_password is False
     assert new_token_row.revoked_at is None
+
+
+def test_a_password_change_that_fails_at_its_commit_saves_nothing(
+    db_session: Session,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change whose commit fails leaves the password, the flag, and the sessions as they were.
+
+    The change is committed once, at the end, so a failure at any point,
+    the commit included, saves nothing, and the user can simply try again.
+    A change that committed the new password first and then failed would
+    leave it saved while every old session, a thief's included, kept
+    working, and would release the user's row lock before the sessions
+    were revoked. To make the commit fail, the new refresh token repeats
+    the value of a token the user already holds: ``generate_refresh_token``
+    is replaced where the auth service looks it up, so the new row's
+    ``INSERT`` breaks the unique token hash, which the error must name.
+
+    The flag is set and the setup committed first, as a request finds
+    them, so the rollback after the error, as a failed request's session
+    is rolled back, undoes only the change. The user, read back from the
+    database, still has the old hash and the flag, and the token is still
+    unrevoked.
+    """
+    user.must_change_password = True
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    original_hash = user.password_hash
+    db_session.commit()
+    monkeypatch.setattr(service, "generate_refresh_token", lambda: raw_refresh_token)
+
+    with pytest.raises(IntegrityError, match="uq_refresh_tokens_token_hash"):
+        service.change_password(db_session, user, _password_change())
+
+    # A failed request's session is rolled back; only committed work remains.
+    db_session.rollback()
+    db_session.refresh(user)
+
+    assert user.password_hash == original_hash
+    assert user.must_change_password is True
+    assert _token_row(db_session, raw_refresh_token).revoked_at is None
 
 
 @pytest.mark.parametrize(("overrides", "message"), REJECTED_PASSWORD_CHANGES)

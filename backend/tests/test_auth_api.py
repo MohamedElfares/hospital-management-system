@@ -49,8 +49,12 @@ OVERLONG_LOGIN_FIELDS = [
     pytest.param("password", "p" * (PASSWORD_MAX_LENGTH + 1), id="password-too-long"),
 ]
 
-# Every way the service refuses a change: the body field that differs from a
-# valid change, and the message the user sees. Both bodies pass validation.
+# Every way the service refuses a change: the body fields that differ from a
+# valid change, and the message the user sees. Every body passes validation.
+# The last fails both checks, a wrong current password with the real one as
+# the new password, and gets the first check's message, so a caller holding
+# only an access token can't learn from the reply whether a guess of the
+# password, sent as the new one, is right.
 REFUSED_PASSWORD_CHANGES = [
     pytest.param(
         {"current_password": "Wrong-Password-1"},
@@ -61,6 +65,11 @@ REFUSED_PASSWORD_CHANGES = [
         {"new_password": PASSWORD},
         "The new password must be different from the current one.",
         id="new-password-same-as-current",
+    ),
+    pytest.param(
+        {"current_password": "Wrong-Password-1", "new_password": PASSWORD},
+        "Current password is incorrect.",
+        id="wrong-current-password-with-the-real-one-as-new",
     ),
 ]
 

@@ -45,9 +45,10 @@ revokes every session the user had, and starts a new one with a fresh
 window, all in one commit, so a change whose commit fails saves
 nothing, and leaves every other account alone; a wrong current
 password or an unchanged new one gets a 400 with a message of its own
-and writes nothing. The password-change gate refuses a user with a
-pending change with a 403 and a code of its own, and lets every other
-user through.
+and writes nothing, and a wrong current password is refused as wrong
+even when the new one is the real password. The password-change gate
+refuses a user with a pending change with a 403 and a code of its own,
+and lets every other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -177,11 +178,16 @@ UNUSABLE_REFRESH_TOKENS = [
 ]
 
 # Both ways the service refuses a password change with a 400, each as the
-# field it replaces in the otherwise valid input and the message the user
+# fields it replaces in the otherwise valid input and the message the user
 # sees. The wrong current password passes the schema, which limits only its
 # length, so the refusal comes from the service's check against the stored
-# hash. An account deactivated or deleted since the request's authentication
-# gets a 401 instead, tested in tests/test_auth_concurrency.py.
+# hash. The last case fails both checks, a wrong current password with the
+# real one as the new password, and must get the first check's message: if
+# the new password were compared first, a caller holding only an access
+# token could send guesses of the password as the new one and learn from
+# the second message which guess is right. An account deactivated or
+# deleted since the request's authentication gets a 401 instead, tested in
+# tests/test_auth_concurrency.py.
 REJECTED_PASSWORD_CHANGES = [
     pytest.param(
         {"current_password": "Wrong-Password-1"},
@@ -192,6 +198,11 @@ REJECTED_PASSWORD_CHANGES = [
         {"new_password": PASSWORD},
         "The new password must be different from the current one.",
         id="new-password-same-as-current",
+    ),
+    pytest.param(
+        {"current_password": "Wrong-Password-1", "new_password": PASSWORD},
+        "Current password is incorrect.",
+        id="wrong-current-password-with-the-real-one-as-new",
     ),
 ]
 
@@ -1728,9 +1739,9 @@ def test_a_rejected_change_raises_and_writes_nothing(
     four things a successful change writes. The hash is compared directly,
     because in the reuse case a hash rewritten from the same password would
     still verify. There is no rollback, so even changes the service made
-    without committing would show. No case sends a wrong current password
-    with the real one as the new password, so the order of the two checks
-    is untested (R-091).
+    without committing would show. The last case fails both checks and
+    must get the first one's message, so the current password is checked
+    before the new one is compared with it.
     """
     _save_refresh_token(db_session, user)
     original_hash = user.password_hash

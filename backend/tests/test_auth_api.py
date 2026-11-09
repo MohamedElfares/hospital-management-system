@@ -47,10 +47,13 @@ with the standard code and message; the ``user`` fixture's account must
 change its password, so the refresh tests also show that a pending
 change never blocks a refresh. A cookie that was already exchanged, sent
 again, fails, the cookie that replaced it fails from then on too, and the
-replay logs one warning with the request ID. Sign-out answers 204, clears
-the cookie, revokes the token behind it, and logs that token at no level;
-it needs an access token, and it works without a cookie and while a
-password change is pending.
+replay logs one warning with the request ID. Nothing a refresh logs, at
+any level, or prints holds a cookie sent, a token issued, the stored
+hash, the email, or the full name, whether the refresh succeeds, replays
+a spent cookie, or sends one the server never issued. Sign-out answers
+204, clears the cookie, revokes the token behind it, and logs that token
+at no level; it needs an access token, and it works without a cookie and
+while a password change is pending.
 
 A password change answers with a new access token and a new cookie, ends
 the session from before the change, and lets only the new password sign
@@ -1083,7 +1086,7 @@ def test_reuse_is_logged_with_the_request_id(
     logger count, so a warning logged at another level or under another
     name fails too. Neither cookie may appear in the captured text, which
     holds the records of every logger at WARNING and above; what refresh
-    logs below WARNING, or prints, no test captures (R-100).
+    logs below WARNING, and what it prints, the next test captures.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1119,6 +1122,73 @@ def test_reuse_is_logged_with_the_request_id(
     assert alarm_records == [("WARNING", expected_message)]
     assert old_cookie not in caplog.text
     assert new_cookie not in caplog.text
+
+
+def test_refresh_logs_and_prints_neither_the_secrets_nor_the_users_details(
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A refresh through the API logs and prints no token, hash, email, or name.
+
+    Refresh takes the refresh cookie, issues both tokens, and reads the
+    account, its stored hash included, so ``CLAUDE.md`` asks for a test
+    that captures what it logs, down to DEBUG, and what it prints, and
+    plan §12 keeps personal data out of logs. Every record down to DEBUG
+    is captured, the test client's own included, and so is everything
+    printed to stdout and stderr, where the application's log records go
+    too. Three refreshes are sent: one with the sign-in's cookie, which
+    succeeds; the same cookie again, now spent, the only request that
+    reaches the reuse branch, which its warning shows; and a well-formed
+    cookie the server never issued, the only one refused because no row
+    holds its hash. No cookie sent, neither token the successful refresh
+    issued, the account's stored hash, its email, nor its full name may
+    appear in the records or in either stream; a failure names each value
+    found and where, never the value itself.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+    unknown_cookie = generate_refresh_token()
+
+    with caplog.at_level("DEBUG"):
+        refresh_response = client.post(REFRESH_URL)
+
+        client.cookies.clear()
+        client.cookies.set(REFRESH_COOKIE_NAME, old_cookie, path="/api/v1/auth")
+        reuse_response = client.post(REFRESH_URL)
+
+        client.cookies.clear()
+        client.cookies.set(REFRESH_COOKIE_NAME, unknown_cookie, path="/api/v1/auth")
+        unknown_response = client.post(REFRESH_URL)
+
+    printed = capsys.readouterr()
+
+    assert refresh_response.status_code == 200
+    assert reuse_response.status_code == 401
+    assert unknown_response.status_code == 401
+    assert "Refresh token reuse detected" in caplog.text
+
+    sensitive_values = {
+        "old cookie": old_cookie,
+        "new cookie": refresh_response.cookies[REFRESH_COOKIE_NAME],
+        "new access token": refresh_response.json()["access_token"],
+        "unknown cookie": unknown_cookie,
+        "stored hash": user.password_hash,
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_logout_clears_the_cookie_and_ends_the_session(user: User, client: TestClient) -> None:

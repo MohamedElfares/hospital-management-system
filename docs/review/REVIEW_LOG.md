@@ -756,6 +756,40 @@ closes when the last stage is done, so an interrupted run is obvious.
   `login`, where the rest say `login_response`. R-098 already lists the
   status checks of parts 2 and 3, so a fix for it changes them before
   their stages.
+- **Stage 21's findings fixed (2026-11-09):** R-094 (`b32eaf5`), R-095
+  (`e503260`), R-096 (`466360c`), R-097 (`0951ec3`), R-098 (`fd773a7`),
+  and R-099 (`7e47579`), written at your request ("fix the open findings
+  with recommendations and best practices then commit and push"), one
+  commit each, in ID order: R-094 to R-096 change the same two logging
+  tests, each on top of the one before, and R-097 puts the status first
+  in its three tests, so R-098 reorders the other 19. R-099 is the one
+  fix that changes the code under test: `app/core/security.py` gains
+  `forbid_caching`, which the three token routes in
+  `app/modules/auth/router.py` call, so the next `/review new` takes
+  both files again; the three routes' descriptions are the only OpenAPI
+  change. Steps beyond the recommendations: the logging tests name each
+  value they find and where, never the value; two more broken copies, a
+  validation handler that logs the form without its failed fields and a
+  `login` that logs only an unknown email, show why each refused form
+  and the unknown email are needed; R-098 also checks the count of
+  `Set-Cookie` headers before it reads the first one; and R-099's test
+  was run against seven broken copies of the fix. The fixes change parts
+  2 and 3 of `tests/test_auth_api.py` before stages 22 and 23 review
+  them, which they will with the tests around them, the new
+  `test_every_token_response_forbids_caching` in part 2 included, and
+  part 1 of `tests/test_auth_service.py` after stage 18 reviewed it,
+  which the file's `STATE.md` row at `360f3f1` already sends to the next
+  `/review new`. Carried to stages 22 and 23: two tests drop a setup
+  response unread, the sign-in in
+  `test_logout_without_an_access_token_is_the_standard_401` and the
+  password change in `test_only_the_new_password_signs_in`, so a failed
+  setup shows up only at a later status. Each commit passes Ruff and the
+  suite on its own, run like CI in a clean worktree: 405 tests five
+  times, then 406, with coverage at 99.86%, and the final suite also
+  passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG.
+  Run against the fixed suite, all 23 copies the fixes target fail it,
+  as do the two controls. The `CLAUDE.md` line proposed in stage 21
+  still waits for your answer. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

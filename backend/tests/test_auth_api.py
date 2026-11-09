@@ -17,12 +17,13 @@ Sign-in answers with a bearer access token that names the user, in a body
 that holds nothing else, and puts the refresh token in its cookie alone,
 with its security flags and a lifetime that follows the setting; the
 cookie holds the token whose hash was saved. Nothing a sign-in logs, at
-any level, or prints holds a password typed, the stored hash, or either
-token, even when the form is refused with a 422. A wrong password and an
-email holding a NUL get a 401 with the generic code and message, and no
-cookie. A form without a username, a JSON body, and a field over its
-limit get a 422 and no cookie; the last two also save no session, and
-the 422 for a field over its limit never repeats its value.
+any level, or prints holds a password typed, the stored hash, either
+token, or an email, the account's or an unknown one, even when the form
+is refused with a 422. A wrong password and an email holding a NUL get a
+401 with the generic code and message, and no cookie. A form without a
+username, a JSON body, and a field over its limit get a 422 and no
+cookie; the last two also save no session, and the 422 for a field over
+its limit never repeats its value.
 A password as long as the rule allows and one with a space at each end
 sign in as typed, and an email as long as the limit reaches the service
 and gets the 401 for an unknown email.
@@ -402,36 +403,42 @@ def test_the_refresh_token_never_appears_in_the_body(user: User, client: TestCli
     assert refresh_token not in response.text
 
 
-def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
+def test_login_logs_and_prints_neither_the_secrets_nor_the_emails(
     user: User,
     client: TestClient,
     caplog: pytest.LogCaptureFixture,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A sign-in through the API logs and prints no password, stored hash, or token.
+    """A sign-in through the API logs and prints no password, hash, token, or email.
 
     The service test of the same name sees only the service. Here the
     route, the middleware, and the error handlers run too. Every record
     down to DEBUG is captured, the test client's own included, and so is
     everything printed to stdout and stderr: the application writes its
-    log records to stderr, so a ``print`` ends up in the same log. Four
-    sign-ins are sent: a successful one, one with a wrong password, and
-    two forms the route refuses with a 422, whose handler must log none of
-    what was typed either. One has a password over the limit, which
-    FastAPI's validation error holds whole, as Pydantic's ``input``; the
-    other lacks only its username and holds the real password, which only
-    the request's body holds. No password typed, the account's stored
-    hash, nor either token the successful sign-in returned may appear in
-    the records or in either stream: the access token from the body, and
-    the refresh token from the cookie. A failure names each value found
-    and where, never the value itself. No email is looked for (R-096).
+    log records to stderr, so a ``print`` ends up in the same log. Five
+    sign-ins are sent: a successful one, one with a wrong password, one
+    for an unknown email, and two forms the route refuses with a 422,
+    whose handler must log none of what was typed either. One has a
+    password over the limit, which FastAPI's validation error holds whole,
+    as Pydantic's ``input``; the other lacks only its username and holds
+    the real password, which only the request's body holds. No password
+    typed, the account's stored hash, nor either token the successful
+    sign-in returned may appear in the records or in either stream: the
+    access token from the body, and the refresh token from the cookie.
+    Nor may an email, the account's or the unknown one, since plan §12
+    keeps personal data out of logs. A failure names each value found and
+    where, never the value itself.
     """
     overlong_password = "p" * (PASSWORD_MAX_LENGTH + 1)
+    unknown_email = "ghost@example.com"
 
     with caplog.at_level("DEBUG"):
         response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
         failed_response = client.post(
             LOGIN_URL, data={"username": user.email, "password": "Wrong-Password-1"}
+        )
+        unknown_email_response = client.post(
+            LOGIN_URL, data={"username": unknown_email, "password": PASSWORD}
         )
         overlong_response = client.post(
             LOGIN_URL, data={"username": user.email, "password": overlong_password}
@@ -442,6 +449,7 @@ def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
 
     assert response.status_code == 200
     assert failed_response.status_code == 401
+    assert unknown_email_response.status_code == 401
     assert overlong_response.status_code == 422
     assert no_username_response.status_code == 422
 
@@ -452,6 +460,8 @@ def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
         "stored hash": user.password_hash,
         "access token": response.json()["access_token"],
         "refresh token": response.cookies[REFRESH_COOKIE_NAME],
+        "email": user.email,
+        "unknown email": unknown_email,
     }
     captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
 
@@ -565,7 +575,7 @@ def test_login_with_an_overlong_field_is_a_validation_error(
     the field and the reason, and never repeats the value, so a rejected
     password can't reach the browser's network panel or anything else that
     keeps responses. That the 422 logs and prints none of it either is
-    checked by ``test_login_logs_and_prints_neither_the_passwords_nor_the_tokens``.
+    checked by ``test_login_logs_and_prints_neither_the_secrets_nor_the_emails``.
     """
     form = {"username": user.email, "password": PASSWORD, field: value}
 

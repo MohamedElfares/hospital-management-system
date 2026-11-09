@@ -18,7 +18,7 @@ with spaces around it, and lets a user with a pending password change in.
 Every failed sign-in raises the very same ``AuthenticationError`` and
 writes nothing, and an unknown email and a deactivated account still run
 the password check. No sign-in logs or prints a password, the stored
-hash, or a token.
+hash, a token, or an email.
 
 A valid access token is turned back into the active user it names, looked
 up once by the ID inside it, even while a password change is pending;
@@ -772,25 +772,29 @@ def test_a_deactivated_account_still_runs_the_password_check(
     assert exc_info.value.message == INVALID_CREDENTIALS
 
 
-def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
+def test_login_logs_and_prints_neither_the_secrets_nor_the_emails(
     db_session: Session,
     user: User,
     caplog: pytest.LogCaptureFixture,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """No sign-in, successful or failed, logs or prints a password, the stored hash, or a token.
+    """No sign-in, successful or failed, logs or prints a password, hash, token, or email.
 
-    Plan §12 says passwords are never logged, and ``CLAUDE.md`` says the
-    same of password hashes and tokens. A successful sign-in, one with a
-    wrong password, and one for an unknown email run while every record
-    down to DEBUG is captured, and so is everything printed to stdout and
-    stderr, where the application's log records go too, so a stray log
-    line at any level or a stray ``print`` shows. Neither password typed,
-    the account's stored hash, nor either token the successful sign-in
-    issued may appear in the records or in either stream; a failure names
-    each value found and where, never the value itself. The test of the
-    same name in ``tests/test_auth_api.py`` checks the route too.
+    Plan §12 says passwords are never logged and keeps personal data out
+    of logs, and ``CLAUDE.md`` says passwords, password hashes, and tokens
+    are never logged. A successful sign-in, one with a wrong password, and
+    one for an unknown email run while every record down to DEBUG is
+    captured, and so is everything printed to stdout and stderr, where the
+    application's log records go too, so a stray log line at any level or
+    a stray ``print`` shows. Neither password typed, the account's stored
+    hash, either token the successful sign-in issued, nor either email,
+    the account's or the unknown one, may appear in the records or in
+    either stream; a failure names each value found and where, never the
+    value itself. The test of the same name in ``tests/test_auth_api.py``
+    checks the route too.
     """
+    unknown_email = "ghost@example.com"
+
     with caplog.at_level("DEBUG"):
         issued_tokens = service.login(db_session, user.email, PASSWORD)
 
@@ -798,7 +802,7 @@ def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
             service.login(db_session, user.email, "Wrong-Password-1")
 
         with pytest.raises(AuthenticationError):
-            service.login(db_session, "ghost@example.com", PASSWORD)
+            service.login(db_session, unknown_email, PASSWORD)
 
     printed = capsys.readouterr()
     sensitive_values = {
@@ -807,6 +811,8 @@ def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
         "stored hash": user.password_hash,
         "access token": issued_tokens.access_token,
         "refresh token": issued_tokens.refresh_token,
+        "email": user.email,
+        "unknown email": unknown_email,
     }
     captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
 

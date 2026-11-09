@@ -32,12 +32,19 @@ deactivated, while every other unusable token, one revoked without
 rotation included, is refused with the very same error and ends no
 session.
 
-Sign-out revokes only the presented token, or the replacement of one a
-refresh has rotated, and ignores a token it can't use. A password change
-refuses a wrong current password or an unchanged new one with a 400;
-otherwise it replaces the hash, clears the forced-change flag, ends every
-session, and starts a new one, all committed. The password-change gate
-refuses a user with a pending change with a 403 and a code of its own.
+Sign-out revokes the presented token, without linking a replacement,
+and commits that, leaving the user's other sessions alone; presented
+after a refresh rotated it, the token's replacement is revoked instead,
+with no alarm. A missing, empty, or unknown cookie and another user's
+token change nothing, a revoked token raises no alarm and ends no other
+session, and a second sign-out keeps the first revocation time. A
+password change stores a hash only the new password matches, clears the
+forced-change flag, revokes every session the user had, and starts a
+new one with a fresh window, all committed, and leaves every other
+account alone; a wrong current password or an unchanged new one gets a
+400 with a message of its own and writes nothing. The password-change
+gate refuses a user with a pending change with a 403 and a code of its
+own, and lets every other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -59,7 +66,7 @@ from datetime import UTC
 # The current time: bounds for a sign-in time or an expiry, and a saved token's own times.
 from datetime import datetime
 
-# Moves a time by days, minutes, or seconds: a lifetime ahead, or an expiry in the past.
+# Moves a time: a lifetime ahead, or an expiry, a revocation, or a sign-in in the past.
 from datetime import timedelta
 
 # Test framework: fixtures, marks, raises, and the monkeypatch and caplog types.
@@ -86,7 +93,7 @@ from app.core.errors import AuthenticationError
 # What a refused password change raises, which the API answers with 400.
 from app.core.errors import BadRequestError
 
-# Machine-readable error codes; a refused change's and a pending change's codes are checked.
+# Machine-readable error codes; sign-in, token, password change, and gate errors are checked.
 from app.core.errors import ErrorCode
 
 # What the password-change gate raises, which the API answers with 403.
@@ -113,7 +120,7 @@ from app.core.security import verify_password
 # The auth service, under test, as a module, so monkeypatch can replace names it looks up.
 from app.modules.auth import service
 
-# The refresh_tokens table's ORM model; the read-back queries select it.
+# The refresh_tokens table's ORM model; the read-back queries load its rows.
 from app.modules.auth.models import RefreshToken
 
 # Validated password change input; _password_change builds one, as the route receives it.
@@ -1315,9 +1322,11 @@ def test_reuse_leaves_other_users_tokens_alone(db_session: Session, user: User) 
 def test_logout_revokes_the_presented_token(db_session: Session, user: User) -> None:
     """Logout revokes the token from the cookie, without linking a replacement.
 
-    The device can never refresh with that token again. ``replaced_by_id``
-    stays empty, which tells a sign-out apart from a rotation when the
-    table is investigated later.
+    The token's row is read back after the sign-out: it is revoked, and its
+    ``replaced_by_id`` is still empty. That link is what marks a token as
+    rotated, so a sign-out that set it would make the token's next refresh
+    raise the reuse alarm and end every session of the user, where a token
+    ended on purpose is refused quietly. The next test checks the commit.
     """
     raw_token = _save_refresh_token(db_session, user)
 
@@ -1332,9 +1341,11 @@ def test_logout_revokes_the_presented_token(db_session: Session, user: User) -> 
 def test_the_logout_revocation_is_committed(db_session: Session, user: User) -> None:
     """The revocation is committed, so it survives a rollback.
 
-    The session is rolled back after logout, as the request's session is
-    when it closes, and the token is still revoked. The previous test can't
-    see a missing commit, because the change is still in the session there.
+    The session is rolled back after logout, as a request's session is when
+    it closes, and the token's row, read back from the database, is still
+    revoked and still unlinked. Without the commit, the rollback would undo
+    the revocation; ``test_logout_revokes_the_presented_token`` can't see
+    that, because the change is still in the session there.
     """
     raw_token = _save_refresh_token(db_session, user)
 
@@ -1348,11 +1359,12 @@ def test_the_logout_revocation_is_committed(db_session: Session, user: User) -> 
 
 
 def test_logout_leaves_the_users_other_sessions_alone(db_session: Session, user: User) -> None:
-    """Signing out on one device keeps the user signed in on the others.
+    """Signing out on one device leaves the user's other sessions alone.
 
-    The user holds two tokens, as on a laptop and a phone. Only the one
-    presented is revoked, so logout must never revoke every token the way
-    reuse detection does.
+    The user holds two tokens, as on a laptop and a phone, and the laptop
+    signs out. Its token is revoked without a link, and the phone's row,
+    read back after the sign-out, must still be unrevoked: logout must
+    never revoke every token the way reuse detection does.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1383,7 +1395,9 @@ def test_logout_with_an_unusable_token_does_nothing(
     """A missing, empty, or unknown cookie changes nothing and raises nothing.
 
     A real token is saved first, so there is something a faulty logout
-    could wrongly revoke, and it must still be unrevoked afterwards.
+    could wrongly revoke, and it must still be unrevoked afterwards. Its
+    row is the copy loaded before the sign-out, which the session keeps in
+    step with every change made through it, the bulk revocation included.
     Logout never fails, so signing out without a usable cookie is not an
     error.
     """
@@ -1404,10 +1418,13 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
 ) -> None:
     """An already revoked token is ignored: no warning, and no mass revocation.
 
-    In refresh, a rotated token presented again means a copy exists and
-    ends every session. At logout a revoked token usually means a double
-    click or a second tab signing out too, so the user's other token must
-    stay active and nothing is logged as a security warning.
+    The token was revoked five minutes ago, without a replacement, as a
+    sign-out leaves it. In refresh, a rotated token presented again means a
+    copy exists and ends every session. At logout a revoked token usually
+    means a double click or a second tab signing out too, so the user's
+    other device must keep its token, and nothing may be logged as a
+    security warning. Only WARNING records are counted, so an alarm logged
+    at ERROR would pass (R-088).
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1430,7 +1447,10 @@ def test_signing_out_twice_keeps_the_first_revocation(db_session: Session, user:
 
     A double click can send the cookie twice. The first sign-out revokes
     the token; the second finds it revoked and must leave its revocation
-    time alone, so the record of when the session ended never moves.
+    time alone, so the record of when the session ended never moves. The
+    time is read back from the database after each sign-out. The token was
+    never rotated: a second sign-out with a rotated cookie, whose
+    replacement the first one revoked, is untested (R-089).
     """
     raw_token = _save_refresh_token(db_session, user)
 
@@ -1453,8 +1473,12 @@ def test_logout_with_a_rotated_token_revokes_its_replacement(
     A refresh of the same cookie can rotate the token just before the
     sign-out reads it, and send the browser the replacement. The sign-out
     must revoke that replacement, without linking it to another token, and
-    commit, so the session can't come back. It raises no reuse alarm, and
-    the user's token on another device stays active.
+    commit, so the session can't come back: the session is rolled back
+    before the rows are read, as a request's is when it ends. It raises no
+    reuse alarm, and the user's token on another device stays unrevoked.
+    Only WARNING records are counted (R-088), and the rotated token's own
+    row isn't read, so a sign-out that also moved its revocation time would
+    pass (R-089).
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1483,9 +1507,10 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
     """A user can't sign out someone else by presenting their token.
 
     The cookie holds another user's token while the access token names
-    ``user``. Logout ends only the caller's own session, so neither
-    token is revoked: a stolen cookie can't be used with another account
-    to end its owner's session.
+    ``user``. Logout revokes only a token of the signed-in user, so neither
+    token is revoked: a stolen cookie can't be used with another account to
+    end its owner's session, and the caller's own token, which wasn't
+    presented, stays as it was.
     """
     other_user = make_user(email="other-user@example.com")
 
@@ -1507,8 +1532,11 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
 def test_change_password_stores_a_hash_of_the_new_password(db_session: Session, user: User) -> None:
     """Changing the password stores a hash that only the new password matches.
 
-    The stored value isn't the plain new password, the old password no
-    longer verifies, and the new one does.
+    The account's hash isn't the plain new password, the old password no
+    longer verifies against it, and the new one does. ``user`` is the very
+    object the service changes: its locked lookup returns the session's own
+    copy of the account, refreshed from the locked row. The hash being
+    saved is checked by ``test_the_password_change_is_committed``.
     """
     service.change_password(db_session, user, _password_change())
 
@@ -1520,9 +1548,9 @@ def test_change_password_stores_a_hash_of_the_new_password(db_session: Session, 
 def test_change_password_clears_the_forced_change_flag(db_session: Session, user: User) -> None:
     """A successful change clears ``must_change_password``.
 
-    The flag is set first, so the test sees it go from true to false.
-    Clearing it lifts the forced-change gate, so the user can reach the
-    rest of the API.
+    The flag is set explicitly first, so the test sees it go from true to
+    false whatever the database default. Clearing it lifts the
+    forced-change gate, so the user can reach the rest of the API.
     """
     user.must_change_password = True
     db_session.flush()
@@ -1535,9 +1563,11 @@ def test_change_password_clears_the_forced_change_flag(db_session: Session, user
 def test_change_password_revokes_every_existing_session(db_session: Session, user: User) -> None:
     """Changing the password revokes every refresh token the user holds.
 
-    The two tokens stand for two signed-in devices. Both are revoked, so
-    anyone still holding an old token, such as someone who knew the old
-    password, is signed out everywhere.
+    The two tokens stand for two signed-in devices, the one making the
+    change and another. Both rows, read back after the change, are revoked,
+    so anyone still holding an old token, such as someone who knew the old
+    password, can no longer refresh. The next test checks the session the
+    change starts.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1555,11 +1585,12 @@ def test_change_password_revokes_every_existing_session(db_session: Session, use
 def test_change_password_returns_a_working_session(db_session: Session, user: User) -> None:
     """The change returns a new session for the device that made it.
 
-    The new refresh token belongs to the user, escapes the revocation of
-    the old tokens, and expires the configured number of days after the
-    change, three here: a fresh window, checked from both sides so a
-    longer lifetime fails too, and a lifetime written into the code fails
-    as well. The access token names the user.
+    The new refresh token's row belongs to the user and is unrevoked, so it
+    escaped the revocation that ends the old sessions, and it expires the
+    configured number of days after the change, three here: a fresh window,
+    checked from both sides so a shorter or longer lifetime fails, and a
+    lifetime written into the code fails as well. The access token names
+    the user. That the new cookie refreshes is checked through the API.
     """
     before = datetime.now(UTC) + timedelta(days=3)
     issued_tokens = service.change_password(db_session, user, _password_change())
@@ -1576,11 +1607,16 @@ def test_change_password_returns_a_working_session(db_session: Session, user: Us
 def test_the_password_change_is_committed(db_session: Session, user: User) -> None:
     """The password change is committed, so it survives a rollback.
 
-    The session is rolled back after the change, as the request's session
-    is when it closes, and the new password, the cleared flag, and the new
-    session are all still saved. The rollback also makes ``user`` reload
-    from the database. The earlier tests can't see a missing commit,
-    because the changes are still in the session there.
+    The session is rolled back after the change, as a request's session is
+    when it closes, and the new password, the cleared flag, and the new
+    session are all still saved. The flag starts set, as the database
+    default leaves it. Had the change left anything uncommitted, the
+    rollback would undo it and expire ``user``, which would then show the
+    stored values; after a commit it has nothing to undo, so ``user`` keeps
+    the values the commit saved. The earlier tests can't see a missing
+    commit, because the changes are still in the session there. Nor can
+    this one see how many commits the change made: one that saved the new
+    password before it revoked the sessions would pass (R-090).
     """
     issued_tokens = service.change_password(db_session, user, _password_change())
 
@@ -1609,7 +1645,9 @@ def test_a_rejected_change_raises_and_writes_nothing(
     four things a successful change writes. The hash is compared directly,
     because in the reuse case a hash rewritten from the same password would
     still verify. There is no rollback, so even changes the service made
-    without committing would show.
+    without committing would show. No case sends a wrong current password
+    with the real one as the new password, so the order of the two checks
+    is untested (R-091).
     """
     _save_refresh_token(db_session, user)
     original_hash = user.password_hash
@@ -1637,9 +1675,12 @@ def test_change_password_leaves_other_users_alone(db_session: Session, user: Use
     """Changing one user's password leaves every other account as it was.
 
     Another user is signed in on a device. After ``user`` changes their
-    password, that user's token is not revoked and their password hash is
-    unchanged. The service commits, so ``other_user`` reloads from the
-    database and the hash read afterwards is the saved one.
+    password, that user's token row, read back from the database, is not
+    revoked, and their password hash is unchanged. The hash is the
+    session's copy of ``other_user``, which the commit leaves as it was,
+    since the session doesn't expire objects on commit: a change made
+    through the session, such as an ORM update of every account, would
+    show in it, but one made in raw SQL would not.
     """
     other_user = make_user(email="other-user@example.com")
     other_user_original_hash = other_user.password_hash
@@ -1669,7 +1710,8 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
     purpose, so it is not a stolen copy: the user's other device keeps its
     session, and no WARNING record is logged. Without this, another device
     refreshing after a password change would sign out the device that made
-    the change.
+    the change. Only WARNING records are counted, so an alarm logged at
+    ERROR would pass (R-088).
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)
@@ -1689,8 +1731,10 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
 def test_a_pending_password_change_is_refused(user: User) -> None:
     """A user who must change their password is refused with its own 403 code.
 
-    The code, not the generic ``PERMISSION_DENIED``, is what tells the web
-    app to show the change-password screen instead of an error.
+    The flag is set explicitly, so the test doesn't depend on the database
+    default. The status, the code, and the message are compared: the code,
+    not the generic ``PERMISSION_DENIED``, is what tells the web app to
+    show the change-password screen instead of an error.
     """
     user.must_change_password = True
 

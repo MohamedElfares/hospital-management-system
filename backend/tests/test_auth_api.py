@@ -1,3 +1,5 @@
+# Random UUIDs: the X-Request-ID a test sends, to find it again in a log line.
+import uuid
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -768,6 +770,60 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
     assert after_reuse_response.status_code == 401
     assert after_reuse_error["code"] == "AUTHENTICATION_FAILED"
     assert after_reuse_error["message"] == "Invalid or expired token."
+
+
+def test_reuse_is_logged_with_the_request_id(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A replayed cookie logs one warning naming the request, the user, and the token.
+
+    The replay sends its own ``X-Request-ID``, which the middleware hands
+    on to the service, so the warning can be matched with the request
+    whose 401 the client got; the request's own log line names no user,
+    because refresh takes no access token. The whole message is compared,
+    so a line without the request ID, the user's ID, or the replayed
+    token's ID fails, and only WARNING records from the auth service's
+    logger count, so a warning logged at another level or under another
+    name fails too. Neither cookie may appear anywhere in the captured
+    text.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
+    refresh_response = client.post(REFRESH_URL)
+
+    assert refresh_response.status_code == 200
+
+    new_cookie = refresh_response.cookies[REFRESH_COOKIE_NAME]
+    old_token_id = db_session.scalar(
+        select(RefreshToken.id).where(RefreshToken.token_hash == hash_refresh_token(old_cookie))
+    )
+    request_id = str(uuid.uuid4())
+
+    client.cookies.clear()
+    client.cookies.set(REFRESH_COOKIE_NAME, old_cookie, path="/api/v1/auth")
+    with caplog.at_level("WARNING", logger="app.modules.auth.service"):
+        reuse_response = client.post(REFRESH_URL, headers={"X-Request-ID": request_id})
+
+    alarm_records = [
+        (record.levelname, record.getMessage())
+        for record in caplog.records
+        if record.name == "app.modules.auth.service"
+    ]
+    expected_message = (
+        f"Refresh token reuse detected (request_id={request_id}, user_id={user.id}, "
+        f"token_id={old_token_id})"
+    )
+
+    assert reuse_response.status_code == 401
+    assert alarm_records == [("WARNING", expected_message)]
+    assert old_cookie not in caplog.text
+    assert new_cookie not in caplog.text
 
 
 def test_logout_clears_the_cookie_and_ends_the_session(user: User, client: TestClient) -> None:

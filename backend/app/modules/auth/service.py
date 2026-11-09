@@ -72,6 +72,9 @@ from app.core.errors import ErrorCode
 # Error that the API turns into a 403 response; refuses a user with a temporary password.
 from app.core.errors import PermissionDeniedError
 
+# The current request's ID, which ties a reuse warning to the request's own log line.
+from app.core.logging import request_id_var
+
 # Signs the access token returned in the response body.
 from app.core.security import create_access_token
 
@@ -316,13 +319,16 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
     Only a rotated token presented again counts as reuse: it was already
     exchanged, so whoever sends it kept a copy, and the server can't tell
     the real user from a thief. Every token of that user is then revoked,
-    a warning is logged without the token, and the revocation is committed
-    before the error is raised. A token revoked any other way, by sign-out,
-    a password change, deactivation, or an earlier alarm, has no
-    replacement. It was ended on purpose, so it is refused like any other
-    unusable token, with no alarm. This matters after a password change:
-    the user's other devices still hold such tokens, and treating them as
-    reuse would sign out the device that made the change.
+    a warning is logged, and the revocation is committed before the error
+    is raised. The warning names the request, the user, and the token by
+    their IDs, never the token itself; the request ID ties it to the
+    request's own log line, which names no user, because refresh takes no
+    access token. A token revoked any other way, by sign-out, a password
+    change, deactivation, or an earlier alarm, has no replacement. It was
+    ended on purpose, so it is refused like any other unusable token, with
+    no alarm. This matters after a password change: the user's other
+    devices still hold such tokens, and treating them as reuse would sign
+    out the device that made the change.
 
     The web app calls this after a page reload, when the access token held
     in memory is gone, and whenever an access token expires. A token that
@@ -385,7 +391,8 @@ def refresh(session: Session, raw_refresh_token: str | None) -> IssuedTokens:
         # alarm, and committed before raising because a failed request
         # would otherwise save nothing.
         logger.warning(
-            "Refresh token reuse detected (user_id=%s, token_id=%s)",
+            "Refresh token reuse detected (request_id=%s, user_id=%s, token_id=%s)",
+            request_id_var.get(),
             presented_token.user_id,
             presented_token.id,
         )

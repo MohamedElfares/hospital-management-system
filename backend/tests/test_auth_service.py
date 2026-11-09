@@ -1174,8 +1174,9 @@ def test_reuse_is_logged_without_the_token(
     from WARNING up and only WARNING records are counted, so a line at
     another level fails. The raw token must not appear anywhere in the
     captured text, because anyone who can read the logs could otherwise
-    use it. The test reads neither the record's logger nor the token's ID,
-    and the line carries no request ID to check.
+    use it. The service runs outside a request here, so the line's request
+    ID is None; ``test_reuse_is_logged_with_the_request_id`` in
+    ``tests/test_auth_api.py`` compares the whole line through a request.
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
 

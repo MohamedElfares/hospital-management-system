@@ -33,14 +33,16 @@ and gets the same 401 an unknown email gets.
 
 The current-user route returns exactly the user's public fields, for a
 signed token and for the one sign-in returns, and still answers while a
-password change is pending. A missing or unusable ``Authorization``
-header and a deactivated user's token get a 401 with the standard code
-and the message for its case, and FastAPI's own 401 and those of the
-three parts of the auth service that refuse, for an expired access
-token, a failed sign-in, and a refused refresh, carry
-``WWW-Authenticate: Bearer``. Sign-in, refresh, and a password change each
-answer with ``Cache-Control: no-store`` and ``Pragma: no-cache``, so no
-cache keeps their tokens. Refresh answers with a bearer access token that
+password change is pending. Nothing a request to it logs, at any level,
+or prints holds the token sent, the stored hash, the email, or the full
+name, whether the token is accepted, expired, or a deactivated user's.
+A missing or unusable ``Authorization`` header and a deactivated user's
+token get a 401 with the standard code and the message for its case,
+and FastAPI's own 401 and those of the three parts of the auth service
+that refuse, for an expired access token, a failed sign-in, and a
+refused refresh, carry ``WWW-Authenticate: Bearer``. Sign-in, refresh,
+and a password change each answer with ``Cache-Control: no-store`` and
+``Pragma: no-cache``, so no cache keeps their tokens. Refresh answers with a bearer access token that
 names the user and a new cookie with the same flags, never puts the
 refresh token in the body, and gives a missing or unknown cookie a 401
 with the standard code and message; the ``user`` fixture's account must
@@ -51,9 +53,10 @@ replay logs one warning with the request ID. Nothing a refresh logs, at
 any level, or prints holds a cookie sent, a token issued, the stored
 hash, the email, or the full name, whether the refresh succeeds, replays
 a spent cookie, or sends one the server never issued. Sign-out answers
-204, clears the cookie, revokes the token behind it, and logs that token
-at no level; it needs an access token, and it works without a cookie and
-while a password change is pending.
+204, clears the cookie, and revokes the token behind it, and nothing it
+logs, at any level, or prints holds either token, the stored hash, the
+email, or the full name; it needs an access token, and it works without
+a cookie and while a password change is pending.
 
 A password change answers with a new access token and a new cookie, ends
 the session from before the change, and lets only the new password sign
@@ -910,6 +913,65 @@ def test_me_still_works_while_a_password_change_is_pending(
     }
 
 
+def test_me_logs_and_prints_neither_the_secrets_nor_the_users_details(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The current-user route logs and prints no token, hash, email, or name.
+
+    The bearer-token dependency, which this route shares with sign-out and
+    the password change, takes the access token and reads the account,
+    its stored hash included, and the route returns the user's email and
+    full name, so ``CLAUDE.md`` asks for a test that captures what they
+    log, down to DEBUG, and what they print, and plan §12 keeps personal
+    data out of logs. Every record down to DEBUG is captured, the test
+    client's own included, and so is everything printed to stdout and
+    stderr. Three requests are sent: a valid token, which is accepted; an
+    expired one, which the token check refuses; and the valid token again,
+    once its user is deactivated, which the account check refuses.
+    Neither token, the stored hash, the email, nor the full name may
+    appear in the records or in either stream; a failure names each value
+    found and where, never the value itself.
+    """
+    access_token = create_access_token(user.id)
+    expired_token = _expired_access_token(user)
+
+    with caplog.at_level("DEBUG"):
+        accepted_response = client.get(ME_URL, headers={"Authorization": f"Bearer {access_token}"})
+        expired_response = client.get(ME_URL, headers={"Authorization": f"Bearer {expired_token}"})
+
+        user.is_active = False
+        db_session.flush()
+        deactivated_response = client.get(
+            ME_URL, headers={"Authorization": f"Bearer {access_token}"}
+        )
+
+    printed = capsys.readouterr()
+
+    assert accepted_response.status_code == 200
+    assert expired_response.status_code == 401
+    assert deactivated_response.status_code == 401
+
+    sensitive_values = {
+        "access token": access_token,
+        "expired token": expired_token,
+        "stored hash": user.password_hash,
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
+
+
 def test_refresh_returns_a_new_bearer_access_token(
     user: User,
     client: TestClient,
@@ -1223,41 +1285,62 @@ def test_logout_clears_the_cookie_and_ends_the_session(user: User, client: TestC
     assert refresh_response.status_code == 401
 
 
-def test_logout_never_logs_the_refresh_token(
+def test_logout_logs_and_prints_neither_the_secrets_nor_the_users_details(
     db_session: Session,
     user: User,
     client: TestClient,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A sign-out through the API logs the refresh cookie at no level.
+    """A sign-out through the API logs and prints no token, hash, email, or name.
 
     The service test of the same name sees only the service. Here the
-    route, its dependencies, and the middleware run too, and every record
-    down to DEBUG is captured, the test client's own included. The user
-    signs in and signs out with the cookie sign-in set, whose value may
-    not appear in the captured text. Signing out answers 204 even without
-    a cookie, so the token's row must be revoked afterwards, which shows
-    the cookie reached the route and the check isn't empty. What sign-out
-    prints isn't captured, and the access token it sends isn't looked for
-    (R-101).
+    route, the bearer-token dependency, which takes the access token and
+    reads the account, its stored hash included, and the middleware run
+    too. Every record down to DEBUG is captured, the test client's own
+    included, and so is everything printed to stdout and stderr. The user
+    signs in, then signs out with the access token and the cookie sign-in
+    returned. Neither token, the stored hash, the email, nor the full name
+    may appear in the records or in either stream; a failure names each
+    value found and where, never the value itself. Signing out answers 204
+    even without a cookie, so the token's row must be revoked afterwards,
+    which shows the cookie reached the route and the check isn't empty.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
     assert login_response.status_code == 200
 
-    headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+    access_token = login_response.json()["access_token"]
     raw_refresh_token = login_response.cookies[REFRESH_COOKIE_NAME]
 
     with caplog.at_level("DEBUG"):
-        logout_response = client.post(LOGOUT_URL, headers=headers)
+        logout_response = client.post(
+            LOGOUT_URL, headers={"Authorization": f"Bearer {access_token}"}
+        )
 
+    printed = capsys.readouterr()
     token_row = db_session.scalar(
         select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh_token))
     )
 
     assert logout_response.status_code == 204
     assert token_row.revoked_at is not None
-    assert raw_refresh_token not in caplog.text
+
+    sensitive_values = {
+        "access token": access_token,
+        "refresh token": raw_refresh_token,
+        "stored hash": user.password_hash,
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_logout_without_an_access_token_is_the_standard_401(user: User, client: TestClient) -> None:

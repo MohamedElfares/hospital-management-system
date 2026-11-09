@@ -47,8 +47,9 @@ nothing, and leaves the sign-in time and every other account alone; a
 wrong current password or an unchanged new one gets a 400 with a
 message of its own and writes nothing, and a wrong current password is
 refused as wrong even when the new one is the real password. No
-sign-out logs a token, and no password change logs a password, a hash,
-or a token. The password-change gate refuses a user with a pending
+sign-out logs or prints a token, the stored hash, or the user's email
+or name, and no password change logs a password, a hash, or a token.
+The password-change gate refuses a user with a pending
 change with a 403 and a code of its own, and lets every other user
 through.
 
@@ -1605,21 +1606,29 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
     assert other_user_refresh_token_row.revoked_at is None
 
 
-def test_logout_never_logs_the_refresh_token(
+def test_logout_logs_and_prints_neither_the_secrets_nor_the_users_details(
     db_session: Session,
     user: User,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """No sign-out logs the token from the cookie, at any level.
+    """No sign-out logs or prints a token, the stored hash, or the user's email or name.
 
     ``logout``'s docstring says the cookie's token is never logged, and
     ``CLAUDE.md`` says no token ever is: anyone who can read the logs
-    could use one that still works. A valid token, a rotated one, whose
-    replacement is revoked instead, and an unknown one, which changes
-    nothing, are signed out while every record down to DEBUG is captured,
-    so a stray log line at any level shows. None of the three tokens may
-    appear in the captured text. The test of the same name in
-    ``tests/test_auth_api.py`` checks the route's logs.
+    could use one that still works. ``logout`` is also handed the
+    signed-in account, with its stored hash, its email, and its full
+    name, and plan §12 keeps personal data out of logs. A valid token, a
+    rotated one, whose replacement is revoked instead, and an unknown
+    one, which changes nothing, are signed out while every record down to
+    DEBUG is captured, and so is everything printed to stdout and stderr,
+    where the application's log records go too, so a stray log line at
+    any level or a stray ``print`` shows. None of the three tokens, the
+    stored hash, the email, nor the full name may appear in the records
+    or in either stream; a failure names each value found and where,
+    never the value itself. The test of the same name in
+    ``tests/test_auth_api.py`` checks the route and the bearer-token
+    dependency too.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     raw_rotated_token = _save_rotated_token(db_session, user)
@@ -1630,9 +1639,23 @@ def test_logout_never_logs_the_refresh_token(
         service.logout(db_session, user, raw_rotated_token)
         service.logout(db_session, user, raw_unknown_token)
 
-    assert raw_refresh_token not in caplog.text
-    assert raw_rotated_token not in caplog.text
-    assert raw_unknown_token not in caplog.text
+    printed = capsys.readouterr()
+    sensitive_values = {
+        "refresh token": raw_refresh_token,
+        "rotated token": raw_rotated_token,
+        "unknown token": raw_unknown_token,
+        "stored hash": user.password_hash,
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_change_password_stores_a_hash_of_the_new_password(db_session: Session, user: User) -> None:

@@ -346,9 +346,11 @@ def test_login_returns_a_bearer_access_token(user: User, client: TestClient) -> 
     key proves it is genuine and names that user.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
-    body = response.json()
 
     assert response.status_code == 200
+
+    body = response.json()
+
     assert set(body) == {"access_token", "token_type"}
     assert body["token_type"] == "bearer"
     assert decode_access_token(body["access_token"]) == user.id
@@ -1027,9 +1029,11 @@ def test_refresh_returns_a_new_bearer_access_token(
     assert login_response.status_code == 200
 
     refresh_response = client.post(REFRESH_URL)
-    body = refresh_response.json()
 
     assert refresh_response.status_code == 200
+
+    body = refresh_response.json()
+
     assert body["token_type"] == "bearer"
     assert decode_access_token(body["access_token"]) == user.id
 

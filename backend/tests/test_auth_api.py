@@ -708,11 +708,11 @@ def test_me_accepts_the_access_token_from_login(user: User, client: TestClient) 
     This is the one test that chains the two routes, proving login issues a
     token the protected routes accept, with the same key and claims.
     """
-    login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
-    assert login.status_code == 200
+    assert login_response.status_code == 200
 
-    access_token = login.json()["access_token"]
+    access_token = login_response.json()["access_token"]
     response = client.get(ME_URL, headers={"Authorization": f"Bearer {access_token}"})
 
     assert response.status_code == 200
@@ -732,10 +732,10 @@ def test_me_without_a_token_is_the_standard_401(
 
     assert response.status_code == 401
 
-    body = response.json()["error"]
+    error = response.json()["error"]
 
-    assert body["code"] == "AUTHENTICATION_FAILED"
-    assert body["message"] == "Not authenticated"
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == "Not authenticated"
     assert response.headers["www-authenticate"] == "Bearer"
 
 
@@ -748,12 +748,12 @@ def test_every_kind_of_401_names_the_bearer_scheme(user: User, client: TestClien
     the auth service, so the test sends all three and compares them in one
     assertion, which names every request that lacks the header.
     """
-    expired_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
-    wrong_password = {"username": user.email, "password": "Wrong Password"}
+    expired_token_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
+    wrong_password_form = {"username": user.email, "password": "Wrong Password"}
 
     responses = {
-        "expired access token": client.get(ME_URL, headers=expired_header),
-        "failed sign-in": client.post(LOGIN_URL, data=wrong_password),
+        "expired access token": client.get(ME_URL, headers=expired_token_header),
+        "failed sign-in": client.post(LOGIN_URL, data=wrong_password_form),
         "refused refresh": client.post(REFRESH_URL),
     }
 
@@ -832,10 +832,10 @@ def test_me_rejects_an_unusable_authorization_header(
 
     assert response.status_code == 401
 
-    body = response.json()["error"]
+    error = response.json()["error"]
 
-    assert body["code"] == "AUTHENTICATION_FAILED"
-    assert body["message"] == message
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == message
 
 
 def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: TestClient) -> None:
@@ -854,10 +854,10 @@ def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: 
 
     assert response.status_code == 401
 
-    body = response.json()["error"]
+    error = response.json()["error"]
 
-    assert body["code"] == "AUTHENTICATION_FAILED"
-    assert body["message"] == "Invalid or expired token."
+    assert error["code"] == "AUTHENTICATION_FAILED"
+    assert error["message"] == "Invalid or expired token."
 
 
 def test_me_still_works_while_a_password_change_is_pending(
@@ -1005,19 +1005,19 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
 
     assert login_response.status_code == 200
 
-    old_token = login_response.cookies[REFRESH_COOKIE_NAME]
+    old_cookie = login_response.cookies[REFRESH_COOKIE_NAME]
     refresh_response = client.post(REFRESH_URL)
 
     assert refresh_response.status_code == 200
 
-    new_token = refresh_response.cookies[REFRESH_COOKIE_NAME]
+    new_cookie = refresh_response.cookies[REFRESH_COOKIE_NAME]
 
     client.cookies.clear()
-    client.cookies.set(REFRESH_COOKIE_NAME, old_token, path="/api/v1/auth")
+    client.cookies.set(REFRESH_COOKIE_NAME, old_cookie, path="/api/v1/auth")
     reuse_response = client.post(REFRESH_URL)
 
     client.cookies.clear()
-    client.cookies.set(REFRESH_COOKIE_NAME, new_token, path="/api/v1/auth")
+    client.cookies.set(REFRESH_COOKIE_NAME, new_cookie, path="/api/v1/auth")
     after_reuse_response = client.post(REFRESH_URL)
 
     assert reuse_response.status_code == 401

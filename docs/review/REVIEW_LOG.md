@@ -738,7 +738,12 @@ closes when the last stage is done, so an interrupted run is obvious.
   account's email and name, and a `create-admin` that logs the typed
   email, since neither `tests/test_user_service.py` nor
   `tests/test_cli.py` captures a log record; the next `/review new`
-  takes both files again.
+  takes both files again. Accepted on 2026-11-09 (your "yes") and added
+  to `CLAUDE.md` under "Backend tests", word for word. R-096's fix,
+  `466360c`, has since given sign-in such a test; the users service's
+  `create_user` and `create-admin` still have none, for that
+  `/review new`, since neither those files nor the code they test has
+  changed since this stage.
 - **Carried to stages 22 and 23 (from stage 21):** four things in the
   parts those stages reach. R-094's kind: the API tests of refresh,
   sign-out, and the password change capture no printed output either.

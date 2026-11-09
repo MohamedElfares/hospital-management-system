@@ -148,8 +148,14 @@ def test_each_request_without_an_id_gets_its_own_generated_id(client: TestClient
     in the log is spelled one way. How the middleware treats the IDs a
     client sends is tested in ``tests/test_logging.py``.
     """
-    first_request_id = client.get("/health/live").headers["x-request-id"]
-    second_request_id = client.get("/health/live").headers["x-request-id"]
+    first_response = client.get("/health/live")
+    second_response = client.get("/health/live")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+
+    first_request_id = first_response.headers["x-request-id"]
+    second_request_id = second_response.headers["x-request-id"]
 
     assert re.fullmatch(REQUEST_ID_PATTERN, first_request_id)
     assert re.fullmatch(REQUEST_ID_PATTERN, second_request_id)
@@ -169,6 +175,7 @@ def test_client_request_id_is_echoed_back(client: TestClient) -> None:
         headers={"X-Request-ID": "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"},
     )
 
+    assert response.status_code == 200
     assert response.headers["x-request-id"] == "3f2c8a1e-9b4d-4c6e-8f00-123456789abc"
 
 

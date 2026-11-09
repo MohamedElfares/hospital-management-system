@@ -1405,10 +1405,13 @@ def test_logout_without_an_access_token_is_the_standard_401(user: User, client: 
     the cookie alone can't be used to revoke a session. The whole body of
     the 401 is compared, so one with details of its own, or without the
     request ID its ``X-Request-ID`` header carries, fails. The setup
-    sign-in's status isn't checked, so a failed sign-in would show up only
-    at the refresh, as a 401 that looks like an ended session (R-103).
+    sign-in's status is checked first, so a failed sign-in fails there and
+    can't pass for an ended session at the refresh.
     """
-    client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+
+    assert login_response.status_code == 200
+
     logout_response = client.post(LOGOUT_URL)
 
     assert logout_response.status_code == 401
@@ -1432,14 +1435,15 @@ def test_logout_without_a_cookie_still_succeeds(user: User, client: TestClient) 
     The test never signs in, so the client has no cookie to send. With a
     valid access token, signing out never fails, so a second tab or a
     cookie that is already gone is not an error, and the cookie is cleared
-    anyway. The cookie header is read before the status, so a 401 or a 403
-    here would stop at ``KeyError: 'set-cookie'`` (R-103).
+    anyway.
     """
     headers = _auth_header(user)
     logout_response = client.post(LOGOUT_URL, headers=headers)
-    cleared_cookie_header = logout_response.headers["set-cookie"].lower()
 
     assert logout_response.status_code == 204
+
+    cleared_cookie_header = logout_response.headers["set-cookie"].lower()
+
     assert "max-age=0" in cleared_cookie_header
 
 
@@ -1547,7 +1551,11 @@ def test_change_password_ends_the_old_session(user: User, client: TestClient) ->
 
 def test_only_the_new_password_signs_in(user: User, client: TestClient) -> None:
     """After the change, the new password signs in and the old one is refused."""
-    client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user))
+    change_response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
+    )
+
+    assert change_response.status_code == 200
 
     old_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
     new_login = client.post(LOGIN_URL, data={"username": user.email, "password": NEW_PASSWORD})

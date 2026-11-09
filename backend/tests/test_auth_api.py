@@ -16,12 +16,13 @@ a browser would.
 Sign-in answers with a bearer access token that names the user, in a body
 that holds nothing else, and puts the refresh token in its cookie alone,
 with its security flags and a lifetime that follows the setting; the
-cookie holds the token whose hash was saved. No record a sign-in logs, at
-any level, holds either password, the stored hash, or either token. A
-wrong password and an email holding a NUL get a 401 with the generic code
-and message, and no cookie. A form without a username, a JSON body, and a
-field over its limit get a 422 and no cookie; the last two also save no
-session, and the 422 for a field over its limit never repeats its value.
+cookie holds the token whose hash was saved. Nothing a sign-in logs, at
+any level, or prints holds either password, the stored hash, or either
+token. A wrong password and an email holding a NUL get a 401 with the
+generic code and message, and no cookie. A form without a username, a
+JSON body, and a field over its limit get a 422 and no cookie; the last
+two also save no session, and the 422 for a field over its limit never
+repeats its value.
 A password as long as the rule allows and one with a space at each end
 sign in as typed, and an email as long as the limit reaches the service
 and gets the 401 for an unknown email.
@@ -401,24 +402,27 @@ def test_the_refresh_token_never_appears_in_the_body(user: User, client: TestCli
     assert refresh_token not in response.text
 
 
-def test_login_logs_neither_the_passwords_nor_the_tokens(
+def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
     user: User,
     client: TestClient,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A sign-in through the API logs no password, stored hash, or token at any level.
+    """A sign-in through the API logs and prints no password, stored hash, or token.
 
     The service test of the same name sees only the service. Here the
-    route, the middleware, and the error handler run too, and every record
-    down to DEBUG is captured, the test client's own included. A successful
-    sign-in and one with a wrong password are sent, and neither password,
-    the account's stored hash, nor either token the successful one returned
-    may appear in the captured text: the access token from the body, and
-    the refresh token from the cookie. Only log records are read, so a
-    sign-in that printed a password or a token would pass (R-094); no form
-    the route refuses with a 422 is sent, so a validation handler that
-    logged the typed password would pass too (R-095); and no email is
-    looked for (R-096).
+    route, the middleware, and the error handler run too. Every record
+    down to DEBUG is captured, the test client's own included, and so is
+    everything printed to stdout and stderr: the application writes its
+    log records to stderr, so a ``print`` ends up in the same log. A
+    successful sign-in and one with a wrong password are sent, and neither
+    password, the account's stored hash, nor either token the successful
+    one returned may appear in the records or in either stream: the access
+    token from the body, and the refresh token from the cookie. A failure
+    names each value found and where, never the value itself. No form the
+    route refuses with a 422 is sent, so a validation handler that logged
+    the typed password would pass (R-095); and no email is looked for
+    (R-096).
     """
     with caplog.at_level("DEBUG"):
         response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
@@ -426,17 +430,26 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
             LOGIN_URL, data={"username": user.email, "password": "Wrong-Password-1"}
         )
 
+    printed = capsys.readouterr()
+
     assert response.status_code == 200
     assert failed_response.status_code == 401
 
-    access_token = response.json()["access_token"]
-    refresh_token = response.cookies[REFRESH_COOKIE_NAME]
+    sensitive_values = {
+        "password": PASSWORD,
+        "wrong password": "Wrong-Password-1",
+        "stored hash": user.password_hash,
+        "access token": response.json()["access_token"],
+        "refresh token": response.cookies[REFRESH_COOKIE_NAME],
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
 
-    assert PASSWORD not in caplog.text
-    assert "Wrong-Password-1" not in caplog.text
-    assert user.password_hash not in caplog.text
-    assert access_token not in caplog.text
-    assert refresh_token not in caplog.text
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_login_with_a_wrong_password_returns_the_standard_401(

@@ -17,8 +17,8 @@ working. It records the sign-in time, accepts the email in any case and
 with spaces around it, and lets a user with a pending password change in.
 Every failed sign-in raises the very same ``AuthenticationError`` and
 writes nothing, and an unknown email and a deactivated account still run
-the password check. No sign-in logs a password, the stored hash, or a
-token.
+the password check. No sign-in logs or prints a password, the stored
+hash, or a token.
 
 A valid access token is turned back into the active user it names, looked
 up once by the ID inside it, even while a password change is pending;
@@ -772,20 +772,24 @@ def test_a_deactivated_account_still_runs_the_password_check(
     assert exc_info.value.message == INVALID_CREDENTIALS
 
 
-def test_login_logs_neither_the_passwords_nor_the_tokens(
+def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
     db_session: Session,
     user: User,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """No sign-in, successful or failed, logs a password, the stored hash, or a token.
+    """No sign-in, successful or failed, logs or prints a password, the stored hash, or a token.
 
     Plan §12 says passwords are never logged, and ``CLAUDE.md`` says the
     same of password hashes and tokens. A successful sign-in, one with a
     wrong password, and one for an unknown email run while every record
-    down to DEBUG is captured, so a stray log line at any level shows.
-    Neither password typed, the account's stored hash, nor either token the
-    successful sign-in issued may appear in the captured text. The test of
-    the same name in ``tests/test_auth_api.py`` checks the route's logs.
+    down to DEBUG is captured, and so is everything printed to stdout and
+    stderr, where the application's log records go too, so a stray log
+    line at any level or a stray ``print`` shows. Neither password typed,
+    the account's stored hash, nor either token the successful sign-in
+    issued may appear in the records or in either stream; a failure names
+    each value found and where, never the value itself. The test of the
+    same name in ``tests/test_auth_api.py`` checks the route too.
     """
     with caplog.at_level("DEBUG"):
         issued_tokens = service.login(db_session, user.email, PASSWORD)
@@ -796,11 +800,22 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
         with pytest.raises(AuthenticationError):
             service.login(db_session, "ghost@example.com", PASSWORD)
 
-    assert PASSWORD not in caplog.text
-    assert "Wrong-Password-1" not in caplog.text
-    assert user.password_hash not in caplog.text
-    assert issued_tokens.access_token not in caplog.text
-    assert issued_tokens.refresh_token not in caplog.text
+    printed = capsys.readouterr()
+    sensitive_values = {
+        "password": PASSWORD,
+        "wrong password": "Wrong-Password-1",
+        "stored hash": user.password_hash,
+        "access token": issued_tokens.access_token,
+        "refresh token": issued_tokens.refresh_token,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_a_valid_token_returns_its_user(db_session: Session, user: User) -> None:

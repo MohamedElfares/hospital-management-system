@@ -48,6 +48,9 @@ routes, the cookie, and the response bodies are tested in
 # Random UUIDs: an ID no user has; also the type of the IDs the lookup spy records.
 import uuid
 
+# Type of the functions that build an access token case when its test runs.
+from collections.abc import Callable
+
 # UTC time zone; every time a test builds is timezone-aware UTC, as the service's are.
 from datetime import UTC
 
@@ -759,17 +762,17 @@ def test_a_valid_token_returns_its_user(db_session: Session, user: User) -> None
 
 
 @pytest.mark.parametrize(
-    "access_token",
+    "make_access_token",
     (
-        pytest.param("not-a-token", id="garbage"),
-        pytest.param("", id="empty"),
-        pytest.param(create_access_token(uuid.uuid4()), id="unknown-user"),
+        pytest.param(lambda: "not-a-token", id="garbage"),
+        pytest.param(lambda: "", id="empty"),
+        pytest.param(lambda: create_access_token(uuid.uuid4()), id="unknown-user"),
     ),
 )
 def test_an_unusable_token_raises_the_generic_error(
     db_session: Session,
     user: User,
-    access_token: str,
+    make_access_token: Callable[[], str],
 ) -> None:
     """A token that doesn't decode, or that names no account, gets the generic error.
 
@@ -782,14 +785,15 @@ def test_an_unusable_token_raises_the_generic_error(
     comparing all three with one literal keeps the two copies of the text
     the same. The test compares the class and the message only.
 
-    The unknown-user token is signed when the module is imported, so the
-    case reaches the lookup only while the test runs within the access
-    token's lifetime of the import; after that, the token fails to decode
-    like the other two. Expired, tampered, and wrong-key tokens are tested
-    in ``tests/test_security.py``.
+    Each case is a function the test calls, so the unknown-user token is
+    signed when the test runs. A token signed when the module is imported
+    would have expired by the time a slow run reached the test, more than
+    the access token's lifetime later, and would then fail to decode like
+    the other two without ever reaching the lookup. Expired, tampered, and
+    wrong-key tokens are tested in ``tests/test_security.py``.
     """
     with pytest.raises(AuthenticationError) as exc_info:
-        service.get_authenticated_user(db_session, access_token)
+        service.get_authenticated_user(db_session, make_access_token())
 
     assert exc_info.value.message == INVALID_TOKEN
 

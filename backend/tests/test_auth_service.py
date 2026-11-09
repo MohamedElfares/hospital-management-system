@@ -24,11 +24,11 @@ A valid access token is turned back into the active user it names, looked
 up once by the ID inside it, even while a password change is pending;
 every other token gets the very same error, and one that doesn't decode
 gets it before any lookup. Refresh rotates the token, keeps its expiry,
-and stays open while a password change is pending. A rotated token
-presented again revokes every token of its user, commits that, and logs
-one warning without the token, however old it is, while every other
-unusable token, one revoked without rotation included, is refused with
-the very same error and ends no session.
+leaves the user's other sessions alone, and stays open while a password
+change is pending. A rotated token presented again revokes every token of
+its user, commits that, and logs one warning without the token, however
+old it is, while every other unusable token, one revoked without rotation
+included, is refused with the very same error and ends no session.
 
 Sign-out revokes only the presented token, or the replacement of one a
 refresh has rotated, and ignores a token it can't use. A password change
@@ -953,8 +953,8 @@ def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
     for the old row, the returned token for the new one. The link is what
     marks the old token as rotated, so presenting it again raises the reuse
     alarm rather than a quiet refusal, and it lets an investigation follow
-    a chain of rotations. The user holds no other token here, so the test
-    can't see a refresh that also ends the user's other sessions.
+    a chain of rotations. The next test checks that the user's other
+    tokens are left alone.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     issued_tokens = service.refresh(db_session, raw_refresh_token)
@@ -963,6 +963,26 @@ def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
 
     assert old_token_row.revoked_at is not None
     assert old_token_row.replaced_by_id == new_token_row.id
+
+
+def test_refresh_leaves_the_users_other_sessions_alone(db_session: Session, user: User) -> None:
+    """Refreshing on one device keeps the user signed in on the others.
+
+    The user holds two tokens, as on a laptop and a phone, and the laptop
+    refreshes. Only the presented token may be revoked: each device
+    refreshes whenever its access token expires, so a refresh that revoked
+    every token of the user, as reuse does, would sign the user out on
+    every other device again and again. The phone's row is read back after
+    the refresh and must still be unrevoked.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    raw_other_device_token = _save_refresh_token(db_session, user)
+
+    service.refresh(db_session, raw_refresh_token)
+
+    other_device_row = _token_row(db_session, raw_other_device_token)
+
+    assert other_device_row.revoked_at is None
 
 
 def test_refresh_keeps_the_old_expiry(db_session: Session, user: User) -> None:

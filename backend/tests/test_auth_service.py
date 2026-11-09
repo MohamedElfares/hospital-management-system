@@ -35,16 +35,18 @@ session.
 Sign-out revokes the presented token, without linking a replacement,
 and commits that, leaving the user's other sessions alone; presented
 after a refresh rotated it, the token's replacement is revoked instead,
-with no alarm. A missing, empty, or unknown cookie and another user's
-token change nothing, a revoked token raises no alarm and ends no other
-session, and a second sign-out keeps the first revocation time. A
-password change stores a hash only the new password matches, clears the
-forced-change flag, revokes every session the user had, and starts a
-new one with a fresh window, all committed, and leaves every other
-account alone; a wrong current password or an unchanged new one gets a
-400 with a message of its own and writes nothing. The password-change
-gate refuses a user with a pending change with a 403 and a code of its
-own, and lets every other user through.
+with no alarm, and the token keeps the time and the link of its
+rotation. A missing, empty, or unknown cookie and another user's token
+change nothing, a revoked token raises no alarm and ends no other
+session, and a second sign-out keeps the first revocation time, the
+replacement's when the token was rotated. A password change stores a
+hash only the new password matches, clears the forced-change flag,
+revokes every session the user had, and starts a new one with a fresh
+window, all committed, and leaves every other account alone; a wrong
+current password or an unchanged new one gets a 400 with a message of
+its own and writes nothing. The password-change gate refuses a user
+with a pending change with a 403 and a code of its own, and lets every
+other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -1450,8 +1452,9 @@ def test_signing_out_twice_keeps_the_first_revocation(db_session: Session, user:
     the token; the second finds it revoked and must leave its revocation
     time alone, so the record of when the session ended never moves. The
     time is read back from the database after each sign-out. The token was
-    never rotated: a second sign-out with a rotated cookie, whose
-    replacement the first one revoked, is untested (R-089).
+    never rotated;
+    ``test_a_second_logout_with_a_rotated_token_keeps_the_replacements_revocation``
+    signs out twice with one that was.
     """
     raw_token = _save_refresh_token(db_session, user)
 
@@ -1475,15 +1478,18 @@ def test_logout_with_a_rotated_token_revokes_its_replacement(
     sign-out reads it, and send the browser the replacement. The sign-out
     must revoke that replacement, without linking it to another token, and
     commit, so the session can't come back: the session is rolled back
-    before the rows are read, as a request's is when it ends. It raises no
-    reuse alarm, at WARNING or at any level above it, and the user's token
-    on another device stays unrevoked. The rotated token's own row isn't
-    read, so a sign-out that also moved its revocation time would pass
-    (R-089).
+    before the rows are read, as a request's is when it ends. The rotated
+    token keeps its own revocation time, the time of the rotation, and its
+    link to the replacement, so the record of when the session was rotated
+    never moves. The sign-out raises no reuse alarm, at WARNING or at any
+    level above it, and the user's token on another device stays
+    unrevoked. The next test signs out a second time with the same cookie.
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
-    replacement_id = _token_row(db_session, raw_rotated_token).replaced_by_id
+    rotated_row = _token_row(db_session, raw_rotated_token)
+    rotated_at = rotated_row.revoked_at
+    replacement_id = rotated_row.replaced_by_id
 
     assert replacement_id is not None
 
@@ -1493,14 +1499,46 @@ def test_logout_with_a_rotated_token_revokes_its_replacement(
     # A request's session is rolled back when it closes; only committed work remains.
     db_session.rollback()
 
+    rotated_row = _token_row(db_session, raw_rotated_token)
     replacement_row = db_session.get(RefreshToken, replacement_id, populate_existing=True)
     other_device_row = _token_row(db_session, raw_other_device_token)
 
+    assert rotated_row.revoked_at == rotated_at
+    assert rotated_row.replaced_by_id == replacement_id
     assert replacement_row is not None
     assert replacement_row.revoked_at is not None
     assert replacement_row.replaced_by_id is None
     assert other_device_row.revoked_at is None
     assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
+def test_a_second_logout_with_a_rotated_token_keeps_the_replacements_revocation(
+    db_session: Session,
+    user: User,
+) -> None:
+    """A second sign-out with a rotated cookie leaves the replacement's revocation time alone.
+
+    This is the rotated counterpart of
+    ``test_signing_out_twice_keeps_the_first_revocation``. The first
+    sign-out with the rotated token revokes its replacement, as the test
+    above checks. A double click sends the same cookie again, and the
+    second sign-out finds the replacement revoked and must leave its
+    revocation time alone, so the record of when the session ended never
+    moves. The replacement is read back from the database after each
+    sign-out.
+    """
+    raw_rotated_token = _save_rotated_token(db_session, user)
+    replacement_id = _token_row(db_session, raw_rotated_token).replaced_by_id
+
+    service.logout(db_session, user, raw_rotated_token)
+    replacement_row = db_session.get(RefreshToken, replacement_id, populate_existing=True)
+    first_revoked_at = replacement_row.revoked_at
+
+    service.logout(db_session, user, raw_rotated_token)
+    db_session.refresh(replacement_row)
+
+    assert first_revoked_at is not None
+    assert replacement_row.revoked_at == first_revoked_at
 
 
 def test_logout_ignores_another_users_token(db_session: Session, user: User) -> None:

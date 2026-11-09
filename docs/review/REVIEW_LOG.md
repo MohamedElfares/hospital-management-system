@@ -852,7 +852,11 @@ closes when the last stage is done, so an interrupted run is obvious.
   first stops at `assert 202 == 200`, and passes on today's code
   (probed). Tests are yours to change, so neither is edited here; both
   are carried to stage 23, the stage that records the file's `STATE.md`
-  row.
+  row. Both fixed since, at your request ("push and fix them"), in
+  `f843002`: each asserts the status before it reads the body, and the
+  copies that answer 202 with an empty body now stop each at
+  `assert 202 == 200`. The stricter scan finds no test in `tests/` that
+  breaks the line.
 - **Carried to stage 23 (from stage 22):** five things in part 3.
   R-101's kind for the password change: its API logging test reads no
   printed output, and it looks only for the access token the change
@@ -868,7 +872,7 @@ closes when the last stage is done, so an interrupted run is obvious.
   R-103's fix, `97092ed`. Also for stage 23, outside part 3: the two
   tests in parts 1 and 2 that read the body before they assert the
   status, which the rule accepted from the recurring finding above
-  flags.
+  flags. Done in `f843002`.
 - **Stage 22's findings fixed (2026-11-09):** R-100 (`0626417`), R-101
   (`05d92ca`), R-102 (`a40145b`), and R-103 (`97092ed`), written at your
   request ("fix the open findings with recommendations and best

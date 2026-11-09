@@ -41,6 +41,7 @@ Hospital Management System: a FastAPI backend and a React frontend for hospital 
 - Every guard that keeps secrets or personal data out of responses and logs, protects passwords or tokens (hashing settings, the unknown-email dummy check, token and cookie rules), or stops startup on a bad setting, gets a test that fails when the guard is removed.
 - Every log line that plan §12 requires or a docstring promises gets a test that captures it with `caplog` and checks its level, its request ID, and what it must leave out.
 - Every error that must not reveal which check failed, or why, such as a failed sign-in, a rejected token, or a failed readiness check, gets a test for each check that raises it, comparing the whole error: its status, code, message, and details.
+- Every use case, route, request dependency, or command that takes or issues a password, a token, or an activation code gets a test that captures what it logs, down to DEBUG, and what it prints, and finds none of those values, nor any password hash it reads or writes.
 
 ## CI/CD and Docker
 

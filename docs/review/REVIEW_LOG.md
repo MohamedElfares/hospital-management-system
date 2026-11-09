@@ -640,6 +640,25 @@ closes when the last stage is done, so an interrupted run is obvious.
   takes or issues a password or a token gets a test that captures what it
   logs, down to DEBUG, and what it prints, and finds none of those
   values." The line proposed in stage 19 still waits for your answer too.
+  Accepted on 2026-11-09, with the stage 19 line, and added to
+  `CLAUDE.md` under "Backend tests", with three changes: request
+  dependencies join the list, since the bearer token is taken by
+  `get_current_user_allowing_password_change` in `app/api/deps.py`, not
+  by the routes that use it; activation codes join passwords and tokens,
+  as in the security rules; and the test also finds no password hash the
+  code reads or writes, as R-081's and R-093's tests already check. What
+  it flags today, probed against all 405 tests: copies that log the
+  refresh cookie or the new refresh token at DEBUG, in `refresh` or in
+  its route, pass, and so do copies of `create-admin` and of the users
+  service's `create_user` that log the typed password at WARNING. A copy
+  of the bearer-token dependency that logs the presented token at DEBUG
+  fails only the API password change test, and only by chance: the
+  change's new access token, signed in the same second, is the same
+  string, because two tokens with the same claims are identical. Stage
+  22 reaches the refresh and `/auth/me` API tests, and the next
+  `/review new` takes `tests/test_auth_service.py`, `tests/test_cli.py`,
+  and `tests/test_user_service.py` again, since fixes changed each after
+  its stage.
 - **Carried from stage 20:** three things in files this run has passed or
   reaches later. For the next `/review new` of
   `app/modules/auth/service.py`, due anyway since it changed after stage

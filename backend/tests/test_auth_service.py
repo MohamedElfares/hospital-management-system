@@ -24,11 +24,12 @@ A valid access token is turned back into the active user it names, looked
 up once by the ID inside it, even while a password change is pending;
 every other token gets the very same error, and one that doesn't decode
 gets it before any lookup. Refresh rotates the token, keeps its expiry,
-leaves the user's other sessions alone, and stays open while a password
-change is pending. A rotated token presented again revokes every token of
-its user, commits that, and logs one warning without the token, however
-old it is, while every other unusable token, one revoked without rotation
-included, is refused with the very same error and ends no session.
+leaves the user's other sessions and the sign-in time alone, and stays
+open while a password change is pending. A rotated token presented again
+revokes every token of its user, commits that, and logs one warning
+without the token, however old it is, while every other unusable token,
+one revoked without rotation included, is refused with the very same
+error and ends no session.
 
 Sign-out revokes only the presented token, or the replacement of one a
 refresh has rotated, and ignores a token it can't use. A password change
@@ -983,6 +984,26 @@ def test_refresh_leaves_the_users_other_sessions_alone(db_session: Session, user
     other_device_row = _token_row(db_session, raw_other_device_token)
 
     assert other_device_row.revoked_at is None
+
+
+def test_refresh_leaves_the_sign_in_time_alone(db_session: Session, user: User) -> None:
+    """A refresh keeps ``last_login_at`` at the time of the last sign-in.
+
+    The user signed in a day ago. A refresh is not a sign-in, and the web
+    app makes one whenever an access token expires, so a refresh that set
+    the column would leave it showing the latest refresh instead of the
+    latest sign-in. The user is read back from the database after the
+    refresh, so the time checked is the one saved.
+    """
+    signed_in_at = datetime.now(UTC) - timedelta(days=1)
+    user.last_login_at = signed_in_at
+    db_session.flush()
+    raw_refresh_token = _save_refresh_token(db_session, user)
+
+    service.refresh(db_session, raw_refresh_token)
+    db_session.refresh(user)
+
+    assert user.last_login_at == signed_in_at
 
 
 def test_refresh_keeps_the_old_expiry(db_session: Session, user: User) -> None:

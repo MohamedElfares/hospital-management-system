@@ -642,7 +642,38 @@ closes when the last stage is done, so an interrupted run is obvious.
   `test_a_token_revoked_without_rotation_is_refused_quietly`, is the
   refresh test stage 19 reviewed among part 3's, so its fix changes part
   2 again, which the file's `STATE.md` row at `360f3f1` already sends to
-  the next `/review new`.
+  the next `/review new`. The two items for `tests/test_auth_api.py` are
+  done, in `bb859ca` and `c57e171`; stages 22 and 23 review them with the
+  tests around them.
+- **Stage 20's findings fixed (2026-11-09):** R-088 (`bd86b0d`), R-089
+  (`95630e2`), R-090 (`eda0a6f`), R-091 (`bb859ca`), R-092 (`390bb66`),
+  and R-093 (`c57e171`), written at your request ("fix the open findings
+  with recommendations and best practices then commit and push"), one
+  commit each, in ID order: R-089's check of the rotated token's row goes
+  into the test whose alarm check R-088 changes, and no other fix depends
+  on another. No fix changes the code under test, so each new or changed
+  test was run against the broken copies that had passed the whole
+  suite, and each copy failed it, as did eight more written for the
+  fixes: the alarm logged at WARNING by a rotated sign-out and by the
+  quiet refusal, and at CRITICAL in each of R-088's three cases, a
+  sign-out that drops the rotated token's link (R-089), a change that
+  commits after the revocation (R-090), and a route that logs the new
+  hash (R-093). Steps beyond the recommendations: R-090's test sets the
+  forced-change flag itself and expects the error to name the unique
+  token hash; R-091's case also goes into `REFUSED_PASSWORD_CHANGES`, as
+  the finding offered, and plan §8.1 now says the current password is
+  checked first; R-093's API sign-out test checks that the cookie reached
+  the route, and its password change test reads the new hash back, so it
+  catches the copy that logs it. The fixes change parts 2 and 3 of
+  `tests/test_auth_service.py` after stages 19 and 20 reviewed them, and
+  the file's `STATE.md` row at `360f3f1` already makes the next
+  `/review new` take the whole file again. Each commit passes Ruff and
+  the suite on its own, run like CI in a clean worktree: 396, 397, 398,
+  400, 401, then 405 tests, with coverage at 99.86%, and the suite also
+  passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG. Run
+  against the fixed suite, all 25 copies the fixes target fail it. The
+  `CLAUDE.md` lines proposed in stages 19 and 20 still wait for your
+  answer. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

@@ -843,7 +843,43 @@ closes when the last stage is done, so an interrupted run is obvious.
   `test_change_password_sets_a_new_refresh_cookie`, which reads neither
   `Max-Age` nor `Secure` either. And a name: part 3 calls sign-in
   responses `old_login`, `new_login`, `phone_login`, and `laptop_login`,
-  where parts 1 and 2 say `login_response`.
+  where parts 1 and 2 say `login_response`. The third is done, in
+  R-103's fix, `97092ed`.
+- **Stage 22's findings fixed (2026-11-09):** R-100 (`0626417`), R-101
+  (`05d92ca`), R-102 (`a40145b`), and R-103 (`97092ed`), written at your
+  request ("fix the open findings with recommendations and best
+  practices then commit and push"), one commit each, in ID order: R-101
+  renames and widens both sign-out logging tests, R-102 rewrites the
+  401 checks of part 2, the sign-out test without an access token
+  included, and R-103 then gives that test its setup status. None
+  changes the code under test, so there is no OpenAPI change. Steps
+  beyond the recommendations: following `CLAUDE.md`'s two logging rules,
+  the new and widened logging tests also look for the stored hash,
+  which refresh and the bearer-token dependency read with the account,
+  and the full name, since plan §12 keeps all personal data out of
+  logs, so the four are named
+  `..._neither_the_secrets_nor_the_users_details`; the refresh test
+  checks that its replay logged the reuse warning; an expired access
+  token's 401 is a test of its own; and ten more broken copies show
+  what the additions and R-103's other tests catch: the full name, the
+  email, or the stored hash logged by refresh, the sign-out route,
+  `logout`, the dependency, or the current-user route, a password
+  change that refuses every change, and a liveness route moved
+  elsewhere. R-100's possible service test was not added, since the API
+  test fails on every service copy. The fixes change part 3 of
+  `tests/test_auth_api.py`, in R-103's `test_only_the_new_password_signs_in`,
+  before stage 23 reviews it, and `tests/test_auth_service.py` and
+  `tests/test_errors.py` after stages 20 and 12b reviewed them, which
+  their `STATE.md` rows, at `360f3f1` and `d8362d5`, already send to
+  the next `/review new`. Each commit passes Ruff and the suite on its
+  own, run like CI in a clean worktree: 407, 408, 409, and 409 tests,
+  with coverage at 99.86%, and the final suite also passes reversed,
+  shuffled twice, and at `LOG_LEVEL` INFO and DEBUG. Run against the
+  fixed suite, all 36 copies the fixes target fail it, as do the four
+  controls; the four copies that show R-103's failures failed it
+  before the fixes too, where their tests now say what broke. The
+  `CLAUDE.md` line proposed in stage 22 still waits for your answer. No
+  finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

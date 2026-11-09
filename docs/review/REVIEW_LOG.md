@@ -558,7 +558,19 @@ closes when the last stage is done, so an interrupted run is obvious.
   "Every error that must not reveal which check failed, or why, such as a
   failed sign-in, a rejected token, or a failed readiness check, gets a
   test that compares the whole error: its status, code, message, and
-  details."
+  details." Accepted on 2026-11-09 (you said "fix the still waiting with
+  recommendations and best practices") and added to `CLAUDE.md` under
+  "Backend tests", with one change: the test is "for each check that
+  raises it", since R-079's and R-083's broken copies each gave only one
+  check an error of its own, and both fixes compare the whole error in
+  every case. What it flags today are refusals that only a race reaches,
+  in `tests/test_auth_concurrency.py`, which stage 25 reaches: a sign-in
+  refused because its account changed during the password check, and a
+  refresh refused because its owner was deleted while it waited, are
+  checked by class only, and a password change refused because its
+  account was deactivated or deleted after loading, by message only.
+  Copies that give the sign-in refusal a message of its own, or the
+  other two details of their own, pass all 405 tests (probed).
 - **Carried from stage 19:** R-087's recommended test belongs in
   `tests/test_auth_api.py`, with the refresh tests stage 22 reaches. The
   module docstring of `tests/test_auth_service.py` now has a paragraph

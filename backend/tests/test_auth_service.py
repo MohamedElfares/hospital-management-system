@@ -22,13 +22,13 @@ token.
 
 A valid access token is turned back into the active user it names, looked
 up once by the ID inside it, even while a password change is pending;
-every other token gets the same message, and one that doesn't decode gets
-it before any lookup. Refresh rotates the token, keeps its expiry, and
-stays open while a password change is pending. A rotated token presented
-again revokes every token of its user, commits that, and logs one warning
-without the token, however old it is, while every other unusable token,
-one revoked without rotation included, is refused with the same message
-and ends no session.
+every other token gets the very same error, and one that doesn't decode
+gets it before any lookup. Refresh rotates the token, keeps its expiry,
+and stays open while a password change is pending. A rotated token
+presented again revokes every token of its user, commits that, and logs
+one warning without the token, however old it is, while every other
+unusable token, one revoked without rotation included, is refused with
+the very same error and ends no session.
 
 Sign-out revokes only the presented token, or the replacement of one a
 refresh has rotated, and ignores a token it can't use. A password change
@@ -466,6 +466,30 @@ def _password_change(
     return PasswordChange(current_password=current_password, new_password=new_password)
 
 
+def _assert_generic_token_error(error: AuthenticationError) -> None:
+    """Check that an error is the very one every rejected token gets.
+
+    ``get_authenticated_user`` and ``refresh`` refuse every unusable token
+    the same way, so its holder can't tell an expired, unknown, or revoked
+    token from a deactivated or missing account. The API sends the error's
+    status, code, message, and details in the response, so all four are
+    compared: an error that gave one case a status, a code, or details of
+    its own would tell that case apart, even with the same message. The
+    message is compared with ``INVALID_TOKEN``, written out, so the
+    decoder's text and the service's copy of it can't drift apart.
+
+    Args:
+        error: The error the use case raised.
+
+    Raises:
+        AssertionError: If any of the four differs from the generic error's.
+    """
+    assert error.status_code == 401
+    assert error.code == ErrorCode.AUTHENTICATION_FAILED
+    assert error.message == INVALID_TOKEN
+    assert error.details == []
+
+
 def test_login_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
     """A successful sign-in returns a valid access token that names the user.
 
@@ -780,10 +804,11 @@ def test_an_unusable_token_raises_the_generic_error(
     what a bare ``Bearer`` header produces. The unknown-user token is
     correctly signed but names an ID no account has. The ``user`` fixture
     is a decoy: with an active account in the table, a lookup that ignored
-    the ID would find it, and the test would fail. The first two messages
-    come from ``decode_access_token`` and the third from the service, so
-    comparing all three with one literal keeps the two copies of the text
-    the same. The test compares the class and the message only.
+    the ID would find it, and the test would fail. The first two errors
+    come from ``decode_access_token`` and the third from the service, and
+    each is compared whole, because the API sends every part of it in the
+    401: an error with a code or details of its own would tell a holder
+    which check failed.
 
     Each case is a function the test calls, so the unknown-user token is
     signed when the test runs. A token signed when the module is imported
@@ -795,7 +820,7 @@ def test_an_unusable_token_raises_the_generic_error(
     with pytest.raises(AuthenticationError) as exc_info:
         service.get_authenticated_user(db_session, make_access_token())
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
 
 
 def test_a_token_stops_working_once_its_user_is_deactivated(
@@ -806,8 +831,8 @@ def test_a_token_stops_working_once_its_user_is_deactivated(
 
     The token is still correctly signed and unexpired, so only the check of
     the account can turn it away: deactivation applies to the next request,
-    not when the token runs out. The message is the generic one, so the
-    holder can't tell the account was deactivated.
+    not when the token runs out. The error is the generic one, compared
+    whole, so the holder can't tell the account was deactivated.
 
     The flag is set on the session's copy of the account and flushed, and
     ``get_user_by_id`` finds that copy without a query, so the test sees
@@ -824,7 +849,7 @@ def test_a_token_stops_working_once_its_user_is_deactivated(
     with pytest.raises(AuthenticationError) as exc_info:
         service.get_authenticated_user(db_session, access_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
 
 
 def test_a_user_who_must_change_their_password_is_still_authenticated(
@@ -866,7 +891,7 @@ def test_a_bad_token_never_reaches_the_database(
         service.get_authenticated_user(db_session, "not-a-token")
 
     assert lookup_calls == []
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
 
 
 def test_a_valid_token_looks_up_the_user_it_names(
@@ -979,9 +1004,9 @@ def test_a_refresh_token_works_only_once(db_session: Session, user: User) -> Non
     """Presenting the same refresh token a second time gets the generic error.
 
     This is rotation seen from the client: the first refresh replaces the
-    token, so the second use is reuse. The test sees only the refusal and
-    its message; what reuse does besides, revoking the user's tokens and
-    logging a warning, is checked by the reuse tests below.
+    token, so the second use is reuse. The test sees only the refusal;
+    what reuse does besides, revoking the user's tokens and logging a
+    warning, is checked by the reuse tests below.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     service.refresh(db_session, raw_refresh_token)
@@ -989,7 +1014,7 @@ def test_a_refresh_token_works_only_once(db_session: Session, user: User) -> Non
     with pytest.raises(AuthenticationError) as exc_info:
         service.refresh(db_session, raw_refresh_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
 
 
 @pytest.mark.parametrize("case", UNUSABLE_REFRESH_TOKENS)
@@ -998,19 +1023,21 @@ def test_an_unusable_refresh_token_raises_the_generic_error(
     user: User,
     case: str,
 ) -> None:
-    """Every unusable refresh token raises ``AuthenticationError`` with the same message.
+    """Every unusable refresh token gets the very same error.
 
     A missing cookie, an empty one, an unknown token, an expired one, and a
     deactivated owner must look the same from outside, so the reply never
     says which check failed. ``_present_token`` builds each case's value.
-    The test compares the class and the message only.
+    The whole error is compared, because the API sends every part of it in
+    the 401: an expired token with a code or details of its own, say,
+    would tell its holder why it failed.
     """
     raw_refresh_token = _present_token(db_session, user, case)
 
     with pytest.raises(AuthenticationError) as exc_info:
         service.refresh(db_session, raw_refresh_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
 
 
 @pytest.mark.parametrize("case", UNUSABLE_REFRESH_TOKENS)
@@ -1051,7 +1078,7 @@ def test_reusing_a_rotated_token_revokes_every_token_of_the_user(
     that was already replaced coming back means a copy exists, and the
     server can't tell the real user from a thief, so every token of the
     user is revoked, the other device's included, which the test reads
-    back. The message is the generic one. The owner is active, as in every
+    back. The error is the generic one. The owner is active, as in every
     reuse test, so the test can't see a refresh that checks the account
     before reuse.
     """
@@ -1063,7 +1090,7 @@ def test_reusing_a_rotated_token_revokes_every_token_of_the_user(
 
     other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
     assert other_device_row.revoked_at is not None
 
 
@@ -1090,7 +1117,7 @@ def test_the_reuse_revocation_survives_the_failed_request(
 
     other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
     assert other_device_row.revoked_at is not None
 
 
@@ -1177,7 +1204,7 @@ def test_an_expired_rotated_token_still_raises_the_alarm(
     other_device_row = _token_row(db_session, raw_other_device_token)
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
     assert other_device_row.revoked_at is not None
     assert len(warnings) == 1
     assert str(user.id) in warnings[0].getMessage()
@@ -1577,7 +1604,7 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
     other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_token_error(exc_info.value)
     assert other_device_row.revoked_at is None
     assert warnings == []
 

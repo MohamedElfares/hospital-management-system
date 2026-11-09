@@ -43,6 +43,7 @@ with no row has never been reviewed and is always in scope.
 | `backend/tests/factories.py` | `a459df1` | 2026-11-06 | 1 |
 | `backend/tests/test_auth_repository.py` | `f8b131a` | 2026-11-08 | 1 |
 | `backend/tests/test_auth_schemas.py` | `f46a105` | 2026-11-08 | 1 |
+| `backend/tests/test_auth_service.py` | `360f3f1` | 2026-11-09 | 1 |
 | `backend/tests/test_cli.py` | `acf3765` | 2026-11-08 | 1 |
 | `backend/tests/test_conftest.py` | `bf31a33` | 2026-11-06 | 1 |
 | `backend/tests/test_database.py` | `bf31a33` | 2026-11-06 | 1 |

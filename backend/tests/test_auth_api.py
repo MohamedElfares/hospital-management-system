@@ -11,7 +11,10 @@ the rollback at the end of the test removes everything. Most tests act
 as the ``user`` fixture's account, and most that need an access token
 sign one directly with ``_auth_header``; the refresh token travels in the
 client's cookie jar, which sends it back to the auth paths by itself, as
-a browser would.
+a browser would. A test that sends a cookie of its own clears the jar
+first: the jar keeps the server's cookie under the test server's domain
+and one a test sets under none, so it would send both, and the server
+would read only one of them.
 
 Sign-in answers with a bearer access token that names the user, in a body
 that holds nothing else, and puts the refresh token in its cookie alone,
@@ -30,18 +33,24 @@ and gets the same 401 an unknown email gets.
 
 The current-user route returns exactly the user's public fields, for a
 signed token and for the one sign-in returns, and still answers while a
-password change is pending; a missing or unusable token and a deactivated
-user's token get the standard 401, and each kind of 401 carries
+password change is pending. A missing or unusable ``Authorization``
+header and a deactivated user's token get a 401 with the standard code
+and the message for its case, and FastAPI's own 401 and those of the
+three parts of the auth service that refuse, for an expired access
+token, a failed sign-in, and a refused refresh, carry
 ``WWW-Authenticate: Bearer``. Sign-in, refresh, and a password change each
 answer with ``Cache-Control: no-store`` and ``Pragma: no-cache``, so no
-cache keeps their tokens. Refresh answers with a new access token and
-a new cookie with the same flags, never puts the refresh token in the
-body, and gives a missing or unknown cookie the standard 401; a cookie
-that was already exchanged, sent again, fails, ends every session of its
-user, and logs one warning with the request ID. Sign-out answers 204,
-clears the cookie, revokes the token behind it, and logs no token; it
-needs an access token, and it works without a cookie and while a password
-change is pending.
+cache keeps their tokens. Refresh answers with a bearer access token that
+names the user and a new cookie with the same flags, never puts the
+refresh token in the body, and gives a missing or unknown cookie a 401
+with the standard code and message; the ``user`` fixture's account must
+change its password, so the refresh tests also show that a pending
+change never blocks a refresh. A cookie that was already exchanged, sent
+again, fails, the cookie that replaced it fails from then on too, and the
+replay logs one warning with the request ID. Sign-out answers 204, clears
+the cookie, revokes the token behind it, and logs that token at no level;
+it needs an access token, and it works without a cookie and while a
+password change is pending.
 
 A password change answers with a new access token and a new cookie, ends
 the session from before the change, and lets only the new password sign
@@ -705,8 +714,10 @@ def test_me_returns_exactly_the_public_fields_of_the_user(
 def test_me_accepts_the_access_token_from_login(user: User, client: TestClient) -> None:
     """The token returned by sign-in opens the current-user route for that user.
 
-    This is the one test that chains the two routes, proving login issues a
-    token the protected routes accept, with the same key and claims.
+    This is the one test that sends sign-in's access token to this route;
+    the others sign theirs with ``_auth_header``. It shows that sign-in
+    signs its tokens with the key the bearer-token dependency checks, and
+    with a subject that names the user.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -724,9 +735,12 @@ def test_me_without_a_token_is_the_standard_401(
 ) -> None:
     """A request without an Authorization header gets the standard 401.
 
-    FastAPI's bearer scheme rejects it before the route runs, and the error
-    handler still returns the standard error body, keeping the
-    ``WWW-Authenticate: Bearer`` header that tells clients how to sign in.
+    FastAPI's bearer scheme rejects it before the route runs, and the
+    handler for the framework's errors still returns the standard error
+    body, keeping the ``WWW-Authenticate: Bearer`` header, which names the
+    scheme the route expects. Only the code, the message, and the header
+    are compared, so a 401 with details of its own, or without its request
+    ID, would pass (R-102).
     """
     response = client.get(ME_URL)
 
@@ -822,8 +836,11 @@ def test_me_rejects_an_unusable_authorization_header(
 
     A non-bearer scheme is stopped by FastAPI's bearer scheme, which says
     "Not authenticated". A bearer header with a bad or empty token reaches
-    the auth service, which says "Invalid or expired token.". No user is
-    saved, because none of these requests gets as far as a database lookup.
+    the auth service, which says "Invalid or expired token.": the scheme
+    hands on whatever follows ``Bearer``, even nothing. No user is saved,
+    because none of these requests gets as far as a database lookup. Only
+    the code and the message are compared, so a 401 with details of its
+    own would pass (R-102).
     """
     response = client.get(
         ME_URL,
@@ -844,7 +861,8 @@ def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: 
     The header is built while the user is active, as when someone signs in
     and is then deactivated. The token is still signed and unexpired, so
     only the database read on every request turns it away, with the same
-    message as an expired token.
+    message as an expired token. Only the code and the message are
+    compared, so a 401 with details of its own would pass (R-102).
     """
     headers = _auth_header(user)
     user.is_active = False
@@ -868,8 +886,11 @@ def test_me_still_works_while_a_password_change_is_pending(
     """A user with a pending password change still gets 200 and sees the flag.
 
     The web app relies on this route to discover that the change-password
-    screen is due, so the password-change gate added later must not cover
-    it; this test fails if it does.
+    screen is due, so the password-change gate, which every route that
+    asks for ``CurrentUser`` applies, must not cover it; this test fails if
+    the route asks for ``CurrentUser``. The flag is set here, although the
+    fixture's account already has it, so the test doesn't rest on that
+    default.
     """
     user.must_change_password = True
     db_session.flush()
@@ -894,6 +915,9 @@ def test_refresh_returns_a_new_bearer_access_token(
 
     The client keeps the sign-in cookie and sends it back by itself, as a
     browser does, so the request carries no Authorization header at all.
+    The ``user`` fixture's account must change its password, so this also
+    shows that a pending change doesn't block a refresh, which plan §8.1
+    keeps open so the web app can restore the session after a reload.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -914,8 +938,12 @@ def test_refresh_sets_a_new_refresh_cookie_with_its_security_flags(
     """A refresh replaces the cookie with a different token and the same flags.
 
     A cookie that kept the sign-in value would mean the token was not
-    rotated. Max-Age isn't pinned here, since the cookie's lifetime and the
-    token's fixed expiry may still be aligned later.
+    rotated. It checks ``HttpOnly``, ``SameSite=Strict``, and the auth path
+    as text, as the sign-in cookie test does. ``Max-Age`` isn't pinned
+    here: ``set_refresh_cookie``, whose lifetime the sign-in cookie test
+    pins, gives the cookie the full lifetime again on every refresh,
+    although the token keeps its session's expiry, a mismatch ADR-0004
+    accepts because the server checks the real expiry.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -961,7 +989,9 @@ def test_refresh_without_a_cookie_is_the_standard_401(client: TestClient) -> Non
     """A refresh without the cookie gets the standard 401 and no cookie.
 
     Not a 422: the route's cookie parameter defaults to None, so the
-    request reaches the service, which reports it as unauthenticated.
+    request reaches the service, which reports it as unauthenticated. Only
+    the code and the message are compared, so a 401 with details of its
+    own would pass (R-102).
     """
     refresh_response = client.post(REFRESH_URL)
 
@@ -977,9 +1007,11 @@ def test_refresh_without_a_cookie_is_the_standard_401(client: TestClient) -> Non
 def test_refresh_with_an_unknown_cookie_is_the_standard_401(client: TestClient) -> None:
     """A well-formed token the server never issued gets the standard 401.
 
-    The cookie is set with the same path the server uses, so the client
-    really sends it; with any other path it would be left out and this
-    would only repeat the missing-cookie test.
+    The cookie is set on the path the server gives it, as a browser would
+    hold it. On a path that doesn't cover the refresh URL, such as another
+    route's, the client would leave it out, and this would only repeat the
+    missing-cookie test. Only the code and the message are compared, so a
+    401 with details of its own would pass (R-102).
     """
     client.cookies.set(REFRESH_COOKIE_NAME, generate_refresh_token(), path="/api/v1/auth")
     refresh_response = client.post(REFRESH_URL)
@@ -999,7 +1031,9 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
     After one refresh the sign-in token is spent. Sending it again looks
     like a stolen copy, so every token of the user is revoked: the new
     cookie, which was valid a moment earlier, now gets a 401 too. This is
-    the protection rotation exists for, seen from outside.
+    the protection rotation exists for, seen from outside; the service
+    tests check the user's other devices. Only the code and the message of
+    the two 401s are compared (R-102).
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1047,8 +1081,9 @@ def test_reuse_is_logged_with_the_request_id(
     so a line without the request ID, the user's ID, or the replayed
     token's ID fails, and only WARNING records from the auth service's
     logger count, so a warning logged at another level or under another
-    name fails too. Neither cookie may appear anywhere in the captured
-    text.
+    name fails too. Neither cookie may appear in the captured text, which
+    holds the records of every logger at WARNING and above; what refresh
+    logs below WARNING, or prints, no test captures (R-100).
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1132,7 +1167,9 @@ def test_logout_never_logs_the_refresh_token(
     signs in and signs out with the cookie sign-in set, whose value may
     not appear in the captured text. Signing out answers 204 even without
     a cookie, so the token's row must be revoked afterwards, which shows
-    the cookie reached the route and the check isn't empty.
+    the cookie reached the route and the check isn't empty. What sign-out
+    prints isn't captured, and the access token it sends isn't looked for
+    (R-101).
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1159,7 +1196,10 @@ def test_logout_without_an_access_token_is_the_standard_401(user: User, client: 
     The client holds a valid refresh cookie from signing in but sends no
     ``Authorization`` header. The bearer scheme rejects the request before
     the route runs, and the refresh that follows still works, which proves
-    the cookie alone can't be used to revoke a session.
+    the cookie alone can't be used to revoke a session. The setup sign-in's
+    status isn't checked, so a failed sign-in would show up only at the
+    refresh, as a 401 that looks like an ended session (R-103), and only
+    the code and the message are compared (R-102).
     """
     client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
     logout_response = client.post(LOGOUT_URL)
@@ -1177,9 +1217,11 @@ def test_logout_without_an_access_token_is_the_standard_401(user: User, client: 
 def test_logout_without_a_cookie_still_succeeds(user: User, client: TestClient) -> None:
     """Logout with a valid access token but no cookie still answers 204.
 
-    The test never signs in, so the client has no cookie to send. Signing
-    out never fails, so a second tab or a cookie that is already gone is
-    not an error, and the cookie is cleared anyway.
+    The test never signs in, so the client has no cookie to send. With a
+    valid access token, signing out never fails, so a second tab or a
+    cookie that is already gone is not an error, and the cookie is cleared
+    anyway. The cookie header is read before the status, so a 401 or a 403
+    here would stop at ``KeyError: 'set-cookie'`` (R-103).
     """
     headers = _auth_header(user)
     logout_response = client.post(LOGOUT_URL, headers=headers)
@@ -1198,7 +1240,9 @@ def test_logout_works_while_a_password_change_is_pending(
 
     Logout is one of the routes the forced-password-change gate leaves open
     (plan §8.1), so a user is never trapped in a session they can't end.
-    This test guards that exemption once the gate exists.
+    This test fails if the route asks for ``CurrentUser``, which applies
+    the gate. The flag is set here, although the fixture's account already
+    has it, so the test doesn't rest on that default.
     """
     user.must_change_password = True
 

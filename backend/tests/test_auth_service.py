@@ -743,9 +743,9 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
 def test_a_valid_token_returns_its_user(db_session: Session, user: User) -> None:
     """A freshly issued token for an active user returns that user."""
     access_token = create_access_token(user.id)
-    result = service.get_authenticated_user(db_session, access_token)
+    authenticated_user = service.get_authenticated_user(db_session, access_token)
 
-    assert result.id == user.id
+    assert authenticated_user.id == user.id
 
 
 @pytest.mark.parametrize(
@@ -814,8 +814,8 @@ def test_a_user_who_must_change_their_password_is_still_authenticated(
     user.must_change_password = True
     db_session.flush()
 
-    result = service.get_authenticated_user(db_session, access_token)
-    assert result.id == user.id
+    authenticated_user = service.get_authenticated_user(db_session, access_token)
+    assert authenticated_user.id == user.id
 
 
 def test_a_bad_token_never_reaches_the_database(
@@ -851,10 +851,10 @@ def test_a_valid_token_looks_up_the_user_it_names(
     when one happens. It also shows the user is loaded by the id the token
     carries, and only once.
     """
-    result = service.get_authenticated_user(db_session, create_access_token(user.id))
+    authenticated_user = service.get_authenticated_user(db_session, create_access_token(user.id))
 
     assert lookup_calls == [user.id]
-    assert result.id == user.id
+    assert authenticated_user.id == user.id
 
 
 def test_refresh_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
@@ -899,7 +899,7 @@ def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
     assert old_token_row.replaced_by_id == new_token_row.id
 
 
-def test_the_new_token_keeps_the_old_expiry(db_session: Session, user: User) -> None:
+def test_refresh_keeps_the_old_expiry(db_session: Session, user: User) -> None:
     """The replacement token expires exactly when the original one did.
 
     The original expiry is three days away, not the configured seven, so a
@@ -987,7 +987,7 @@ def test_an_unusable_refresh_token_writes_nothing(
     token_rows = db_session.scalars(select(RefreshToken)).all()
 
     assert len(token_rows) == token_count_before
-    assert all(row.revoked_at is None for row in token_rows)
+    assert all(token_row.revoked_at is None for token_row in token_rows)
 
 
 def test_reusing_a_rotated_token_revokes_every_token_of_the_user(

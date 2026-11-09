@@ -43,6 +43,7 @@ Hospital Management System: a FastAPI backend and a React frontend for hospital 
 - Every error that must not reveal which check failed, or why, such as a failed sign-in, a rejected token, or a failed readiness check, gets a test for each check that raises it, comparing the whole error: its status, code, message, and details.
 - Every use case, route, request dependency, or command that takes or issues a password, a token, or an activation code gets a test that captures what it logs, down to DEBUG, and what it prints, and finds none of those values, nor any password hash it reads or writes.
 - Every use case, route, or command that takes personal data, such as an email, a name, or a patient's details, gets a test that captures what it logs, down to DEBUG, and finds none of it.
+- Every test asserts each response's status before it reads the response's body, cookies, or headers, setup responses included.
 
 ## CI/CD and Docker
 

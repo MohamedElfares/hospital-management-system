@@ -831,7 +831,28 @@ closes when the last stage is done, so an interrupted run is obvious.
   headers, setup responses included." What it flags today, besides
   R-103's two tests of this part: part 3's
   `test_only_the_new_password_signs_in`, which stage 23 reaches, and two
-  tests in `tests/test_errors.py`, both listed in R-103.
+  tests in `tests/test_errors.py`, both listed in R-103. Accepted on
+  2026-11-09 (your "yes") and added to `CLAUDE.md` under "Backend
+  tests", word for word. R-103's fix, `97092ed`, has since given all
+  five of those tests their status checks. A stricter scan, for the
+  line's own words, counts any use of a response before its status is
+  asserted, such as reading the whole body with `.json()` or `.text`,
+  or a read chained onto the request itself. It finds those five on the
+  code before the fixes and none of them after, and it finds two more,
+  which the scans of R-098 and R-103 let through because they counted a
+  body read only when it was subscripted, and both tests subscript the
+  body after the status: `test_login_returns_a_bearer_access_token`, in
+  part 1, and `test_refresh_returns_a_new_bearer_access_token`, in part
+  2, each set `body` to the response's `.json()` before they assert the
+  status. My R-103 scan missed them, so R-103's "no later stage raises
+  this again" doesn't hold for these two. A sign-in or refresh that
+  answers 202 with an empty body makes each stop at
+  `json.decoder.JSONDecodeError: Expecting value`, inside Python's
+  `json` module, while a copy of the test with its status asserted
+  first stops at `assert 202 == 200`, and passes on today's code
+  (probed). Tests are yours to change, so neither is edited here; both
+  are carried to stage 23, the stage that records the file's `STATE.md`
+  row.
 - **Carried to stage 23 (from stage 22):** five things in part 3.
   R-101's kind for the password change: its API logging test reads no
   printed output, and it looks only for the access token the change
@@ -844,7 +865,10 @@ closes when the last stage is done, so an interrupted run is obvious.
   `Max-Age` nor `Secure` either. And a name: part 3 calls sign-in
   responses `old_login`, `new_login`, `phone_login`, and `laptop_login`,
   where parts 1 and 2 say `login_response`. The third is done, in
-  R-103's fix, `97092ed`.
+  R-103's fix, `97092ed`. Also for stage 23, outside part 3: the two
+  tests in parts 1 and 2 that read the body before they assert the
+  status, which the rule accepted from the recurring finding above
+  flags.
 - **Stage 22's findings fixed (2026-11-09):** R-100 (`0626417`), R-101
   (`05d92ca`), R-102 (`a40145b`), and R-103 (`97092ed`), written at your
   request ("fix the open findings with recommendations and best

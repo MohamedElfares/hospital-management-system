@@ -15,7 +15,8 @@ A refresh token, a random value that lasts ``REFRESH_TOKEN_EXPIRE_DAYS``,
 gets the client a new access token without signing in again. It travels
 only in an ``HttpOnly`` cookie. The database keeps a row for each token,
 which is what lets a token be revoked, and the row holds only the token's
-SHA-256 hash, so a leaked table can't be used to refresh a session.
+SHA-256 hash, so a leaked table can't be used to refresh a session. Every
+response that issues tokens also tells caches not to store it.
 
 The rest of the application calls the functions here and never imports
 pwdlib or PyJWT, so the algorithms or their settings can change in this one
@@ -378,3 +379,34 @@ def clear_refresh_cookie(response: Response) -> None:
         path="/api/v1/auth",
         secure=settings.is_production,
     )
+
+
+def forbid_caching(response: Response) -> None:
+    """Tell every cache not to store a response that carries tokens.
+
+    The auth router calls this on each response that issues tokens: at
+    sign-in, at each refresh, and after a password change. Each one holds
+    the access token in its body and the refresh token in its
+    ``Set-Cookie`` header, and RFC 6749 §5.1 says a response that holds
+    tokens must carry both headers set here:
+
+    - ``Cache-Control: no-store``: no cache, private or shared, may keep
+      any part of the response or use it to answer another request
+      (RFC 9111 §5.2.2.5).
+    - ``Pragma: no-cache``: a header from HTTP/1.0, before
+      ``Cache-Control`` existed. RFC 9111 §5.4 deprecates it and notes
+      that its meaning in a response was never specified, so it adds
+      little, but RFC 6749 requires it.
+
+    A cache that follows HTTP keeps a ``POST`` response only when it has
+    explicit freshness information and a matching ``Content-Location``
+    (RFC 9110 §9.3.3), which these never have, so the headers are what
+    stops any other cache, such as a proxy that ignores that rule, from
+    storing tokens. A refused request gets neither header: its error
+    response holds no token.
+
+    Args:
+        response: The response that will carry the tokens.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"

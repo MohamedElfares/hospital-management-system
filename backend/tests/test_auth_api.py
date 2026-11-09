@@ -32,7 +32,9 @@ The current-user route returns exactly the user's public fields, for a
 signed token and for the one sign-in returns, and still answers while a
 password change is pending; a missing or unusable token and a deactivated
 user's token get the standard 401, and each kind of 401 carries
-``WWW-Authenticate: Bearer``. Refresh answers with a new access token and
+``WWW-Authenticate: Bearer``. Sign-in, refresh, and a password change each
+answer with ``Cache-Control: no-store`` and ``Pragma: no-cache``, so no
+cache keeps their tokens. Refresh answers with a new access token and
 a new cookie with the same flags, never puts the refresh token in the
 body, and gives a missing or unknown cookie the standard 401; a cookie
 that was already exchanged, sent again, fails, ends every session of its
@@ -759,6 +761,36 @@ def test_every_kind_of_401_names_the_bearer_scheme(user: User, client: TestClien
         kind: (response.status_code, response.headers.get("www-authenticate"))
         for kind, response in responses.items()
     } == {kind: (401, "Bearer") for kind in responses}
+
+
+def test_every_token_response_forbids_caching(user: User, client: TestClient) -> None:
+    """Sign-in, refresh, and a password change each tell every cache not to store them.
+
+    Each of the three answers with an access token in its body and a
+    refresh token in its cookie, and RFC 6749 §5.1 says such a response
+    must carry ``Cache-Control: no-store`` and ``Pragma: no-cache``. The
+    refresh sends the cookie the sign-in set, and the password change signs
+    its own access token, as most tests here do. One assertion compares
+    the status and both headers of all three, so it names every response
+    that lacks one, and a header sent twice fails too, since the client
+    joins the two values.
+    """
+    responses = {
+        "sign-in": client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD}),
+        "refresh": client.post(REFRESH_URL),
+        "password change": client.post(
+            CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
+        ),
+    }
+
+    assert {
+        name: (
+            response.status_code,
+            response.headers.get("cache-control"),
+            response.headers.get("pragma"),
+        )
+        for name, response in responses.items()
+    } == {name: (200, "no-store", "no-cache") for name in responses}
 
 
 @pytest.mark.parametrize(

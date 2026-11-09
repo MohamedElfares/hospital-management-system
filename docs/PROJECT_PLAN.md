@@ -507,7 +507,7 @@ erDiagram
 
 ### 8.1 Authentication and sessions
 
-- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie. The form caps the email at 255 characters, the size of the `email` column, and the password at 128, the password rule's maximum, so longer input gets a `422` before any lookup (§12).
+- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie. Like the refresh and password change responses, which issue tokens too, the response carries `Cache-Control: no-store` and `Pragma: no-cache`, as RFC 6749 §5.1 requires, so no cache stores the tokens. The form caps the email at 255 characters, the size of the `email` column, and the password at 128, the password rule's maximum, so longer input gets a `422` before any lookup (§12).
 - **Passwords** are hashed with Argon2id through pwdlib. Each password is put in Unicode NFC before it is hashed or checked, as NIST SP 800-63B-4 recommends, so the same text typed in another Unicode form still matches. A wrong email and a wrong password return the same `401` message, and an unknown email is checked against a dummy hash so both take the same time. A stored hash in an unsupported format counts as a wrong password and logs a warning without the hash.
 - **Password rule:** 15 to 128 characters, with no composition rules (NIST SP 800-63B-4, which requires at least 15 characters for a password that is the only sign-in factor, as every password here is). One Pydantic schema enforces it for every way a password is set: the API and the CLI.
 - **First Admin:** `python -m app.cli create-admin` takes the email and full name as options and the password only from a hidden, confirmed prompt, never as an argument or environment variable. It calls the users service, creates an Admin with `must_change_password` false, and refuses when an active Admin already exists, so it works for a fresh database and for recovery after every Admin has been deactivated. It prints the new user's ID and email, never the password, and its crash tracebacks never show local variables, which would print the typed password and the database password.
@@ -956,7 +956,7 @@ Check every item before each release.
 - [ ] All SQL goes through SQLAlchemy with bound parameters
 - [ ] Inputs have limits: string lengths, numeric ranges, and a page-size cap
 - [ ] Production runs on one origin, and the API installs no CORS middleware
-- [ ] Security headers are set, including a Content-Security-Policy for web app pages
+- [ ] Security headers are set, including a Content-Security-Policy for web app pages and `Cache-Control: no-store` as the default for API responses, so no cache keeps one that holds personal data, such as `/auth/me`; the token responses already send it (§8.1)
 - [ ] Secrets live only in environment variables; `.env` is git-ignored and blocked from Claude Code; `.env.example` is committed
 - [ ] Production error responses never include stack traces
 - [ ] HTTPS in production; the container runs as a non-root user

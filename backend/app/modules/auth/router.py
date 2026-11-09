@@ -47,6 +47,9 @@ from app.core.security import REFRESH_COOKIE_NAME
 # Deletes the refresh cookie with the same name, path, and flags it was set with.
 from app.core.security import clear_refresh_cookie
 
+# Tells every cache not to store a response that carries tokens, as RFC 6749 §5.1 requires.
+from app.core.security import forbid_caching
+
 # Writes the refresh token into its HttpOnly cookie with every security flag.
 from app.core.security import set_refresh_cookie
 
@@ -93,14 +96,16 @@ def login(
     rejected with a 422, and so is an email longer than 255 characters or
     a password longer than 128, which no account can have. On success, the
     access token goes in the body and the refresh token goes only into the
-    ``HttpOnly`` cookie, so page scripts can never read it. Every failed
-    sign-in, whether the email is unknown, the password is wrong, or the
-    account is deactivated, gets the same 401 and no cookie.
+    ``HttpOnly`` cookie, so page scripts can never read it, and the
+    response tells every cache not to store it. Every failed sign-in,
+    whether the email is unknown, the password is wrong, or the account is
+    deactivated, gets the same 401 and no cookie.
 
     Args:
         form: The sign-in form; ``username`` holds the email.
         response: Holds the headers FastAPI adds to the response; the
-            refresh cookie is set on it.
+            refresh cookie and the headers that forbid caching are set on
+            it.
         db: Session for this request; the service commits it on success.
 
     Returns:
@@ -112,6 +117,7 @@ def login(
     """
     issued_tokens = service.login(db, form.username, form.password)
     set_refresh_cookie(response, issued_tokens.refresh_token)
+    forbid_caching(response)
 
     return TokenResponse(access_token=issued_tokens.access_token)
 
@@ -142,9 +148,9 @@ def refresh(
     header. The browser sends the cookie by itself, only to
     ``/api/v1/auth`` paths. On success the new access token goes in the
     body and the new refresh token replaces the old one in the
-    ``HttpOnly`` cookie, as at sign-in. It is a ``POST`` because it changes
-    state, and ``SameSite=Strict`` keeps other sites from sending the
-    cookie.
+    ``HttpOnly`` cookie, and the response tells every cache not to store
+    it, as at sign-in. It is a ``POST`` because it changes state, and
+    ``SameSite=Strict`` keeps other sites from sending the cookie.
 
     The cookie defaults to None, so a request without it reaches the
     service and gets the standard 401 rather than a 422 validation error.
@@ -153,7 +159,8 @@ def refresh(
 
     Args:
         response: Holds the headers FastAPI adds to the response; the new
-            refresh cookie is set on it.
+            refresh cookie and the headers that forbid caching are set on
+            it.
         db: Session for this request; the service commits it on success,
             and when it raises the reuse alarm.
         refresh_token: The refresh cookie's value, or None when the browser
@@ -171,6 +178,7 @@ def refresh(
     """
     issued_tokens = service.refresh(db, refresh_token)
     set_refresh_cookie(response, issued_tokens.refresh_token)
+    forbid_caching(response)
 
     return TokenResponse(access_token=issued_tokens.access_token)
 
@@ -297,10 +305,10 @@ def change_password(
     from the access token, so a caller can only change their own password.
     On success every session the user had, on every device, is ended, and
     this device gets a new one: a new access token in the body and a new
-    refresh token in the ``HttpOnly`` cookie, replacing the old one. The
-    other devices are refused at their next refresh, without a reuse alarm;
-    an access token one of them already holds works until it expires,
-    within minutes.
+    refresh token in the ``HttpOnly`` cookie, replacing the old one, in a
+    response that tells every cache not to store it. The other devices are
+    refused at their next refresh, without a reuse alarm; an access token
+    one of them already holds works until it expires, within minutes.
 
     A refused change answers 400, not 401, because the web app treats a
     401 as an expired session and would sign the user out. It sets no
@@ -314,7 +322,8 @@ def change_password(
         data: The current and the new password.
         user: The active user the bearer token belongs to.
         response: Holds the headers FastAPI adds to the response; the new
-            refresh cookie is set on it.
+            refresh cookie and the headers that forbid caching are set on
+            it.
         db: Session for this request; the service commits it on success.
 
     Returns:
@@ -333,5 +342,6 @@ def change_password(
     """
     issued_tokens = service.change_password(db, user, data)
     set_refresh_cookie(response, issued_tokens.refresh_token)
+    forbid_caching(response)
 
     return TokenResponse(access_token=issued_tokens.access_token)

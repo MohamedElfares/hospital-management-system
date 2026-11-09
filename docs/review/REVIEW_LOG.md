@@ -564,7 +564,34 @@ closes when the last stage is done, so an interrupted run is obvious.
   for each part, and stage 20 should bring part 3's up to what its tests
   check, as stage 19 did for part 2's. Stage 19 also reviewed
   `test_a_token_revoked_without_rotation_is_refused_quietly`, a refresh
-  test that sits among part 3's tests, so stage 20 can leave it.
+  test that sits among part 3's tests, so stage 20 can leave it. The
+  R-087 item is done, in `0bd0039`; stage 22 reviews the new test with
+  the other refresh tests.
+- **Stage 19's findings fixed (2026-11-09):** R-082 (`f07a725`), R-083
+  (`3d6bce8`), R-084 (`5234c00`), R-085 (`d66a2be`), R-086 (`bca7f38`),
+  and R-087 (`0bd0039`), written at your request ("fix the open findings
+  with recommendations and best practices"), one commit each, in ID
+  order: R-086's test compares its error with R-083's helper, and no
+  other fix depends on another. Only R-087 changes the code under test,
+  so each new or changed test was run against the broken copies that had
+  passed the whole suite, and each copy failed it: R-082's in the slow
+  run that had shown its gap, and R-087's against the old line and
+  against broken copies of the new one. One step goes beyond the
+  recommendations: R-083's helper replaces the message-only check in all
+  nine tests that expect the generic token error, not only the five the
+  finding named. R-087 puts the request ID in the alarm's line in
+  `app/modules/auth/service.py`, which the next `/review new` takes
+  anyway, and adds a clause to plan §8.1; its test lands in
+  `tests/test_auth_api.py` before stage 22 reaches it. The fixes change
+  part 2 of `tests/test_auth_service.py` after stage 19 reviewed it at
+  `ab8f47d`, and the file's `STATE.md` row, due at `360f3f1` when stage
+  20 ends, already makes the next `/review new` take the whole file
+  again. Each commit passes Ruff and the suite on its own, run like CI in
+  a clean worktree: 392, 392, 393, 394, 395, then 396 tests, with
+  coverage at 99.86%, and the suite also passes reversed, shuffled twice,
+  and at `LOG_LEVEL=INFO`. Run against the fixed suite, all 25 copies the
+  fixes target fail it. The `CLAUDE.md` line proposed in stage 19 still
+  waits for your answer. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

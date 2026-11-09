@@ -17,12 +17,12 @@ Sign-in answers with a bearer access token that names the user, in a body
 that holds nothing else, and puts the refresh token in its cookie alone,
 with its security flags and a lifetime that follows the setting; the
 cookie holds the token whose hash was saved. Nothing a sign-in logs, at
-any level, or prints holds either password, the stored hash, or either
-token. A wrong password and an email holding a NUL get a 401 with the
-generic code and message, and no cookie. A form without a username, a
-JSON body, and a field over its limit get a 422 and no cookie; the last
-two also save no session, and the 422 for a field over its limit never
-repeats its value.
+any level, or prints holds a password typed, the stored hash, or either
+token, even when the form is refused with a 422. A wrong password and an
+email holding a NUL get a 401 with the generic code and message, and no
+cookie. A form without a username, a JSON body, and a field over its
+limit get a 422 and no cookie; the last two also save no session, and
+the 422 for a field over its limit never repeats its value.
 A password as long as the rule allows and one with a space at each end
 sign in as typed, and an email as long as the limit reaches the service
 and gets the 401 for an unknown email.
@@ -411,33 +411,44 @@ def test_login_logs_and_prints_neither_the_passwords_nor_the_tokens(
     """A sign-in through the API logs and prints no password, stored hash, or token.
 
     The service test of the same name sees only the service. Here the
-    route, the middleware, and the error handler run too. Every record
+    route, the middleware, and the error handlers run too. Every record
     down to DEBUG is captured, the test client's own included, and so is
     everything printed to stdout and stderr: the application writes its
-    log records to stderr, so a ``print`` ends up in the same log. A
-    successful sign-in and one with a wrong password are sent, and neither
-    password, the account's stored hash, nor either token the successful
-    one returned may appear in the records or in either stream: the access
-    token from the body, and the refresh token from the cookie. A failure
-    names each value found and where, never the value itself. No form the
-    route refuses with a 422 is sent, so a validation handler that logged
-    the typed password would pass (R-095); and no email is looked for
-    (R-096).
+    log records to stderr, so a ``print`` ends up in the same log. Four
+    sign-ins are sent: a successful one, one with a wrong password, and
+    two forms the route refuses with a 422, whose handler must log none of
+    what was typed either. One has a password over the limit, which
+    FastAPI's validation error holds whole, as Pydantic's ``input``; the
+    other lacks only its username and holds the real password, which only
+    the request's body holds. No password typed, the account's stored
+    hash, nor either token the successful sign-in returned may appear in
+    the records or in either stream: the access token from the body, and
+    the refresh token from the cookie. A failure names each value found
+    and where, never the value itself. No email is looked for (R-096).
     """
+    overlong_password = "p" * (PASSWORD_MAX_LENGTH + 1)
+
     with caplog.at_level("DEBUG"):
         response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
         failed_response = client.post(
             LOGIN_URL, data={"username": user.email, "password": "Wrong-Password-1"}
         )
+        overlong_response = client.post(
+            LOGIN_URL, data={"username": user.email, "password": overlong_password}
+        )
+        no_username_response = client.post(LOGIN_URL, data={"password": PASSWORD})
 
     printed = capsys.readouterr()
 
     assert response.status_code == 200
     assert failed_response.status_code == 401
+    assert overlong_response.status_code == 422
+    assert no_username_response.status_code == 422
 
     sensitive_values = {
         "password": PASSWORD,
         "wrong password": "Wrong-Password-1",
+        "overlong password": overlong_password,
         "stored hash": user.password_hash,
         "access token": response.json()["access_token"],
         "refresh token": response.cookies[REFRESH_COOKIE_NAME],
@@ -553,7 +564,8 @@ def test_login_with_an_overlong_field_is_a_validation_error(
     credentials, so the length alone decides the outcome. The 422 names
     the field and the reason, and never repeats the value, so a rejected
     password can't reach the browser's network panel or anything else that
-    keeps responses. What the 422 logs is untested (R-095).
+    keeps responses. That the 422 logs and prints none of it either is
+    checked by ``test_login_logs_and_prints_neither_the_passwords_nor_the_tokens``.
     """
     form = {"username": user.email, "password": PASSWORD, field: value}
 

@@ -252,11 +252,11 @@ def test_the_refresh_cookie_holds_the_stored_token(
     later refresh with this cookie will find the row.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
-    refresh_token = response.cookies[REFRESH_COOKIE_NAME]
-    tokens = db_session.scalars(select(RefreshToken)).all()
+    raw_refresh_token = response.cookies[REFRESH_COOKIE_NAME]
+    token_rows = db_session.scalars(select(RefreshToken)).all()
 
-    assert len(tokens) == 1
-    assert hash_refresh_token(refresh_token) == tokens[0].token_hash
+    assert len(token_rows) == 1
+    assert hash_refresh_token(raw_refresh_token) == token_rows[0].token_hash
 
 
 def test_the_refresh_token_never_appears_in_the_body(user: User, client: TestClient) -> None:
@@ -305,7 +305,10 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
     assert refresh_token not in caplog.text
 
 
-def test_wrong_credentials_return_the_standard_401(user: User, client: TestClient) -> None:
+def test_login_with_a_wrong_password_returns_the_standard_401(
+    user: User,
+    client: TestClient,
+) -> None:
     """A wrong password gets a 401 in the standard error format and no cookie.
 
     The status and code are written out, not read from

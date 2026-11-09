@@ -54,6 +54,9 @@ routes, the cookie, and the response bodies are tested in
 ``tests/test_auth_repository.py``.
 """
 
+# Log level numbers; the no-alarm checks refuse every record from WARNING up.
+import logging
+
 # Random UUIDs: an ID no user has; also the type of the IDs the lookup spy records.
 import uuid
 
@@ -1416,15 +1419,15 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
     user: User,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An already revoked token is ignored: no warning, and no mass revocation.
+    """An already revoked token is ignored: no alarm, and no mass revocation.
 
     The token was revoked five minutes ago, without a replacement, as a
     sign-out leaves it. In refresh, a rotated token presented again means a
     copy exists and ends every session. At logout a revoked token usually
     means a double click or a second tab signing out too, so the user's
     other device must keep its token, and nothing may be logged as a
-    security warning. Only WARNING records are counted, so an alarm logged
-    at ERROR would pass (R-088).
+    security warning. Every record from WARNING up counts, so an alarm
+    logged at ERROR fails as well as one logged at WARNING.
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1433,9 +1436,7 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
     with caplog.at_level("WARNING"):
         service.logout(db_session, user, raw_revoked_token)
 
-    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
-
-    assert warnings == []
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
 
     other_device_row = _token_row(db_session, raw_other_device_token)
 
@@ -1475,10 +1476,10 @@ def test_logout_with_a_rotated_token_revokes_its_replacement(
     must revoke that replacement, without linking it to another token, and
     commit, so the session can't come back: the session is rolled back
     before the rows are read, as a request's is when it ends. It raises no
-    reuse alarm, and the user's token on another device stays unrevoked.
-    Only WARNING records are counted (R-088), and the rotated token's own
-    row isn't read, so a sign-out that also moved its revocation time would
-    pass (R-089).
+    reuse alarm, at WARNING or at any level above it, and the user's token
+    on another device stays unrevoked. The rotated token's own row isn't
+    read, so a sign-out that also moved its revocation time would pass
+    (R-089).
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1494,13 +1495,12 @@ def test_logout_with_a_rotated_token_revokes_its_replacement(
 
     replacement_row = db_session.get(RefreshToken, replacement_id, populate_existing=True)
     other_device_row = _token_row(db_session, raw_other_device_token)
-    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
 
     assert replacement_row is not None
     assert replacement_row.revoked_at is not None
     assert replacement_row.replaced_by_id is None
     assert other_device_row.revoked_at is None
-    assert warnings == []
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
 
 
 def test_logout_ignores_another_users_token(db_session: Session, user: User) -> None:
@@ -1708,10 +1708,10 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
     The token was revoked five minutes ago and has no ``replaced_by_id``,
     as a sign-out or a password change leaves it. The server ended it on
     purpose, so it is not a stolen copy: the user's other device keeps its
-    session, and no WARNING record is logged. Without this, another device
-    refreshing after a password change would sign out the device that made
-    the change. Only WARNING records are counted, so an alarm logged at
-    ERROR would pass (R-088).
+    session, and nothing is logged from WARNING up, so an alarm logged at
+    ERROR fails as well as one logged at WARNING. Without this, another
+    device refreshing after a password change would sign out the device
+    that made the change.
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)
@@ -1720,12 +1720,11 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
     with caplog.at_level("WARNING"), pytest.raises(AuthenticationError) as exc_info:
         service.refresh(db_session, raw_revoked_token)
 
-    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
     other_device_row = _token_row(db_session, raw_other_device_token)
 
     _assert_generic_token_error(exc_info.value)
     assert other_device_row.revoked_at is None
-    assert warnings == []
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
 
 
 def test_a_pending_password_change_is_refused(user: User) -> None:

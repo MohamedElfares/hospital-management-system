@@ -35,27 +35,29 @@ The current-user route returns exactly the user's public fields, for a
 signed token and for the one sign-in returns, and still answers while a
 password change is pending. Nothing a request to it logs, at any level,
 or prints holds the token sent, the stored hash, the email, or the full
-name, whether the token is accepted, expired, or a deactivated user's.
-A missing or unusable ``Authorization`` header and a deactivated user's
-token get a 401 with the standard code and the message for its case,
-and FastAPI's own 401 and those of the three parts of the auth service
-that refuse, for an expired access token, a failed sign-in, and a
-refused refresh, carry ``WWW-Authenticate: Bearer``. Sign-in, refresh,
-and a password change each answer with ``Cache-Control: no-store`` and
-``Pragma: no-cache``, so no cache keeps their tokens. Refresh answers with a bearer access token that
-names the user and a new cookie with the same flags, never puts the
-refresh token in the body, and gives a missing or unknown cookie a 401
-with the standard code and message; the ``user`` fixture's account must
-change its password, so the refresh tests also show that a pending
+name, whether the token is accepted, expired, or a deactivated user's. A
+missing or unusable ``Authorization`` header, an expired access token,
+and a deactivated user's token get the standard 401, compared whole,
+with the message for its case and no details, and FastAPI's own 401 and
+those of the three parts of the auth service that refuse, for an expired
+access token, a failed sign-in, and a refused refresh, carry
+``WWW-Authenticate: Bearer``. Sign-in, refresh, and a password change
+each answer with ``Cache-Control: no-store`` and ``Pragma: no-cache``,
+so no cache keeps their tokens. Refresh answers with a bearer access
+token that names the user and a new cookie with the same flags, never
+puts the refresh token in the body, and gives a missing or unknown
+cookie the standard 401, compared whole; the ``user`` fixture's account
+must change its password, so the refresh tests also show that a pending
 change never blocks a refresh. A cookie that was already exchanged, sent
-again, fails, the cookie that replaced it fails from then on too, and the
-replay logs one warning with the request ID. Nothing a refresh logs, at
-any level, or prints holds a cookie sent, a token issued, the stored
-hash, the email, or the full name, whether the refresh succeeds, replays
-a spent cookie, or sends one the server never issued. Sign-out answers
-204, clears the cookie, and revokes the token behind it, and nothing it
-logs, at any level, or prints holds either token, the stored hash, the
-email, or the full name; it needs an access token, and it works without
+again, gets that 401, the cookie that replaced it does from then on too,
+and the replay logs one warning with the request ID. Nothing a refresh
+logs, at any level, or prints holds a cookie sent, a token issued, the
+stored hash, the email, or the full name, whether the refresh succeeds,
+replays a spent cookie, or sends one the server never issued. Sign-out
+answers 204, clears the cookie, and revokes the token behind it, and
+nothing it logs, at any level, or prints holds either token, the stored
+hash, the email, or the full name. Without an access token it gets the
+standard 401, compared whole, and ends no session, and it works without
 a cookie and while a password change is pending.
 
 A password change answers with a new access token and a new cookie, ends
@@ -744,18 +746,21 @@ def test_me_without_a_token_is_the_standard_401(
     FastAPI's bearer scheme rejects it before the route runs, and the
     handler for the framework's errors still returns the standard error
     body, keeping the ``WWW-Authenticate: Bearer`` header, which names the
-    scheme the route expects. Only the code, the message, and the header
-    are compared, so a 401 with details of its own, or without its request
-    ID, would pass (R-102).
+    scheme the route expects. The whole body is compared, so a 401 with
+    details of its own, or without the request ID its ``X-Request-ID``
+    header carries, fails.
     """
     response = client.get(ME_URL)
 
     assert response.status_code == 401
-
-    error = response.json()["error"]
-
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == "Not authenticated"
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Not authenticated",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
     assert response.headers["www-authenticate"] == "Bearer"
 
 
@@ -838,15 +843,16 @@ def test_me_rejects_an_unusable_authorization_header(
     authorization: str,
     message: str,
 ) -> None:
-    """Every unusable Authorization header gets a 401 in the standard format.
+    """Every unusable Authorization header gets the standard 401, its body compared whole.
 
     A non-bearer scheme is stopped by FastAPI's bearer scheme, which says
     "Not authenticated". A bearer header with a bad or empty token reaches
     the auth service, which says "Invalid or expired token.": the scheme
     hands on whatever follows ``Bearer``, even nothing. No user is saved,
-    because none of these requests gets as far as a database lookup. Only
-    the code and the message are compared, so a 401 with details of its
-    own would pass (R-102).
+    because none of these requests gets as far as a database lookup. The
+    whole body is compared, so a 401 with details of its own, which could
+    tell the caller which check failed, fails, and so does one without
+    the request ID its ``X-Request-ID`` header carries.
     """
     response = client.get(
         ME_URL,
@@ -854,11 +860,39 @@ def test_me_rejects_an_unusable_authorization_header(
     )
 
     assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": message,
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
-    error = response.json()["error"]
 
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == message
+def test_me_rejects_an_expired_access_token(user: User, client: TestClient) -> None:
+    """An expired access token gets the standard 401, its body compared whole.
+
+    The token is signed with the application's key and names the ``user``
+    fixture's account, so its expiry is the only thing wrong with it, and
+    the token check refuses it with the message every unusable token gets.
+    The whole body is compared, so a refusal with details of its own,
+    which would tell the caller that the token was genuine but expired,
+    fails.
+    """
+    expired_token_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
+
+    response = client.get(ME_URL, headers=expired_token_header)
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: TestClient) -> None:
@@ -867,8 +901,9 @@ def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: 
     The header is built while the user is active, as when someone signs in
     and is then deactivated. The token is still signed and unexpired, so
     only the database read on every request turns it away, with the same
-    message as an expired token. Only the code and the message are
-    compared, so a 401 with details of its own would pass (R-102).
+    message as an expired token. The whole body is compared, so a 401 with
+    details of its own, which would tell the caller that the account is
+    the problem, fails.
     """
     headers = _auth_header(user)
     user.is_active = False
@@ -877,11 +912,14 @@ def test_me_rejects_a_deactivated_user(db_session: Session, user: User, client: 
     response = client.get(ME_URL, headers=headers)
 
     assert response.status_code == 401
-
-    error = response.json()["error"]
-
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == "Invalid or expired token."
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 def test_me_still_works_while_a_password_change_is_pending(
@@ -1054,18 +1092,21 @@ def test_refresh_without_a_cookie_is_the_standard_401(client: TestClient) -> Non
     """A refresh without the cookie gets the standard 401 and no cookie.
 
     Not a 422: the route's cookie parameter defaults to None, so the
-    request reaches the service, which reports it as unauthenticated. Only
-    the code and the message are compared, so a 401 with details of its
-    own would pass (R-102).
+    request reaches the service, which reports it as unauthenticated. The
+    whole body is compared, so a 401 with details of its own, such as one
+    that names the missing cookie, fails.
     """
     refresh_response = client.post(REFRESH_URL)
 
     assert refresh_response.status_code == 401
-
-    error = refresh_response.json()["error"]
-
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == "Invalid or expired token."
+    assert refresh_response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": refresh_response.headers["x-request-id"],
+        }
+    }
     assert "set-cookie" not in refresh_response.headers
 
 
@@ -1075,18 +1116,21 @@ def test_refresh_with_an_unknown_cookie_is_the_standard_401(client: TestClient) 
     The cookie is set on the path the server gives it, as a browser would
     hold it. On a path that doesn't cover the refresh URL, such as another
     route's, the client would leave it out, and this would only repeat the
-    missing-cookie test. Only the code and the message are compared, so a
-    401 with details of its own would pass (R-102).
+    missing-cookie test. The whole body is compared, so a 401 with details
+    of its own, which could tell the caller which check failed, fails.
     """
     client.cookies.set(REFRESH_COOKIE_NAME, generate_refresh_token(), path="/api/v1/auth")
     refresh_response = client.post(REFRESH_URL)
 
     assert refresh_response.status_code == 401
-
-    error = refresh_response.json()["error"]
-
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == "Invalid or expired token."
+    assert refresh_response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": refresh_response.headers["x-request-id"],
+        }
+    }
     assert "set-cookie" not in refresh_response.headers
 
 
@@ -1097,8 +1141,9 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
     like a stolen copy, so every token of the user is revoked: the new
     cookie, which was valid a moment earlier, now gets a 401 too. This is
     the protection rotation exists for, seen from outside; the service
-    tests check the user's other devices. Only the code and the message of
-    the two 401s are compared (R-102).
+    tests check the user's other devices. Both 401s are compared whole, so
+    either one with details of its own, which could tell a thief that the
+    replay was noticed, fails.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1121,14 +1166,22 @@ def test_reusing_an_old_cookie_signs_out_every_session(user: User, client: TestC
 
     assert reuse_response.status_code == 401
     assert after_reuse_response.status_code == 401
-
-    reuse_error = reuse_response.json()["error"]
-    after_reuse_error = after_reuse_response.json()["error"]
-
-    assert reuse_error["code"] == "AUTHENTICATION_FAILED"
-    assert reuse_error["message"] == "Invalid or expired token."
-    assert after_reuse_error["code"] == "AUTHENTICATION_FAILED"
-    assert after_reuse_error["message"] == "Invalid or expired token."
+    assert reuse_response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": reuse_response.headers["x-request-id"],
+        }
+    }
+    assert after_reuse_response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": after_reuse_response.headers["x-request-id"],
+        }
+    }
 
 
 def test_reuse_is_logged_with_the_request_id(
@@ -1349,22 +1402,28 @@ def test_logout_without_an_access_token_is_the_standard_401(user: User, client: 
     The client holds a valid refresh cookie from signing in but sends no
     ``Authorization`` header. The bearer scheme rejects the request before
     the route runs, and the refresh that follows still works, which proves
-    the cookie alone can't be used to revoke a session. The setup sign-in's
-    status isn't checked, so a failed sign-in would show up only at the
-    refresh, as a 401 that looks like an ended session (R-103), and only
-    the code and the message are compared (R-102).
+    the cookie alone can't be used to revoke a session. The whole body of
+    the 401 is compared, so one with details of its own, or without the
+    request ID its ``X-Request-ID`` header carries, fails. The setup
+    sign-in's status isn't checked, so a failed sign-in would show up only
+    at the refresh, as a 401 that looks like an ended session (R-103).
     """
     client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
     logout_response = client.post(LOGOUT_URL)
 
     assert logout_response.status_code == 401
+    assert logout_response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Not authenticated",
+            "details": [],
+            "request_id": logout_response.headers["x-request-id"],
+        }
+    }
 
-    error = logout_response.json()["error"]
     refresh_response = client.post(REFRESH_URL)
 
     assert refresh_response.status_code == 200
-    assert error["code"] == "AUTHENTICATION_FAILED"
-    assert error["message"] == "Not authenticated"
 
 
 def test_logout_without_a_cookie_still_succeeds(user: User, client: TestClient) -> None:

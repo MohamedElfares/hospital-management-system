@@ -38,6 +38,12 @@ Hospital Management System: a FastAPI backend and a React frontend for hospital 
 - Before I write tests for a feature, list the edge cases to cover, using the checklist in plan §13. No test code unless I ask.
 - The first time I need a pytest feature (fixtures, `parametrize`, `monkeypatch`, `raises`, marks), explain it in one or two lines.
 - When reviewing tests, look for missing cases, weak assertions, and tests that depend on each other.
+- Every guard that keeps secrets or personal data out of responses and logs, protects passwords or tokens (hashing settings, the unknown-email dummy check, token and cookie rules), or stops startup on a bad setting, gets a test that fails when the guard is removed.
+- Every log line that plan §12 requires or a docstring promises gets a test that captures it with `caplog` and checks its level, its request ID, and what it must leave out.
+- Every error that must not reveal which check failed, or why, such as a failed sign-in, a rejected token, or a failed readiness check, gets a test for each check that raises it, comparing the whole error: its status, code, message, and details.
+- Every use case, route, request dependency, or command that takes or issues a password, a token, or an activation code gets a test that captures what it logs, down to DEBUG, and what it prints, and finds none of those values, nor any password hash it reads or writes.
+- Every use case, route, or command that takes personal data, such as an email, a name, or a patient's details, gets a test that captures what it logs, down to DEBUG, and finds none of it.
+- Every test asserts each response's status before it reads the response's body, cookies, or headers, setup responses included.
 
 ## CI/CD and Docker
 
@@ -170,6 +176,7 @@ Migrations are mine: never run `alembic revision`, and ask before running `alemb
 - Enums stored as strings with `Enum(..., native_enum=False)`. Money as `Decimal` in `NUMERIC(12, 2)` columns.
 - No hard deletes for clinical, pharmacy, or ticket data; change status instead. Users are deactivated, not deleted.
 - Rules that must survive concurrent requests go in the database: unique and partial indexes, CHECK constraints, foreign keys, and row locks.
+- A service that issues refresh tokens, or revokes all of a user's, locks the user's row with `get_user_by_id_for_update` before it writes, and re-checks on the locked row anything it read before the lock, such as `is_active` or the password hash.
 - Index every foreign key and search column. Avoid N+1 queries with `selectinload`.
 - API under `/api/v1`, with plural kebab-case resources. State changes use action endpoints such as `POST /appointments/{id}/check-in`.
 - Status codes: 400 can't be processed, 401 unauthenticated, 403 missing permission, 404 not found or outside the user's scope, 409 business conflict, 422 validation error, 429 rate limited.

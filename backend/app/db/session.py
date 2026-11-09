@@ -2,8 +2,9 @@
 
 The engine is created once, when this module is first imported, from
 ``DATABASE_URL``, so importing it requires valid settings. Each request gets
-its own session through ``get_db``. Services own the transaction: they call
-``commit()`` once per use case, and this module never commits.
+its own session through ``get_db``, and the CLI opens one with
+``SessionLocal``. Services own the transaction: they call ``commit()`` once
+per use case, and this module never commits.
 """
 
 # Abstract return type of a generator function such as get_db.
@@ -25,13 +26,19 @@ settings = get_settings()
 
 # pool_pre_ping replaces connections that Neon dropped while its compute was
 # suspended. The pool stays small because the app runs one worker and Neon's
-# free plan limits connections. Forcing the session timezone to UTC makes
-# PostgreSQL return timestamps in UTC, as the API contract requires.
+# free plan limits connections. hide_parameters keeps a statement's values
+# out of database error messages: the 500 handler logs those messages, and
+# the values can be emails or password hashes (plan §12). Forcing the
+# session timezone to UTC makes PostgreSQL return timestamps in UTC, as the
+# API contract requires. The connect timeout makes a request, and the
+# readiness check, fail within seconds when the database is unreachable,
+# instead of waiting for the operating system's TCP timeout.
 engine = create_engine(
     url=settings.database_url,
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=5,
+    hide_parameters=True,
     connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
 )
 
@@ -46,12 +53,14 @@ SessionLocal = sessionmaker(
 def get_db() -> Iterator[Session]:
     """Provide one database session for the duration of a request.
 
-    FastAPI runs the code before ``yield`` when the request starts and the
-    rest when the response is done. The ``with`` block closes the session
-    in every case, including when the route raises, and closing rolls back
-    any transaction that wasn't committed, so a failed request never leaves
-    partial changes behind. This function never commits; services decide
-    when a use case is complete.
+    FastAPI runs the code before ``yield`` before the route, and the rest
+    after the response has been sent, or as soon as the route raises. It
+    also reuses the value within a request, so the route and
+    ``get_current_user`` share this one session. The ``with`` block closes
+    the session in every case, and closing rolls back any transaction that
+    wasn't committed, so a failed request never leaves partial changes
+    behind. This function never commits; services decide when a use case is
+    complete.
 
     Yields:
         A new ``Session`` bound to the application engine.

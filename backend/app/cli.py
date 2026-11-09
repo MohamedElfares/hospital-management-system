@@ -4,11 +4,13 @@ The CLI is an entry point, like a router: it collects input, opens a
 database session, calls a service, and prints the outcome. It holds no
 business rules. It connects with the same ``DATABASE_URL`` as the API, so
 running it requires the database credentials, which is what makes
-``create-admin`` safe without a sign-in. ``seed-demo`` and
-``export-openapi`` join it in Milestone 1.7.
+``create-admin`` safe without a sign-in. Importing this module builds the
+engine, so every command, ``--help`` included, needs valid settings.
+``seed-demo`` joins it in Milestone 1.7, and ``export-openapi`` in
+Milestone 2.1 (plan §18).
 
 Example:
-    ``uv run python -m app.cli create-admin --email admin@hospital.test --full-name "Ada Admin"``
+    ``uv run python -m app.cli create-admin --email admin@example.com --full-name "Ada Admin"``
 """
 
 # Attaches Typer option settings to a parameter's type.
@@ -41,10 +43,15 @@ from app.modules.users.schemas import UserCreate
 # The service that checks the rules and creates the first Admin.
 from app.modules.users.service import create_first_admin
 
-app = typer.Typer(help="Hospital Management System maintenance commands.")
+# A crash prints Typer's traceback. Its local variables would show the typed password and
+# the database password, so they stay hidden here whatever Typer's default becomes.
+app = typer.Typer(
+    help="Hospital Management System maintenance commands.",
+    pretty_exceptions_show_locals=False,
+)
 
-# Replaces Pydantic's SecretStr wording ("at least 12 items ..., not 5"),
-# which is confusing and echoes the length of what was typed.
+# Pydantic words a SecretStr's length error as "at least 15 items after validation, not 5",
+# which is confusing and reveals how long the typed password was, so the CLI prints the rule.
 _PASSWORD_RULE = f"must be {PASSWORD_MIN_LENGTH} to {PASSWORD_MAX_LENGTH} characters."
 
 
@@ -70,14 +77,19 @@ def create_admin(
     create accounts; this command creates the first Admin directly. The
     email and full name may be given as options or typed when prompted.
     The password is only ever read from a hidden prompt, entered twice,
-    and is deliberately not an option: a value passed on the command line
-    would be saved in the shell's history.
+    and is deliberately neither an option nor an environment variable
+    (plan §8.1): a value on the command line would be saved in the shell's
+    history and shown in the process list. On success the command prints
+    the new Admin's email and ID, never the password.
 
     Validation errors are printed as field and message only, because
     Pydantic's full error includes the rejected input, which could be the
-    password. The service refuses when an active Admin already exists.
-    Every failure prints to stderr and exits with code 1 without saving
-    anything.
+    password. The service refuses when an active Admin already exists or
+    another account uses the email. Invalid input and a refusal each print
+    to stderr and exit with code 1, and nothing is saved. A database error
+    isn't caught: Typer prints its traceback, without local variables,
+    because ``app`` turns them off. That setting is what keeps the typed
+    password and the database URL's password off the screen.
 
     Args:
         email: Sign-in email for the new Admin.
@@ -86,6 +98,9 @@ def create_admin(
     Raises:
         typer.Exit: With code 1 when the input is invalid or the service
             refuses.
+        sqlalchemy.exc.SQLAlchemyError: If the database fails, for example
+            when it can't be reached. It isn't caught, so Typer prints the
+            traceback and the command exits with code 1.
     """
     password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
     try:

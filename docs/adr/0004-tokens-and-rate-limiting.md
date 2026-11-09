@@ -50,6 +50,23 @@ their password at least once a week, which suits a system holding sensitive data
   failed request is rolled back.
 - The token's row is read with `SELECT ... FOR UPDATE`, which locks it until the request
   finishes.
+- *Added 2026-11-05 (review run 1, R-022):* before the token's row, refresh locks the
+  **user's** row (`SELECT ... FOR NO KEY UPDATE`), and a password change locks the user's
+  row first too. Revoking every token is one `UPDATE`, which sees only the tokens committed
+  when it starts, so without the user lock a refresh that was halfway through when the
+  alarm or a password change ran kept the new token it issued. The two locks are always
+  taken in that order: the other order lets two requests wait for each other until
+  PostgreSQL aborts one of them.
+- *Added 2026-11-05 (review run 1, R-025):* a sign-in takes the same user lock once its
+  password has passed, and is refused if the stored hash changed during the check, so a
+  sign-in with the old password can't outlive a password change. It doesn't lock before
+  the check: failed sign-ins of an existing account would then wait for each other, while
+  those for an unknown email never wait, and the difference would reveal which accounts
+  exist.
+- *Added 2026-11-05 (review run 1, R-028):* a sign-out locks its token the same way, so a
+  refresh of the same cookie can come first and rotate it. The sign-out then revokes the
+  replacement, which that refresh sends to the same browser, possibly after the sign-out
+  has deleted the cookie; left alone, it would restore the session that was just ended.
 
 **Why:** when a used token comes back, the server can't tell the real user from a thief,
 so ending every session is the only safe answer: the real user signs in again, and the
@@ -71,9 +88,10 @@ testing the password change exposed a bug. A user changed their password on a la
 a phone still held its old cookie, which the change had revoked. The phone refreshed in the
 background, the old rule took that for theft, and the laptop's brand-new session was
 revoked too. Only a rotated token proves that a copy exists; a token the server ended on
-purpose is already dead, so refusing it quietly loses nothing. As a bonus, after an alarm
-revokes everything, a thief retrying the same token gets quiet 401s instead of an alarm on
-every attempt.
+purpose is already dead, so refusing it quietly loses nothing. As a bonus, the tokens an
+alarm revokes get quiet 401s afterwards, so a thief who refreshed first and keeps retrying
+their token raises no further alarms; a rotated token still raises one every time it comes
+back.
 
 ### 4. In-memory rate limiting
 
@@ -142,8 +160,12 @@ but an extra service this single-instance deployment doesn't need yet.
 - Plan §8.1 (authentication rules) and §11 (the auth endpoints).
 - `backend/app/modules/auth/service.py`: `login`, `refresh`, `logout` and
   `change_password`.
-- `backend/app/modules/auth/repository.py`: `get_by_hash` (the row lock) and
-  `revoke_all_for_user`.
+- `backend/app/modules/auth/repository.py`: `get_refresh_token_by_hash_for_update`
+  (the row lock), `get_refresh_token_by_id_for_update` (the replacement's lock at
+  sign-out), and `revoke_all_refresh_tokens_for_user`.
+- `backend/app/modules/users/service.py`: `get_user_by_id_for_update` (the user's row
+  lock).
 - `backend/app/core/security.py`: the access token and the refresh cookie.
 - Tests in `backend/tests/test_auth_service.py` and `backend/tests/test_auth_api.py`,
-  including `test_another_device_refreshing_after_a_change_keeps_this_session`.
+  including `test_another_device_refreshing_after_a_change_keeps_this_session`, and the
+  race tests in `backend/tests/test_auth_concurrency.py`.

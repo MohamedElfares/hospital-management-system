@@ -1,10 +1,11 @@
 """ORM model for refresh tokens, the long-lived half of a sign-in session.
 
 An access token lasts minutes and can't be revoked. A refresh token lasts
-days and is valid only while its row here says so, which is what makes
-sign-out, deactivation, and theft detection possible. The token itself is
-a random value that is never stored: only its SHA-256 hash is, so a leaked
-table gives an attacker nothing they can sign in with.
+days and is valid only while its row here says so, which is what lets
+sign-out, a password change, and reuse detection end a session early:
+the next refresh fails, and the access token runs out within minutes.
+The token itself is a random value that is never stored: only its SHA-256
+hash is, so a leaked table can't be used to refresh a session.
 """
 
 # Python type of the user_id and replaced_by_id attributes.
@@ -13,7 +14,7 @@ import uuid
 # Python type of the expires_at and revoked_at attributes.
 from datetime import datetime
 
-# Column type that maps to TIMESTAMPTZ when timezone=True.
+# Timestamp column type; TIMESTAMPTZ for expires_at and revoked_at, with timezone=True.
 from sqlalchemy import DateTime
 
 # Declares the links to users and to the replacing token, with ON DELETE rules.
@@ -41,38 +42,45 @@ from app.db.base import UUIDPrimaryKeyMixin
 class RefreshToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """One refresh token issued to a user, stored as a hash.
 
-    A row is created at sign-in and on every refresh. Refreshing rotates
-    the token: the old row is revoked and points to its replacement, and
-    a new row is issued. If a rotated token is presented again, it may have
-    been stolen, so every token of that user is revoked (plan §8.1). A
-    token revoked without a replacement was ended on purpose and is only
-    refused.
+    A row is created at every sign-in, refresh, and password change.
+    Refreshing rotates the token: the old row is revoked and points to its
+    replacement, and a new row is issued. If a rotated token is presented
+    again, it may have been stolen, so every token of that user is revoked
+    (plan §8.1). A token revoked without a replacement was ended on
+    purpose and is only refused.
 
     A token is usable only while ``revoked_at`` is NULL and ``expires_at``
-    is in the future. Revoking keeps the row, so the rotation chain stays
-    available for investigation. Nullability comes from each
-    ``Mapped`` annotation: ``X`` is NOT NULL and ``X | None`` allows NULL.
+    is in the future; refresh also requires its user to exist and be
+    active. Revoking and expiry keep the row, so the rotation chain stays
+    available for investigation; rows go only when their user is deleted.
+    Nullability comes from each ``Mapped`` annotation: ``X`` is NOT NULL
+    and ``X | None`` allows NULL.
 
     Attributes:
-        user_id: The user the token signs in. Deleting the user deletes
-            their tokens (ON DELETE CASCADE); in the app users are only
-            deactivated, but ``seed-demo --reset`` and tests delete them.
-        token_hash: SHA-256 of the token as 64 hex characters. Unique,
-            because each refresh finds its row by this value. A fast hash
-            is safe here, unlike for passwords, because the token is 256
-            random bits and can't be guessed; it also has no salt, so the
-            same token always gives the same hash and can be looked up.
-        expires_at: When the token stops working, in UTC. Set by the
-            service from ``REFRESH_TOKEN_EXPIRE_DAYS``; there is no default
-            so a missing value fails instead of picking a lifetime.
+        user_id: The user the token belongs to. Indexed, for revoking all
+            of a user's tokens in one statement. Deleting the user deletes
+            their tokens (ON DELETE CASCADE); the app only deactivates
+            users, but tests delete them.
+        token_hash: SHA-256 of the token as 64 hex characters. Unique, and
+            the unique constraint's index finds the row at each refresh
+            and sign-out. A fast hash is safe here, unlike for passwords,
+            because the token is 256 random bits and can't be guessed; it
+            also has no salt, so the same token always gives the same hash
+            and can be looked up.
+        expires_at: When the token stops working, in UTC. Sign-in and a
+            password change set it ``REFRESH_TOKEN_EXPIRE_DAYS`` ahead, and
+            a refresh copies the old token's value, so refreshing never
+            extends a session. There is no default, so a missing value
+            fails instead of picking a lifetime.
         revoked_at: When the token was revoked by rotation, sign-out, a
-            password change, or reuse detection. None while the token is
-            still usable.
+            password change, or reuse detection. None until then. Expiry
+            doesn't set it: refresh compares ``expires_at`` instead.
         replaced_by_id: The token issued when this one was rotated. None
             if it was never rotated, so a revoked row with no replacement
             was ended by sign-out, a password change, or reuse detection.
-            Refresh raises the reuse alarm only when this is set. Cleared
-            if the replacement row is deleted (ON DELETE SET NULL).
+            Refresh raises the reuse alarm only when this is set. Indexed,
+            because deleting a token makes PostgreSQL find the rows that
+            point to it, which ON DELETE SET NULL then clears.
     """
 
     __tablename__ = "refresh_tokens"

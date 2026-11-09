@@ -1,9 +1,9 @@
 """Password hashing, access tokens, and the refresh token cookie.
 
 Passwords are never stored. Each one is hashed with Argon2id through pwdlib:
-a slow, memory-hard function with a random salt per password, so a leaked
-``users`` table can't be turned back into passwords and each hash has to be
-attacked separately.
+a slow, memory-hard function with a random salt per password. A leaked
+``users`` table therefore holds no passwords, only hashes that an attacker
+must guess one at a time, at a high cost per guess.
 
 After sign-in, requests carry a short-lived access token instead of the
 password: an HS256 JSON Web Token signed with ``JWT_SECRET_KEY`` that names
@@ -13,11 +13,14 @@ do what they ask is checked against the database on every request.
 
 A refresh token, a random value that lasts ``REFRESH_TOKEN_EXPIRE_DAYS``,
 gets the client a new access token without signing in again. It travels
-only in an ``HttpOnly`` cookie, and the database keeps only its SHA-256
-hash, so the token can be revoked and a leaked table can't be used.
+only in an ``HttpOnly`` cookie. The database keeps a row for each token,
+which is what lets a token be revoked, and the row holds only the token's
+SHA-256 hash, so a leaked table can't be used to refresh a session. Every
+response that issues tokens also tells caches not to store it.
 
-The rest of the backend calls the functions here and never imports pwdlib
-or PyJWT, so the algorithms or their settings can change in this one file.
+The rest of the application calls the functions here and never imports
+pwdlib or PyJWT, so the algorithms or their settings can change in this one
+file. Only the tests import PyJWT, to build and read tokens directly.
 """
 
 # Standard-library hashing; SHA-256 of refresh tokens for storage and lookup.
@@ -29,19 +32,22 @@ import logging
 # Cryptographically secure random values; refresh tokens and the dummy password.
 import secrets
 
+# Unicode normalization; every password is put in NFC before it is hashed or checked.
+import unicodedata
+
 # UUID type of user IDs; the token's subject is parsed back into one.
 import uuid
 
 # UTC time zone; token timestamps are always in UTC.
 from datetime import UTC
 
-# Current time for the token's issued-at claim.
+# Date and time type; gives the current time for the token's issued-at claim.
 from datetime import datetime
 
-# Adds the configured lifetime to the issue time to get the expiry.
+# Length of time; adds the configured lifetime to the issue time to get the expiry.
 from datetime import timedelta
 
-# Type of the claim values, which mix strings and datetimes.
+# Type hint for a value of any type; the claim values mix strings and datetimes.
 from typing import Any
 
 # PyJWT; signs, verifies, and decodes the access tokens.
@@ -53,10 +59,10 @@ from fastapi import Response
 # pwdlib's hasher; recommended() gives Argon2id with safe default settings.
 from pwdlib import PasswordHash
 
-# Raised by pwdlib when a stored hash isn't in a format it recognizes.
+# Raised by pwdlib for a stored hash in a format it doesn't know; counted as a wrong password.
 from pwdlib.exceptions import UnknownHashError
 
-# Cached settings; supplies the signing key and the token lifetime.
+# Cached settings; the signing key, both token lifetimes, and the cookie's Secure flag.
 from app.core.config import get_settings
 
 # Error that the API turns into a 401 response; raised for any bad token.
@@ -65,17 +71,42 @@ from app.core.errors import AuthenticationError
 logger = logging.getLogger(__name__)
 
 # One hasher for the whole process, so every hash uses the same settings.
-_password_hash = PasswordHash.recommended()
+_password_hasher = PasswordHash.recommended()
 
 # Fixed in code rather than configuration: the algorithm is a security
 # decision, not a per-environment value, and decoding accepts only this one,
 # so a token that names another algorithm (including "none") is rejected.
 _JWT_ALGORITHM = "HS256"
 
-# Public because sign-in sets this cookie, refresh reads it, and sign-out
-# clears it: one constant means a typo fails loudly instead of creating a
-# cookie that the other endpoints never find.
+# Public because the auth router reads the cookie by this name, in refresh
+# and sign-out, while the helpers below set and clear it: one constant means
+# a typo fails loudly instead of creating a cookie the router never finds.
 REFRESH_COOKIE_NAME = "refresh_token"
+
+
+def _normalize_password(password: str) -> str:
+    """Put a password in Unicode's NFC form before it is hashed or checked.
+
+    The same text can reach the API in two Unicode forms: an accented
+    letter as one character, its composed form, or as a base letter and a
+    combining mark, its decomposed form. They look the same on screen but
+    are different strings, so without this step a password set from one
+    device could fail from another. NIST SP 800-63B-4 warns that some
+    endpoints represent some characters differently, and recommends NFC
+    before hashing (§3.1.1.2). NFC composes every such pair. It leaves
+    compatibility characters, such as the fi ligature (U+FB01) and
+    full-width letters, as they are, because NIST asks for NFC rather than
+    NFKC, which would fold them into other characters. Text already in NFC,
+    every ASCII password included, comes back unchanged, so a hash made
+    before this step was added still verifies.
+
+    Args:
+        password: The password as typed.
+
+    Returns:
+        The same password in NFC.
+    """
+    return unicodedata.normalize("NFC", password)
 
 
 def hash_password(password: str) -> str:
@@ -86,16 +117,19 @@ def hash_password(password: str) -> str:
     algorithm, the settings, and a new random salt, so hashing the same
     password twice gives two different strings that both verify. Hashing
     takes tens of milliseconds on purpose, which makes guessing slow for an
-    attacker who has stolen the hashes. The password is used as given:
-    rules such as a minimum length belong in the request schema.
+    attacker who has stolen the hashes. The password is put in Unicode NFC
+    first, as ``verify_password`` puts every password it checks, and is
+    otherwise used as given: rules such as a minimum length belong in the
+    request schema.
 
     Args:
         password: The plain password. Never logged or stored.
 
     Returns:
-        The encoded hash, about 97 characters long.
+        The encoded hash: 97 characters with the current settings, well
+        within the 255 that ``users.password_hash`` allows.
     """
-    return _password_hash.hash(password)
+    return _password_hasher.hash(_normalize_password(password))
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -104,13 +138,19 @@ def verify_password(password: str, password_hash: str) -> bool:
     pwdlib reads the algorithm, settings, and salt from ``password_hash``,
     hashes ``password`` the same way, and compares the results in constant
     time, so the comparison doesn't reveal how much of the hash matched.
-    Passwords are compared exactly: case and surrounding spaces matter.
+    The password is put in Unicode NFC first, as every stored one was, so
+    the same text typed in another Unicode form matches. Otherwise
+    passwords are compared exactly: case and surrounding spaces matter.
 
-    A stored hash that pwdlib doesn't recognize, such as a bcrypt value or
-    corrupted data, counts as a failed match instead of an error. Sign-in
-    then fails with the usual 401 rather than a 500, and a warning is
-    logged so the bad row gets noticed. The warning never contains the
-    hash or the password.
+    A stored value in a format pwdlib doesn't know, such as a bcrypt hash,
+    an empty string, or other text, counts as a failed match instead of an
+    error. Sign-in then fails with the usual 401 rather than a 500, and a
+    warning is logged so the bad row gets noticed. The warning is a fixed
+    message, and the exception isn't logged: pwdlib's message is generic,
+    and the stored value travels on the exception as its ``hash``
+    attribute, which must stay out of the log. A damaged value that still
+    looks like an Argon2 hash is different: pwdlib reports it as an
+    ordinary mismatch, so it fails without a warning.
 
     Args:
         password: The password the user submitted.
@@ -118,33 +158,35 @@ def verify_password(password: str, password_hash: str) -> bool:
 
     Returns:
         True if the password matches the hash, and False if it doesn't or
-        the hash is in an unsupported format.
+        the stored value isn't a usable hash.
     """
     try:
-        return _password_hash.verify(password, password_hash)
+        return _password_hasher.verify(_normalize_password(password), password_hash)
     except UnknownHashError:
         logger.warning("Password hash uses an unknown or unsupported format")
         return False
 
 
-# Sign-in verifies against this hash when the email matches no user, so an
-# unknown email takes as long to reject as a wrong password and response
-# times can't reveal which emails have accounts. It is built with
-# hash_password, not pasted in, so it always has the same settings, and
-# therefore the same cost, as real hashes.
+# verify_login_password checks the password against this hash when the email
+# matches no user, so an unknown email takes as long to reject as a wrong
+# password and response times can't reveal which emails have accounts. It is
+# built with hash_password, not pasted in, so it always has the same settings,
+# and therefore the same cost, as real hashes.
 _DUMMY_HASH = hash_password(secrets.token_urlsafe())
 
 
 def create_access_token(user_id: uuid.UUID) -> str:
-    """Create a signed access token for a user who has just signed in.
+    """Create a signed access token for a user.
 
-    The token holds three claims and nothing else: ``sub`` (the user ID as
-    a string), ``iat`` (when it was issued), and ``exp`` (when it expires,
-    ``ACCESS_TOKEN_EXPIRE_MINUTES`` later). Role, email, and permissions are
-    left out on purpose: a token can't be changed once issued, so anything
-    in it could go stale, and every request loads the user from the
-    database instead. The token is signed, not encrypted, so anyone holding
-    it can read the claims; that is why they contain no personal data.
+    The auth service calls this whenever it issues tokens: at sign-in, at
+    each refresh, and after a password change. The token holds three claims
+    and nothing else: ``sub`` (the user ID as a string), ``iat`` (when it
+    was issued), and ``exp`` (when it expires, ``ACCESS_TOKEN_EXPIRE_MINUTES``
+    later). Role, email, and permissions are left out on purpose: a token
+    can't be changed once issued, so anything in it could go stale, and
+    every request loads the user from the database instead. The token is
+    signed, not encrypted, so anyone holding it can read the claims; that
+    is why they hold only an opaque user ID and two timestamps.
 
     The short lifetime limits the damage of a stolen token. The client
     gets a new one through the refresh token instead of signing in again.
@@ -172,9 +214,10 @@ def decode_access_token(token: str) -> uuid.UUID:
 
     The token is accepted only if it was signed with ``JWT_SECRET_KEY``
     using HS256, contains ``sub``, ``iat``, and ``exp``, hasn't expired, and
-    wasn't issued in the future, and if ``sub`` is a valid UUID. Claims are
-    required explicitly because PyJWT checks ``exp`` only when it's present,
-    and a token without one would never expire.
+    wasn't issued in the future, and if ``sub`` is a string holding a UUID.
+    PyJWT makes every check but the UUID one, which ``uuid.UUID`` makes. Claims
+    are required explicitly because PyJWT checks ``exp`` only when it's
+    present, and a token without one would never expire.
 
     Every failure raises the same error with the same message, so a caller
     can't tell which check failed. The token only proves identity: the
@@ -189,8 +232,9 @@ def decode_access_token(token: str) -> uuid.UUID:
 
     Raises:
         AuthenticationError: If the token is malformed, tampered with,
-            signed with another key or algorithm, expired, or missing a
-            required claim, or if its subject isn't a UUID.
+            signed with another key or algorithm, expired, issued in the
+            future, or missing a required claim, or if its subject isn't a
+            string holding a UUID.
     """
     try:
         payload: dict[str, Any] = jwt.decode(
@@ -217,7 +261,7 @@ def generate_refresh_token() -> str:
     hash says so.
 
     Returns:
-        The raw token, about 43 characters long. It is sent to the client
+        The raw token, always 43 characters long. It is sent to the client
         once, in the cookie, and never stored or logged.
     """
     return secrets.token_urlsafe(32)
@@ -242,14 +286,17 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def check_password(password: str, password_hash: str | None) -> bool:
-    """Check a sign-in password, taking the same time whether or not the user exists.
+def verify_login_password(password: str, password_hash: str | None) -> bool:
+    """Verify a sign-in password, taking the same time whether or not the user exists.
 
     When no user matched the email, the caller passes None. The password is
     then verified against ``_DUMMY_HASH`` so the slow Argon2 work still
     happens, and response times can't reveal which emails have accounts.
     The result of that check is ignored and False is returned explicitly,
     so a missing user can never sign in, whatever the dummy hash is.
+
+    Sign-in is the one place that needs this. Where the user is already
+    known, such as a password change, ``verify_password`` is the right call.
 
     Args:
         password: The password the user submitted.
@@ -269,18 +316,24 @@ def check_password(password: str, password_hash: str | None) -> bool:
 def set_refresh_cookie(response: Response, token: str) -> None:
     """Send the refresh token to the browser in its protected cookie.
 
-    Each cookie setting closes off one way to steal or misuse the token:
+    The auth router calls this with each new refresh token: at sign-in, at
+    each refresh, and after a password change. Each cookie setting closes
+    off one way to steal or misuse the token:
 
     - ``HttpOnly``: page scripts can't read it, so an XSS bug can't copy it.
     - ``SameSite=Strict``: the browser never sends it with requests started
       by another site, which blocks CSRF.
     - ``Path=/api/v1/auth``: it is sent only to the auth endpoints, not with
       every API call.
-    - ``Secure`` in production: it is sent only over HTTPS. It is off
-      elsewhere because local development uses plain HTTP, where a secure
-      cookie would never be sent.
-    - ``Max-Age``: the browser drops it when the token expires,
-      ``REFRESH_TOKEN_EXPIRE_DAYS`` after sign-in.
+    - ``Secure`` in production: it is sent only over HTTPS. The other
+      environments use plain HTTP, where the test client never returns a
+      ``Secure`` cookie and browsers return one at most to ``localhost``,
+      so the flag is off there.
+    - ``Max-Age``: always the full ``REFRESH_TOKEN_EXPIRE_DAYS``. That
+      matches the token at sign-in and after a password change, which each
+      start a new window. A refreshed token keeps the old expiry, so its
+      cookie outlives it; the server checks the real expiry, so ADR-0004
+      accepts this as harmless.
 
     Args:
         response: The response that will carry the ``Set-Cookie`` header.
@@ -326,3 +379,34 @@ def clear_refresh_cookie(response: Response) -> None:
         path="/api/v1/auth",
         secure=settings.is_production,
     )
+
+
+def forbid_caching(response: Response) -> None:
+    """Tell every cache not to store a response that carries tokens.
+
+    The auth router calls this on each response that issues tokens: at
+    sign-in, at each refresh, and after a password change. Each one holds
+    the access token in its body and the refresh token in its
+    ``Set-Cookie`` header, and RFC 6749 §5.1 says a response that holds
+    tokens must carry both headers set here:
+
+    - ``Cache-Control: no-store``: no cache, private or shared, may keep
+      any part of the response or use it to answer another request
+      (RFC 9111 §5.2.2.5).
+    - ``Pragma: no-cache``: a header from HTTP/1.0, before
+      ``Cache-Control`` existed. RFC 9111 §5.4 deprecates it and notes
+      that its meaning in a response was never specified, so it adds
+      little, but RFC 6749 requires it.
+
+    A cache that follows HTTP keeps a ``POST`` response only when it has
+    explicit freshness information and a matching ``Content-Location``
+    (RFC 9110 §9.3.3), which these never have, so the headers are what
+    stops any other cache, such as a proxy that ignores that rule, from
+    storing tokens. A refused request gets neither header: its error
+    response holds no token.
+
+    Args:
+        response: The response that will carry the tokens.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"

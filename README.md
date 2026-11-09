@@ -54,8 +54,9 @@ Behind those endpoints:
 - **One error format** for every failure, including the ones FastAPI and Starlette raise
   themselves: `{"error": {"code", "message", "details", "request_id"}}`.
 - **A request ID** on every request, returned in the `X-Request-ID` header, included in
-  error bodies, and written in one log line per request with the method, path, status and
-  duration — so a failure a user reports can be found in the logs.
+  error bodies, and written in one log line per request with the signed-in user's ID, the
+  method, path, status and duration, but never the query string — so a failure a user
+  reports can be found in the logs.
 - **A database layer** that gives every future table a UUID primary key and timezone-aware
   UTC timestamps, with Alembic wired to the models.
 - **User accounts.** A `users` table whose rules hold even for writes that skip the
@@ -63,7 +64,7 @@ Behind those endpoints:
   defined roles. Passwords are stored only as Argon2id hashes.
 - **The first Admin.** `python -m app.cli create-admin` creates the first account on an
   empty database. The password is typed twice at a hidden prompt, never passed as an
-  argument, and must be 12 to 128 characters. The command refuses when an active Admin
+  argument, and must be 15 to 128 characters. The command refuses when an active Admin
   already exists.
 - **Sessions that can be ended.** The access token is a short-lived JWT the web app will
   keep in memory only. The refresh token travels only in an `HttpOnly`, `SameSite=Strict`
@@ -172,7 +173,7 @@ uv sync
 uv run alembic upgrade head
 
 # 5. Create the first Admin (asks for the password twice, hidden)
-uv run python -m app.cli create-admin --email admin@hospital.test --full-name "Ada Admin"
+uv run python -m app.cli create-admin --email admin@example.com --full-name "Ada Admin"
 
 # 6. Run the API
 uv run fastapi dev app/main.py
@@ -189,7 +190,7 @@ has to be replaced; the database URLs match the Compose file.
 
 ```bash
 cd backend
-uv run pytest                 # 245 tests
+uv run pytest                 # the whole suite
 uv run pytest --cov=app       # with coverage; CI requires at least 80%
 ```
 

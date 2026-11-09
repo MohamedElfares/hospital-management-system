@@ -13,24 +13,29 @@ a token's hash, as the service does, and read a row back by its raw value.
 Sign-in returns an access token that names the user and stores only the
 hash of a new refresh token, which expires after the configured number of
 days; each sign-in adds a session of its own and leaves the user's others
-working. It records the sign-in time, accepts the email
-in any case and with spaces around it, and lets a user with a pending
-password change in. Every failed sign-in raises the very same
-``AuthenticationError`` and writes nothing, and an unknown email and a
-deactivated account still run the password check. No sign-in logs a
-password, the stored hash, or a token. A valid access token is turned back into the active
-user it names, looked up once by the ID inside it; every other token gets
-the same error, and one that doesn't decode gets it before any lookup.
-Refresh rotates the token and keeps its expiry. A rotated token presented again revokes every
-token of its user, commits that, and logs one warning without the token,
-however old it is, while every other unusable token is refused with the
-same error and no alarm. Sign-out revokes only the presented token, or
-the replacement of one a refresh has rotated, and ignores a token it
-can't use. A password change refuses a wrong current password or an
-unchanged new one with a 400; otherwise it replaces the hash, clears the
-forced-change flag, ends every session, and starts a new one, all
-committed. The password-change gate refuses a user with a pending change
-with a 403 and a code of its own.
+working. It records the sign-in time, accepts the email in any case and
+with spaces around it, and lets a user with a pending password change in.
+Every failed sign-in raises the very same ``AuthenticationError`` and
+writes nothing, and an unknown email and a deactivated account still run
+the password check. No sign-in logs a password, the stored hash, or a
+token.
+
+A valid access token is turned back into the active user it names, looked
+up once by the ID inside it, even while a password change is pending;
+every other token gets the same message, and one that doesn't decode gets
+it before any lookup. Refresh rotates the token, keeps its expiry, and
+stays open while a password change is pending. A rotated token presented
+again revokes every token of its user, commits that, and logs one warning
+without the token, however old it is, while every other unusable token,
+one revoked without rotation included, is refused with the same message
+and ends no session.
+
+Sign-out revokes only the presented token, or the replacement of one a
+refresh has rotated, and ignores a token it can't use. A password change
+refuses a wrong current password or an unchanged new one with a 400;
+otherwise it replaces the hash, clears the forced-change flag, ends every
+session, and starts a new one, all committed. The password-change gate
+refuses a user with a pending change with a 403 and a code of its own.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -741,7 +746,12 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
 
 
 def test_a_valid_token_returns_its_user(db_session: Session, user: User) -> None:
-    """A freshly issued token for an active user returns that user."""
+    """A freshly signed access token for an active user returns that user.
+
+    The token is signed directly, as a sign-in signs it, so the test needs
+    nothing but the ``user`` fixture's account. The user returned must
+    have the ID the token names.
+    """
     access_token = create_access_token(user.id)
     authenticated_user = service.get_authenticated_user(db_session, access_token)
 
@@ -761,15 +771,22 @@ def test_an_unusable_token_raises_the_generic_error(
     user: User,
     access_token: str,
 ) -> None:
-    """Every token that can't identify an active user gets the same 401 error.
+    """A token that doesn't decode, or that names no account, gets the generic error.
 
-    A garbage string and an empty one, which is what a bare ``Bearer``
-    header produces, fail to decode. The unknown-user token is correctly
-    signed but names an id nobody has. The ``user`` fixture is there as a
-    decoy: with a real active user in the table, a lookup that ignored the
-    id would find that user, and the test would fail. Expired, tampered,
-    and wrong-key tokens are covered in ``test_security.py``. The message
-    is compared with a literal, so it can't drift from the decoder's.
+    A garbage string fails to decode, and so does an empty one, which is
+    what a bare ``Bearer`` header produces. The unknown-user token is
+    correctly signed but names an ID no account has. The ``user`` fixture
+    is a decoy: with an active account in the table, a lookup that ignored
+    the ID would find it, and the test would fail. The first two messages
+    come from ``decode_access_token`` and the third from the service, so
+    comparing all three with one literal keeps the two copies of the text
+    the same. The test compares the class and the message only.
+
+    The unknown-user token is signed when the module is imported, so the
+    case reaches the lookup only while the test runs within the access
+    token's lifetime of the import; after that, the token fails to decode
+    like the other two. Expired, tampered, and wrong-key tokens are tested
+    in ``tests/test_security.py``.
     """
     with pytest.raises(AuthenticationError) as exc_info:
         service.get_authenticated_user(db_session, access_token)
@@ -781,12 +798,19 @@ def test_a_token_stops_working_once_its_user_is_deactivated(
     db_session: Session,
     user: User,
 ) -> None:
-    """A token issued before deactivation is refused once the user is inactive.
+    """A token signed before deactivation is refused once the account is inactive.
 
-    The token is still correctly signed and unexpired, so only the database
-    read can catch this: deactivation applies to the next request, not
-    when the token runs out. The error is the generic one, so the holder
-    can't tell the account was deactivated.
+    The token is still correctly signed and unexpired, so only the check of
+    the account can turn it away: deactivation applies to the next request,
+    not when the token runs out. The message is the generic one, so the
+    holder can't tell the account was deactivated.
+
+    The flag is set on the session's copy of the account and flushed, and
+    ``get_user_by_id`` finds that copy without a query, so the test sees
+    the check but not a read from the database.
+    ``test_me_rejects_a_deactivated_user`` in ``tests/test_auth_api.py``
+    goes through a request, whose session reads the account from the
+    database.
     """
     access_token = create_access_token(user.id)
     user.is_active = False
@@ -805,10 +829,12 @@ def test_a_user_who_must_change_their_password_is_still_authenticated(
 ) -> None:
     """A pending password change doesn't stop the token identifying the user.
 
-    The current-user endpoint must keep working in this state, so the web
-    app can show the change-password screen. The password-change gate
-    belongs to the routes it covers, not to this function, and this test
-    fails if it is moved here.
+    ``GET /auth/me`` must keep working in this state, so the web app can
+    read the flag and show the change-password screen. The password-change
+    gate belongs to the routes it covers, not to this function, and this
+    test fails if it is moved here. The flag is set explicitly, so the test
+    doesn't depend on the database default that the ``user`` fixture's
+    account gets.
     """
     access_token = create_access_token(user.id)
     user.must_change_password = True
@@ -822,14 +848,15 @@ def test_a_bad_token_never_reaches_the_database(
     db_session: Session,
     lookup_calls: list[uuid.UUID],
 ) -> None:
-    """A token that fails to decode is rejected before any user lookup.
+    """A token that fails to decode is refused before any user lookup.
 
-    Decoding needs no database, so it runs first and junk tokens never cost
-    a query. The error alone can't show this: code that swallowed the
-    decode error and then looked up a made-up id would also end in the
-    generic 401, so the unusable-token test would still pass. Only the
-    ``lookup_calls`` spy sees the difference, and it must record nothing
-    here. The next test is its positive control.
+    Decoding needs no database, so it runs first, and a junk token never
+    costs the user lookup, the only query this function makes. The error
+    alone can't show this: code that swallowed the decode error and then
+    looked up a made-up ID would end in the same generic error, so the
+    unusable-token test would still pass. Only the ``lookup_calls`` spy
+    sees the difference, and it must record nothing here. The next test is
+    its positive control.
     """
     with pytest.raises(AuthenticationError) as exc_info:
         service.get_authenticated_user(db_session, "not-a-token")
@@ -843,13 +870,13 @@ def test_a_valid_token_looks_up_the_user_it_names(
     user: User,
     lookup_calls: list[uuid.UUID],
 ) -> None:
-    """A valid token leads to exactly one lookup, by the id inside it.
+    """A valid token leads to exactly one lookup, by the ID inside it.
 
     This is the positive control for the test above. An empty call list
     there would also appear if the spy were patched in the wrong place and
-    never called, so this test shows the same spy does record a lookup
-    when one happens. It also shows the user is loaded by the id the token
-    carries, and only once.
+    never called, so this test shows that the same spy records a lookup
+    when one happens. It also shows that the account is looked up by the
+    ID the token carries, and only once.
     """
     authenticated_user = service.get_authenticated_user(db_session, create_access_token(user.id))
 
@@ -858,7 +885,12 @@ def test_a_valid_token_looks_up_the_user_it_names(
 
 
 def test_refresh_returns_an_access_token_for_the_user(db_session: Session, user: User) -> None:
-    """A valid refresh token gets a new access token that names its owner."""
+    """A valid refresh token gets a new access token that names its owner.
+
+    Decoding proves the token is signed with the right key, hasn't expired,
+    and carries the owner's ID as a UUID, as the first sign-in test checks
+    for sign-in.
+    """
     raw_refresh_token = _save_refresh_token(db_session, user)
     issued_tokens = service.refresh(db_session, raw_refresh_token)
 
@@ -866,11 +898,13 @@ def test_refresh_returns_an_access_token_for_the_user(db_session: Session, user:
 
 
 def test_refresh_issues_a_new_refresh_token(db_session: Session, user: User) -> None:
-    """Refresh returns a different refresh token, saved and still usable.
+    """Refresh returns a different refresh token, whose row is saved and unrevoked.
 
-    Checking the saved row matters more than the inequality: a refresh that
+    Finding the row matters more than the inequality: a refresh that
     returned a random string without storing it would hand the client a
-    token its next refresh could never use.
+    token its next refresh could never use. ``_token_row`` finds the row by
+    the new token's hash and fails if there is none. The row's expiry is
+    checked by ``test_refresh_keeps_the_old_expiry``.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     issued_tokens = service.refresh(db_session, raw_refresh_token)
@@ -888,7 +922,10 @@ def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
 
     Each row is found by the hash of its own raw value: the presented token
     for the old row, the returned token for the new one. The link is what
-    lets a later investigation follow a chain of rotations.
+    marks the old token as rotated, so presenting it again raises the reuse
+    alarm rather than a quiet refusal, and it lets an investigation follow
+    a chain of rotations. The user holds no other token here, so the test
+    can't see a refresh that also ends the user's other sessions.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     issued_tokens = service.refresh(db_session, raw_refresh_token)
@@ -900,11 +937,13 @@ def test_refresh_revokes_the_old_token_and_links_it_to_the_new_one(
 
 
 def test_refresh_keeps_the_old_expiry(db_session: Session, user: User) -> None:
-    """The replacement token expires exactly when the original one did.
+    """The replacement token expires exactly when the presented one did.
 
-    The original expiry is three days away, not the configured seven, so a
-    refresh that started a fresh window would give a visibly different
-    value. Keeping it means everyone signs in again at least once a window.
+    The presented token expires in three days, not the default seven, and
+    the two expiries are compared exactly, so a refresh that started a
+    fresh window of any length fails. Keeping the expiry ends a session a
+    fixed time after it started, however often it is refreshed, so everyone
+    signs in again at least once a window.
     """
     original_expires_at = datetime.now(UTC) + timedelta(days=3)
     raw_refresh_token = _save_refresh_token(db_session, user, expires_at=original_expires_at)
@@ -915,10 +954,12 @@ def test_refresh_keeps_the_old_expiry(db_session: Session, user: User) -> None:
 
 
 def test_refresh_works_while_a_password_change_is_pending(db_session: Session, user: User) -> None:
-    """A user who must change their password still gets a working session.
+    """A user who must change their password can still refresh.
 
     The web app refreshes after a reload and then shows the change-password
-    screen, so refresh must stay open in this state.
+    screen, so refresh must stay open in this state (plan §8.1). The flag
+    is set explicitly, so the test doesn't depend on the database default,
+    and the new access token must name the user.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     user.must_change_password = True
@@ -934,7 +975,9 @@ def test_a_refresh_token_works_only_once(db_session: Session, user: User) -> Non
     """Presenting the same refresh token a second time gets the generic error.
 
     This is rotation seen from the client: the first refresh replaces the
-    token, so the second use is treated as reuse.
+    token, so the second use is reuse. The test sees only the refusal and
+    its message; what reuse does besides, revoking the user's tokens and
+    logging a warning, is checked by the reuse tests below.
     """
     raw_refresh_token = _save_refresh_token(db_session, user)
     service.refresh(db_session, raw_refresh_token)
@@ -951,11 +994,12 @@ def test_an_unusable_refresh_token_raises_the_generic_error(
     user: User,
     case: str,
 ) -> None:
-    """Every unusable refresh token gets the same error and message.
+    """Every unusable refresh token raises ``AuthenticationError`` with the same message.
 
     A missing cookie, an empty one, an unknown token, an expired one, and a
-    deactivated owner are indistinguishable from outside, so the reply
-    never says which check failed.
+    deactivated owner must look the same from outside, so the reply never
+    says which check failed. ``_present_token`` builds each case's value.
+    The test compares the class and the message only.
     """
     raw_refresh_token = _present_token(db_session, user, case)
 
@@ -974,8 +1018,11 @@ def test_an_unusable_refresh_token_writes_nothing(
     """A failed refresh adds no token and revokes none.
 
     A valid token is saved first, so there is something a faulty refresh
-    could wrongly change, and rows are counted after each case's own setup.
-    Reuse is the only failure that writes, and it has its own tests.
+    could wrongly change, and the rows are counted after each case's own
+    setup, which saves a second token for the expired and deactivated-owner
+    cases. The rows are read in the test's session, so a token the refresh
+    only added would show too. Reuse is the only failure that writes, and
+    it has tests of its own.
     """
     _save_refresh_token(db_session, user)
     raw_refresh_token = _present_token(db_session, user, case)
@@ -996,10 +1043,13 @@ def test_reusing_a_rotated_token_revokes_every_token_of_the_user(
 ) -> None:
     """Presenting a rotated token again ends the user's other sessions too.
 
-    The user also holds an active token, as on a second device. A token
+    The user also holds an unrevoked token, as on a second device. A token
     that was already replaced coming back means a copy exists, and the
-    server can't tell the real user from a thief, so the active token is
-    revoked as well.
+    server can't tell the real user from a thief, so every token of the
+    user is revoked, the other device's included, which the test reads
+    back. The message is the generic one. The owner is active, as in every
+    reuse test, so the test can't see a refresh that checks the account
+    before reuse.
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1047,9 +1097,12 @@ def test_reuse_is_logged_without_the_token(
 ) -> None:
     """Reuse logs exactly one warning naming the user, and never the token.
 
-    The warning lets someone find the incident later. The raw token must
-    not appear anywhere in the captured logs, because anyone who can read
-    the logs could otherwise use it.
+    The warning lets someone find the incident later. Records are captured
+    from WARNING up and only WARNING records are counted, so a line at
+    another level fails. The raw token must not appear anywhere in the
+    captured text, because anyone who can read the logs could otherwise
+    use it. The test reads neither the record's logger nor the token's ID,
+    and the line carries no request ID to check.
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
 
@@ -1064,10 +1117,12 @@ def test_reuse_is_logged_without_the_token(
 
 
 def test_an_expired_token_does_not_revoke_the_others(db_session: Session, user: User) -> None:
-    """An expired token is only rejected; the user's other session survives.
+    """An expired token is only refused; the user's other session survives.
 
-    Tokens expire whenever someone stays away for a while, so treating
-    expiry like reuse would sign ordinary users out on every device.
+    The token ran out a second ago and was never revoked or rotated, as a
+    session that simply ended leaves it. Tokens expire whenever someone
+    stays away for a while, so treating expiry like reuse would sign
+    ordinary users out on every device.
     """
     raw_expired_token = _save_refresh_token(
         db_session,
@@ -1097,7 +1152,7 @@ def test_an_expired_rotated_token_still_raises_the_alarm(
     and its replacement share an expiry a day in the past, as a refresh
     copies it, and the other device's token is unexpired. A refresh that
     checked expiry first, or a token lookup that skipped expired tokens,
-    would answer the same 401 with no warning and no revocation.
+    would raise the same error with no warning and no revocation.
     """
     expires_at = datetime.now(UTC) - timedelta(days=1)
     replacement_row = _token_row(
@@ -1128,7 +1183,8 @@ def test_an_expired_rotated_token_still_raises_the_alarm(
 def test_reuse_leaves_other_users_tokens_alone(db_session: Session, user: User) -> None:
     """Reuse ends the sessions of the token's owner and nobody else.
 
-    The repository tests prove the revocation query filters by user; this
+    Another user is saved with an unrevoked token of their own. The
+    repository tests prove the revocation query filters by user; this
     proves the service passes the owner of the presented token, so a
     stolen token can never sign out the rest of the hospital.
     """
@@ -1500,12 +1556,12 @@ def test_a_token_revoked_without_rotation_is_refused_quietly(
 ) -> None:
     """A token revoked on purpose gets the generic error and raises no alarm.
 
-    The token has ``revoked_at`` but no ``replaced_by_id``, as a sign-out
-    or a password change leaves it. The server ended it on purpose, so it
-    is not a stolen copy: the user's other device keeps its session, and
-    nothing is logged as a warning. Without this, another device
-    refreshing after a password change would sign out the device that
-    made the change.
+    The token was revoked five minutes ago and has no ``replaced_by_id``,
+    as a sign-out or a password change leaves it. The server ended it on
+    purpose, so it is not a stolen copy: the user's other device keeps its
+    session, and no WARNING record is logged. Without this, another device
+    refreshing after a password change would sign out the device that made
+    the change.
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
     raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)

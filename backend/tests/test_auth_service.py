@@ -43,12 +43,12 @@ replacement's when the token was rotated. A password change stores a
 hash only the new password matches, clears the forced-change flag,
 revokes every session the user had, and starts a new one with a fresh
 window, all in one commit, so a change whose commit fails saves
-nothing, and leaves every other account alone; a wrong current
-password or an unchanged new one gets a 400 with a message of its own
-and writes nothing, and a wrong current password is refused as wrong
-even when the new one is the real password. The password-change gate
-refuses a user with a pending change with a 403 and a code of its own,
-and lets every other user through.
+nothing, and leaves the sign-in time and every other account alone; a
+wrong current password or an unchanged new one gets a 400 with a
+message of its own and writes nothing, and a wrong current password is
+refused as wrong even when the new one is the real password. The
+password-change gate refuses a user with a pending change with a 403
+and a code of its own, and lets every other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -1655,6 +1655,27 @@ def test_change_password_returns_a_working_session(db_session: Session, user: Us
     assert token_row.revoked_at is None
     assert before <= token_row.expires_at <= after
     assert decode_access_token(issued_tokens.access_token) == user.id
+
+
+def test_change_password_leaves_the_sign_in_time_alone(db_session: Session, user: User) -> None:
+    """A password change keeps ``last_login_at`` at the time of the last sign-in.
+
+    The user signed in a day ago. A password change is not a sign-in,
+    although it starts a new session, so a change that set the column
+    would leave it showing the latest password change instead of the
+    latest sign-in. The user is read back from the database after the
+    change, so the time checked is the one saved.
+    ``test_refresh_leaves_the_sign_in_time_alone`` checks the same for
+    refresh.
+    """
+    signed_in_at = datetime.now(UTC) - timedelta(days=1)
+    user.last_login_at = signed_in_at
+    db_session.flush()
+
+    service.change_password(db_session, user, _password_change())
+    db_session.refresh(user)
+
+    assert user.last_login_at == signed_in_at
 
 
 def test_the_password_change_is_committed(db_session: Session, user: User) -> None:

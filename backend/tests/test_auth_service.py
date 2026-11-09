@@ -1354,17 +1354,17 @@ def test_logout_leaves_the_users_other_sessions_alone(db_session: Session, user:
     presented is revoked, so logout must never revoke every token the way
     reuse detection does.
     """
-    first_raw_token = _save_refresh_token(db_session, user)
-    second_raw_token = _save_refresh_token(db_session, user)
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    raw_other_device_token = _save_refresh_token(db_session, user)
 
-    service.logout(db_session, user, first_raw_token)
+    service.logout(db_session, user, raw_refresh_token)
 
-    first_refresh_token_row = _token_row(db_session, first_raw_token)
-    second_refresh_token_row = _token_row(db_session, second_raw_token)
+    refresh_token_row = _token_row(db_session, raw_refresh_token)
+    other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert first_refresh_token_row.revoked_at is not None
-    assert first_refresh_token_row.replaced_by_id is None
-    assert second_refresh_token_row.revoked_at is None
+    assert refresh_token_row.revoked_at is not None
+    assert refresh_token_row.replaced_by_id is None
+    assert other_device_row.revoked_at is None
 
 
 @pytest.mark.parametrize(
@@ -1410,19 +1410,19 @@ def test_logout_with_a_revoked_token_raises_no_alarm(
     stay active and nothing is logged as a security warning.
     """
     five_minutes_ago = datetime.now(UTC) - timedelta(minutes=5)
-    unrevoked_raw_token = _save_refresh_token(db_session, user)
-    revoked_raw_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)
+    raw_other_device_token = _save_refresh_token(db_session, user)
+    raw_revoked_token = _save_refresh_token(db_session, user, revoked_at=five_minutes_ago)
 
     with caplog.at_level("WARNING"):
-        service.logout(db_session, user, revoked_raw_token)
+        service.logout(db_session, user, raw_revoked_token)
 
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
 
     assert warnings == []
 
-    unrevoked_token_row = _token_row(db_session, unrevoked_raw_token)
+    other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert unrevoked_token_row.revoked_at is None
+    assert other_device_row.revoked_at is None
 
 
 def test_signing_out_twice_keeps_the_first_revocation(db_session: Session, user: User) -> None:
@@ -1492,13 +1492,13 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
     db_session.add(other_user)
     db_session.flush()
 
-    user_raw_token = _save_refresh_token(db_session, user)
-    other_user_raw_token = _save_refresh_token(db_session, other_user)
+    raw_user_token = _save_refresh_token(db_session, user)
+    raw_other_user_token = _save_refresh_token(db_session, other_user)
 
-    service.logout(db_session, user, other_user_raw_token)
+    service.logout(db_session, user, raw_other_user_token)
 
-    user_refresh_token_row = _token_row(db_session, user_raw_token)
-    other_user_refresh_token_row = _token_row(db_session, other_user_raw_token)
+    user_refresh_token_row = _token_row(db_session, raw_user_token)
+    other_user_refresh_token_row = _token_row(db_session, raw_other_user_token)
 
     assert user_refresh_token_row.revoked_at is None
     assert other_user_refresh_token_row.revoked_at is None
@@ -1539,16 +1539,16 @@ def test_change_password_revokes_every_existing_session(db_session: Session, use
     anyone still holding an old token, such as someone who knew the old
     password, is signed out everywhere.
     """
-    first_token = _save_refresh_token(db_session, user)
-    second_token = _save_refresh_token(db_session, user)
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    raw_other_device_token = _save_refresh_token(db_session, user)
 
     service.change_password(db_session, user, _password_change())
 
-    first_token_row = _token_row(db_session, first_token)
-    second_token_row = _token_row(db_session, second_token)
+    refresh_token_row = _token_row(db_session, raw_refresh_token)
+    other_device_row = _token_row(db_session, raw_other_device_token)
 
-    assert first_token_row.revoked_at is not None
-    assert second_token_row.revoked_at is not None
+    assert refresh_token_row.revoked_at is not None
+    assert other_device_row.revoked_at is not None
 
 
 @pytest.mark.usefixtures("three_day_refresh_tokens")
@@ -1647,11 +1647,11 @@ def test_change_password_leaves_other_users_alone(db_session: Session, user: Use
     db_session.add(other_user)
     db_session.flush()
 
-    other_user_raw_token = _save_refresh_token(db_session, other_user)
+    raw_other_user_token = _save_refresh_token(db_session, other_user)
 
     service.change_password(db_session, user, _password_change())
 
-    other_user_token_row = _token_row(db_session, other_user_raw_token)
+    other_user_token_row = _token_row(db_session, raw_other_user_token)
 
     assert other_user_token_row.revoked_at is None
     assert other_user.password_hash == other_user_original_hash

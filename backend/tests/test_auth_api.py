@@ -19,14 +19,14 @@ with its security flags and a lifetime that follows the setting; the
 cookie holds the token whose hash was saved. Nothing a sign-in logs, at
 any level, or prints holds a password typed, the stored hash, either
 token, or an email, the account's or an unknown one, even when the form
-is refused with a 422. A wrong password and an email holding a NUL get a
-401 with the generic code and message, and no cookie. A form without a
-username, a JSON body, and a field over its limit get a 422 and no
-cookie; the last two also save no session, and the 422 for a field over
-its limit never repeats its value.
+is refused with a 422. A wrong password and an email holding a NUL get
+the standard 401, its body compared whole, with no details, and no
+cookie. A form without a username, a JSON body, and a field over its
+limit get a 422 and no cookie; the last two also save no session, and
+the 422 for a field over its limit never repeats its value.
 A password as long as the rule allows and one with a space at each end
 sign in as typed, and an email as long as the limit reaches the service
-and gets the 401 for an unknown email.
+and gets the same 401 an unknown email gets.
 
 The current-user route returns exactly the user's public fields, for a
 signed token and for the one sign-in returns, and still answers while a
@@ -477,20 +477,27 @@ def test_login_with_a_wrong_password_returns_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """A wrong password gets a 401 with the generic code and message, and no cookie.
+    """A wrong password gets the standard 401, its body compared whole, and no cookie.
 
-    The status and code are written out, not read from
+    The status and the body are written out, not read from
     ``AuthenticationError``, so a change to the API's contract fails the
-    test. The service tests compare the whole error of every kind of failed
-    sign-in; this test reads only the code and the message, so a 401 with
-    details of its own would pass (R-097).
+    test, and so does a 401 with details of its own, which could tell the
+    caller which check failed. The request ID is the one the response's
+    ``X-Request-ID`` header carries. The service tests compare the whole
+    error of every kind of failed sign-in; this test compares what reaches
+    the client.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": "Wrong Password"})
-    error = response.json()["error"]
 
     assert response.status_code == 401
-    assert error["code"] == ErrorCode.AUTHENTICATION_FAILED
-    assert error["message"] == "Incorrect email or password."
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Incorrect email or password.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
     assert "set-cookie" not in response.headers
 
 
@@ -498,23 +505,29 @@ def test_login_with_a_nul_in_the_email_returns_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """An email holding a NUL character gets the 401 an unknown email gets.
+    """An email holding a NUL character gets the same 401 an unknown email gets.
 
     PostgreSQL refuses that character, so the text must be turned away
     before any query; otherwise the request ends in a 500. The rest of the
     email and the password are the real user's, so the NUL alone decides
-    the outcome. Only the code and the message are compared, so a refusal
-    with details of its own would pass (R-097).
+    the outcome. The whole body is compared, so a refusal with details of
+    its own, which would tell the caller that the text isn't an address,
+    fails.
     """
     response = client.post(
         LOGIN_URL,
         data={"username": f"\x00{user.email}", "password": PASSWORD},
     )
-    error = response.json()["error"]
 
     assert response.status_code == 401
-    assert error["code"] == ErrorCode.AUTHENTICATION_FAILED
-    assert error["message"] == "Incorrect email or password."
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Incorrect email or password.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
     assert "set-cookie" not in response.headers
 
 
@@ -635,18 +648,23 @@ def test_login_with_an_email_of_the_longest_allowed_length_reaches_the_service(
 ) -> None:
     """An email exactly as long as the limit is checked like any other.
 
-    It gets the 401 for an unknown email, not a 422: the form refuses only
-    longer ones. No address that long is valid, so no account is needed
-    for the check to fail. Only the status and the message are compared
-    (R-097).
+    It gets the same 401 an unknown email gets, its body compared whole,
+    not a 422: the form refuses only longer ones. No address that long is
+    valid, so no account is needed for the check to fail.
     """
     response = client.post(
         LOGIN_URL, data={"username": "a" * EMAIL_MAX_LENGTH, "password": PASSWORD}
     )
-    error = response.json()["error"]
 
     assert response.status_code == 401
-    assert error["message"] == "Incorrect email or password."
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Incorrect email or password.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 def test_me_returns_exactly_the_public_fields_of_the_user(

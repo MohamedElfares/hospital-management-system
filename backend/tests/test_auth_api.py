@@ -867,6 +867,38 @@ def test_logout_clears_the_cookie_and_ends_the_session(user: User, client: TestC
     assert refresh_response.status_code == 401
 
 
+def test_logout_never_logs_the_refresh_token(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A sign-out through the API logs the refresh cookie at no level.
+
+    The service test of the same name sees only the service. Here the
+    route, its dependencies, and the middleware run too, and every record
+    down to DEBUG is captured, the test client's own included. The user
+    signs in and signs out with the cookie sign-in set, whose value may
+    not appear in the captured text. Signing out answers 204 even without
+    a cookie, so the token's row must be revoked afterwards, which shows
+    the cookie reached the route and the check isn't empty.
+    """
+    login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+    raw_refresh_token = login_response.cookies[REFRESH_COOKIE_NAME]
+
+    with caplog.at_level("DEBUG"):
+        logout_response = client.post(LOGOUT_URL, headers=headers)
+
+    token_row = db_session.scalar(
+        select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_refresh_token))
+    )
+
+    assert logout_response.status_code == 204
+    assert token_row.revoked_at is not None
+    assert raw_refresh_token not in caplog.text
+
+
 def test_logout_without_an_access_token_is_the_standard_401(user: User, client: TestClient) -> None:
     """Logout without an access token gets the standard 401 and ends nothing.
 
@@ -1043,6 +1075,51 @@ def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: Tes
     new_cookie = response.cookies[REFRESH_COOKIE_NAME]
 
     assert new_cookie not in response.text
+
+
+def test_change_password_logs_neither_the_passwords_nor_the_tokens(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A password change through the API logs no password, hash, or token at any level.
+
+    The service test of the same name sees only the service. Here the
+    route, its dependencies, the middleware, and the error handler run
+    too, and every record down to DEBUG is captured, the test client's
+    own included. A change refused for a wrong current password and a
+    successful one are sent. None of the passwords typed, the hash from
+    before the change, the new hash, read back from the database, nor
+    either token the successful change returned may appear in the
+    captured text: the access token from the body, and the refresh token
+    from the cookie.
+    """
+    headers = _auth_header(user)
+    original_hash = user.password_hash
+
+    with caplog.at_level("DEBUG"):
+        refused_response = client.post(
+            CHANGE_PASSWORD_URL,
+            json=_password_change_body(current_password="Wrong-Password-1"),
+            headers=headers,
+        )
+        response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=headers)
+
+    assert refused_response.status_code == 400
+    assert response.status_code == 200
+
+    db_session.refresh(user)
+    access_token = response.json()["access_token"]
+    refresh_token = response.cookies[REFRESH_COOKIE_NAME]
+
+    assert PASSWORD not in caplog.text
+    assert NEW_PASSWORD not in caplog.text
+    assert "Wrong-Password-1" not in caplog.text
+    assert original_hash not in caplog.text
+    assert user.password_hash not in caplog.text
+    assert access_token not in caplog.text
+    assert refresh_token not in caplog.text
 
 
 @pytest.mark.parametrize(("overrides", "message"), REFUSED_PASSWORD_CHANGES)

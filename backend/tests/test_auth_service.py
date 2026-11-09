@@ -46,9 +46,11 @@ window, all in one commit, so a change whose commit fails saves
 nothing, and leaves the sign-in time and every other account alone; a
 wrong current password or an unchanged new one gets a 400 with a
 message of its own and writes nothing, and a wrong current password is
-refused as wrong even when the new one is the real password. The
-password-change gate refuses a user with a pending change with a 403
-and a code of its own, and lets every other user through.
+refused as wrong even when the new one is the real password. No
+sign-out logs a token, and no password change logs a password, a hash,
+or a token. The password-change gate refuses a user with a pending
+change with a 403 and a code of its own, and lets every other user
+through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -1582,6 +1584,36 @@ def test_logout_ignores_another_users_token(db_session: Session, user: User) -> 
     assert other_user_refresh_token_row.revoked_at is None
 
 
+def test_logout_never_logs_the_refresh_token(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No sign-out logs the token from the cookie, at any level.
+
+    ``logout``'s docstring says the cookie's token is never logged, and
+    ``CLAUDE.md`` says no token ever is: anyone who can read the logs
+    could use one that still works. A valid token, a rotated one, whose
+    replacement is revoked instead, and an unknown one, which changes
+    nothing, are signed out while every record down to DEBUG is captured,
+    so a stray log line at any level shows. None of the three tokens may
+    appear in the captured text. The test of the same name in
+    ``tests/test_auth_api.py`` checks the route's logs.
+    """
+    raw_refresh_token = _save_refresh_token(db_session, user)
+    raw_rotated_token = _save_rotated_token(db_session, user)
+    raw_unknown_token = generate_refresh_token()
+
+    with caplog.at_level("DEBUG"):
+        service.logout(db_session, user, raw_refresh_token)
+        service.logout(db_session, user, raw_rotated_token)
+        service.logout(db_session, user, raw_unknown_token)
+
+    assert raw_refresh_token not in caplog.text
+    assert raw_rotated_token not in caplog.text
+    assert raw_unknown_token not in caplog.text
+
+
 def test_change_password_stores_a_hash_of_the_new_password(db_session: Session, user: User) -> None:
     """Changing the password stores a hash that only the new password matches.
 
@@ -1811,6 +1843,46 @@ def test_change_password_leaves_other_users_alone(db_session: Session, user: Use
 
     assert other_user_token_row.revoked_at is None
     assert other_user.password_hash == other_user_original_hash
+
+
+def test_change_password_logs_neither_the_passwords_nor_the_tokens(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No password change, refused or made, logs a password, a hash, or a token.
+
+    Plan §12 says passwords are never logged, ``CLAUDE.md`` says the same
+    of password hashes and tokens, and ``change_password``'s docstring
+    says neither password is logged. A change refused for a wrong current
+    password, one refused because the new password is the current one,
+    and a successful one run while every record down to DEBUG is
+    captured, so a stray log line at any level shows. None of the three
+    passwords typed, the hash from before the change, the new hash, which
+    ``user`` holds once the change is made, nor either token the
+    successful change issued may appear in the captured text. The test of
+    the same name in ``tests/test_auth_api.py`` checks the route's logs.
+    """
+    original_hash = user.password_hash
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(BadRequestError):
+            service.change_password(
+                db_session, user, _password_change(current_password="Wrong-Password-1")
+            )
+
+        with pytest.raises(BadRequestError):
+            service.change_password(db_session, user, _password_change(new_password=PASSWORD))
+
+        issued_tokens = service.change_password(db_session, user, _password_change())
+
+    assert PASSWORD not in caplog.text
+    assert NEW_PASSWORD not in caplog.text
+    assert "Wrong-Password-1" not in caplog.text
+    assert original_hash not in caplog.text
+    assert user.password_hash not in caplog.text
+    assert issued_tokens.access_token not in caplog.text
+    assert issued_tokens.refresh_token not in caplog.text
 
 
 def test_a_token_revoked_without_rotation_is_refused_quietly(

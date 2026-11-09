@@ -27,9 +27,10 @@ gets it before any lookup. Refresh rotates the token, keeps its expiry,
 leaves the user's other sessions and the sign-in time alone, and stays
 open while a password change is pending. A rotated token presented again
 revokes every token of its user, commits that, and logs one warning
-without the token, however old it is, while every other unusable token,
-one revoked without rotation included, is refused with the very same
-error and ends no session.
+without the token, however old it is and even when its owner is
+deactivated, while every other unusable token, one revoked without
+rotation included, is refused with the very same error and ends no
+session.
 
 Sign-out revokes only the presented token, or the replacement of one a
 refresh has rotated, and ignores a token it can't use. A password change
@@ -1119,9 +1120,9 @@ def test_reusing_a_rotated_token_revokes_every_token_of_the_user(
     that was already replaced coming back means a copy exists, and the
     server can't tell the real user from a thief, so every token of the
     user is revoked, the other device's included, which the test reads
-    back. The error is the generic one. The owner is active, as in every
-    reuse test, so the test can't see a refresh that checks the account
-    before reuse.
+    back. The error is the generic one. The owner is active here;
+    ``test_a_rotated_token_of_a_deactivated_user_still_raises_the_alarm``
+    presents one whose owner is deactivated.
     """
     raw_rotated_token = _save_rotated_token(db_session, user)
     raw_other_device_token = _save_refresh_token(db_session, user)
@@ -1238,6 +1239,40 @@ def test_an_expired_rotated_token_still_raises_the_alarm(
         replaced_by_id=replacement_row.id,
     )
     raw_other_device_token = _save_refresh_token(db_session, user)
+
+    with caplog.at_level("WARNING"), pytest.raises(AuthenticationError) as exc_info:
+        service.refresh(db_session, raw_rotated_token)
+
+    other_device_row = _token_row(db_session, raw_other_device_token)
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+
+    _assert_generic_token_error(exc_info.value)
+    assert other_device_row.revoked_at is not None
+    assert len(warnings) == 1
+    assert str(user.id) in warnings[0].getMessage()
+    assert raw_rotated_token not in caplog.text
+
+
+def test_a_rotated_token_of_a_deactivated_user_still_raises_the_alarm(
+    db_session: Session,
+    user: User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rotated token presented again ends every session even when its owner is deactivated.
+
+    Reuse is checked before the account, so a stolen copy that comes back
+    after the owner was deactivated raises the alarm like any other, as
+    plan §8.1 says of every rotated token presented again. The user also
+    holds another device's token, as a thief who refreshed first would
+    hold the replacement. A refresh that checked the account first would
+    refuse the rotated token quietly, with no warning, and leave that
+    token unrevoked, so it would work again once the account was
+    reactivated.
+    """
+    raw_rotated_token = _save_rotated_token(db_session, user)
+    raw_other_device_token = _save_refresh_token(db_session, user)
+    user.is_active = False
+    db_session.flush()
 
     with caplog.at_level("WARNING"), pytest.raises(AuthenticationError) as exc_info:
         service.refresh(db_session, raw_rotated_token)

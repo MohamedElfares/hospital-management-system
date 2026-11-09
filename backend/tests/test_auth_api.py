@@ -1,36 +1,143 @@
+"""Tests for the auth routes: sign-in, the signed-in user, sessions, sign-out, and password changes.
+
+Every test sends real requests through ``client``, so each one runs the
+whole stack: the request-context middleware, FastAPI's validation, the
+route and its dependencies, the auth service, and the exception handlers,
+against PostgreSQL inside the test's transaction. Before each request,
+``get_test_db`` commits what the test set up, as it would already be saved
+before a real request, and afterwards it rolls back what the request
+didn't commit, so a test reads back only what a request committed, and
+the rollback at the end of the test removes everything. Most tests act
+as the ``user`` fixture's account, and most that need an access token
+sign one directly with ``_auth_header``; the refresh token travels in the
+client's cookie jar, which sends it back to the auth paths by itself, as
+a browser would.
+
+Sign-in answers with a bearer access token that names the user, in a body
+that holds nothing else, and puts the refresh token in its cookie alone,
+with its security flags and a lifetime that follows the setting; the
+cookie holds the token whose hash was saved. No record a sign-in logs, at
+any level, holds either password, the stored hash, or either token. A
+wrong password and an email holding a NUL get a 401 with the generic code
+and message, and no cookie. A form without a username, a JSON body, and a
+field over its limit get a 422 and no cookie; the last two also save no
+session, and the 422 for a field over its limit never repeats its value.
+A password as long as the rule allows and one with a space at each end
+sign in as typed, and an email as long as the limit reaches the service
+and gets the 401 for an unknown email.
+
+The current-user route returns exactly the user's public fields, for a
+signed token and for the one sign-in returns, and still answers while a
+password change is pending; a missing or unusable token and a deactivated
+user's token get the standard 401, and each kind of 401 carries
+``WWW-Authenticate: Bearer``. Refresh answers with a new access token and
+a new cookie with the same flags, never puts the refresh token in the
+body, and gives a missing or unknown cookie the standard 401; a cookie
+that was already exchanged, sent again, fails, ends every session of its
+user, and logs one warning with the request ID. Sign-out answers 204,
+clears the cookie, revokes the token behind it, and logs no token; it
+needs an access token, and it works without a cookie and while a password
+change is pending.
+
+A password change answers with a new access token and a new cookie, ends
+the session from before the change, and lets only the new password sign
+in, both passwords used as typed; the new refresh token never appears in
+the body, and no password, hash, or token is logged. A refused change
+gets the standard 400 with its message and no cookie, an invalid or form
+body gets a 422, and a missing access token or a deactivated user gets a
+401. The route stays open while a password change is pending, and another
+device's old cookie is refused without signing out the device that made
+the change. A route that applies the password-change gate, which
+``gated_route`` adds, refuses a user with a pending change with a 403 and
+a code of its own, lets a user without one through, answers 401 rather
+than 403 without an access token or for a deactivated user, and lets the
+user in once the password is changed.
+
+The service's rules are tested on their own in
+``tests/test_auth_service.py``, the token and cookie helpers in
+``tests/test_security.py``, and the row locks that keep concurrent
+requests apart in ``tests/test_auth_concurrency.py``.
+"""
+
 # Random UUIDs: the X-Request-ID a test sends, to find it again in a log line.
 import uuid
+
+# UTC time zone; the expired token's times are timezone-aware UTC.
 from datetime import UTC
+
+# The current time, from which the expired token's issue and expiry times are set.
 from datetime import datetime
+
+# Moves those times into the past: issued an hour ago, expired a minute ago.
 from datetime import timedelta
 
 # Parses a Set-Cookie header, so an attribute such as Max-Age is compared whole.
 from http.cookies import SimpleCookie
 
+# PyJWT; signs the expired access token with the application's key and algorithm.
 import jwt
+
+# Test framework: fixtures, parametrize, monkeypatch, and caplog.
 import pytest
+
+# Builds a valid unsaved user; the tests give it a real password hash so it can sign in.
 from factories import make_user
+
+# Type of the application the gated_route fixture adds its route to.
 from fastapi import FastAPI
+
+# Type of the client fixture, which sends requests through the whole application.
 from fastapi.testclient import TestClient
+
+# Builds the queries that read refresh token rows back.
 from sqlalchemy import select
+
+# Type of the test's session, which saves users and reads rows back.
 from sqlalchemy.orm import Session
 
+# The signed-in user past the password-change gate; the gated route asks for it.
 from app.api.deps import CurrentUser
 
 # The module whose get_settings set_refresh_cookie reads, so a test can replace it there.
 from app.core import security
+
+# The settings: the JWT key for the expired token, and a copy with another refresh lifetime.
 from app.core.config import get_settings
+
+# Machine-readable error codes; the code each error body must carry.
 from app.core.errors import ErrorCode
+
+# The refresh cookie's name; reads the cookie from a response and sets it in the client.
 from app.core.security import REFRESH_COOKIE_NAME
+
+# Signs an access token directly, so tests of the routes that need one skip sign-in.
 from app.core.security import create_access_token
+
+# Checks a returned access token's signature and gives back the user ID it names.
 from app.core.security import decode_access_token
+
+# Makes a well-formed refresh token that the server never issued.
 from app.core.security import generate_refresh_token
+
+# Hashes a password, so a saved user can sign in with it.
 from app.core.security import hash_password
+
+# Hashes a raw refresh token, to find the row that stores it.
 from app.core.security import hash_refresh_token
+
+# The refresh_tokens table's ORM model; the tests read its rows back.
 from app.modules.auth.models import RefreshToken
+
+# The users table's ORM model; the type of the saved user.
 from app.modules.users.models import User
+
+# Longest email the sign-in form accepts; the overlong and longest-email cases follow it.
 from app.modules.users.schemas import EMAIL_MAX_LENGTH
+
+# Longest password the rule allows; the sign-in and change-password limits follow it.
 from app.modules.users.schemas import PASSWORD_MAX_LENGTH
+
+# Shortest password the rule allows; the too-short new password follows it.
 from app.modules.users.schemas import PASSWORD_MIN_LENGTH
 
 CHANGE_PASSWORD_URL = "/api/v1/auth/change-password"
@@ -42,19 +149,22 @@ REFRESH_URL = "/api/v1/auth/refresh"
 NEW_PASSWORD = "New-Password-123"
 PASSWORD = "Correct-Password-1"
 
-# Sign-in fields one character over their limit, with the form field each
-# replaces. Lengths come from the shared constants, so they follow them.
+# Each sign-in field one character over its limit, as the form field and the
+# value that replaces it in an otherwise valid form. Lengths come from the
+# shared constants, so they follow them.
 OVERLONG_LOGIN_FIELDS = [
     pytest.param("username", "a" * (EMAIL_MAX_LENGTH + 1), id="email-too-long"),
     pytest.param("password", "p" * (PASSWORD_MAX_LENGTH + 1), id="password-too-long"),
 ]
 
-# Every way the service refuses a change: the body fields that differ from a
-# valid change, and the message the user sees. Every body passes validation.
-# The last fails both checks, a wrong current password with the real one as
-# the new password, and gets the first check's message, so a caller holding
-# only an access token can't learn from the reply whether a guess of the
-# password, sent as the new one, is right.
+# Both ways the service refuses a change with a 400, each as the body fields
+# that differ from a valid change and the message the user sees; every body
+# passes validation. The last case fails both checks, a wrong current
+# password with the real one as the new password, and gets the first check's
+# message, so a caller holding only an access token can't learn from the
+# reply whether a guess of the password, sent as the new one, is right. An
+# account deactivated or deleted since the request's authentication gets a
+# 401 instead, tested in tests/test_auth_concurrency.py.
 REFUSED_PASSWORD_CHANGES = [
     pytest.param(
         {"current_password": "Wrong-Password-1"},
@@ -99,8 +209,14 @@ def user(db_session: Session) -> User:
     """Save an active user, test@example.com, whose password is ``PASSWORD``.
 
     The hash is real, unlike ``make_user``'s default, which can never sign
-    in. The user is flushed, not committed, so the test's rollback removes
-    it.
+    in. Like every account ``make_user`` builds, the user must change their
+    password, the database's default, so each sign-in of this user also
+    shows that a pending change doesn't stop one; a test of the
+    password-change gate sets the flag itself. The user is flushed, so its
+    ID and the database's defaults are filled in before the test reads
+    them, as ``_auth_header`` reads the ID. ``get_test_db`` commits it
+    before each request, as the account would already be saved, and the
+    rollback at the end of the test removes it.
 
     Args:
         db_session: The test's session.
@@ -118,9 +234,10 @@ def user(db_session: Session) -> User:
 def _auth_header(user: User) -> dict[str, str]:
     """Build an Authorization header with a fresh access token for the user.
 
-    The token is signed directly, so tests of the current-user route don't
-    depend on the login route or pay for its password check. One test goes
-    through login on purpose, to prove the two routes work together.
+    The token is signed directly, so the tests of the routes that need an
+    access token don't depend on the sign-in route or pay for its password
+    check. ``test_me_accepts_the_access_token_from_login`` goes through
+    sign-in on purpose, to prove the two routes work together.
 
     Args:
         user: The saved user the token should name.
@@ -173,18 +290,28 @@ def _password_change_body(**overrides: str) -> dict[str, str]:
 def gated_route(app: FastAPI) -> None:
     """Add a route at ``GATED_URL`` that uses the ordinary ``CurrentUser``.
 
-    Every route that uses ``CurrentUser`` today is exempt from the
-    password-change gate, so the tests need one that isn't. It is added to
-    this test's own application, which the ``client`` fixture is bound to,
-    so it goes through the real middleware and exception handlers, never
-    exists outside the test, and can't leak into other tests.
+    No route that exists today applies the password-change gate: the three
+    that need a signed-in user, sign-out, the current-user route, and the
+    password change, ask for ``CurrentUserAllowingPasswordChange``, which
+    skips it. The gate tests therefore need a route of their own that
+    applies it. It is added to this test's own application, which the
+    ``client`` fixture is bound to, so it goes through the real middleware
+    and exception handlers, never exists outside the test, and can't leak
+    into other tests.
 
     Args:
         app: The application built for this test.
     """
 
     def gated(user: CurrentUser) -> dict[str, str]:
-        """Return the caller's id, proving the route ran for that user."""
+        """Return the caller's ID, proving the route ran for that user.
+
+        Args:
+            user: The signed-in user, past the password-change gate.
+
+        Returns:
+            The user's ID as text, under ``user_id``.
+        """
         return {"user_id": str(user.id)}
 
     app.add_api_route(GATED_URL, gated, methods=["GET"])
@@ -194,7 +321,8 @@ def test_login_returns_a_bearer_access_token(user: User, client: TestClient) -> 
     """A successful sign-in answers 200 with a bearer token that names the user.
 
     The body has exactly two keys, so any extra field, such as the refresh
-    token, would fail the test. Decoding proves the token is genuine.
+    token, would fail the test. Decoding the token with the application's
+    key proves it is genuine and names that user.
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
     body = response.json()
@@ -212,9 +340,11 @@ def test_login_sets_the_refresh_cookie_with_its_security_flags(
 ) -> None:
     """Sign-in sets the refresh cookie with every security flag.
 
-    The flags are read from the raw ``Set-Cookie`` header, because the
-    client's cookie jar keeps only names and values. ``get_settings`` is
-    replaced where ``set_refresh_cookie`` looks it up, with a copy whose
+    The flags are read from the raw ``Set-Cookie`` header, the text the
+    browser receives, rather than from the client's cookie jar, which turns
+    ``Max-Age`` into an expiry time and keeps ``HttpOnly`` and ``SameSite``
+    only as nonstandard attributes. ``get_settings`` is replaced where
+    ``set_refresh_cookie`` looks it up, with a copy whose
     ``REFRESH_TOKEN_EXPIRE_DAYS`` is 3, a value no setting has by default,
     so ``Max-Age`` must be 259,200 seconds, whatever the environment
     configures. It is read from the parsed header, because text such as
@@ -284,7 +414,11 @@ def test_login_logs_neither_the_passwords_nor_the_tokens(
     sign-in and one with a wrong password are sent, and neither password,
     the account's stored hash, nor either token the successful one returned
     may appear in the captured text: the access token from the body, and
-    the refresh token from the cookie.
+    the refresh token from the cookie. Only log records are read, so a
+    sign-in that printed a password or a token would pass (R-094); no form
+    the route refuses with a 422 is sent, so a validation handler that
+    logged the typed password would pass too (R-095); and no email is
+    looked for (R-096).
     """
     with caplog.at_level("DEBUG"):
         response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
@@ -309,11 +443,13 @@ def test_login_with_a_wrong_password_returns_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """A wrong password gets a 401 in the standard error format and no cookie.
+    """A wrong password gets a 401 with the generic code and message, and no cookie.
 
     The status and code are written out, not read from
     ``AuthenticationError``, so a change to the API's contract fails the
-    test. The service tests cover every other kind of failed sign-in.
+    test. The service tests compare the whole error of every kind of failed
+    sign-in; this test reads only the code and the message, so a 401 with
+    details of its own would pass (R-097).
     """
     response = client.post(LOGIN_URL, data={"username": user.email, "password": "Wrong Password"})
     error = response.json()["error"]
@@ -328,12 +464,13 @@ def test_login_with_a_nul_in_the_email_returns_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """An email holding a NUL character gets the same 401 as an unknown email.
+    """An email holding a NUL character gets the 401 an unknown email gets.
 
     PostgreSQL refuses that character, so the text must be turned away
     before any query; otherwise the request ends in a 500. The rest of the
     email and the password are the real user's, so the NUL alone decides
-    the outcome.
+    the outcome. Only the code and the message are compared, so a refusal
+    with details of its own would pass (R-097).
     """
     response = client.post(
         LOGIN_URL,
@@ -371,9 +508,10 @@ def test_login_with_a_json_body_is_a_validation_error(
 ) -> None:
     """Correct credentials sent as JSON get a 422, and nothing is saved.
 
-    The endpoint accepts only the documented form. The credentials are
-    real, so the 422 can only come from the format, and the empty token
-    table proves the service never ran.
+    The endpoint reads only the documented form, so a JSON body leaves both
+    of its fields missing. The credentials are real, so the 422 can only
+    come from the format, and the empty token table shows that no session
+    was issued.
     """
     response = client.post(LOGIN_URL, json={"username": user.email, "password": PASSWORD})
     error = response.json()["error"]
@@ -397,11 +535,12 @@ def test_login_with_an_overlong_field_is_a_validation_error(
 
     No account's email is longer than its column, and no password can be
     set longer than the password rule allows, so such a value can never
-    sign in; the form refuses it before any lookup or password check. The
-    other field holds the user's real credentials, so the length alone
-    decides the outcome. The 422 names the field and the reason, and never
-    repeats the value, so a rejected password can't reach a log or the
-    browser's network panel.
+    sign in; the form refuses it before the route runs, so no lookup or
+    password check happens. The other field holds the user's real
+    credentials, so the length alone decides the outcome. The 422 names
+    the field and the reason, and never repeats the value, so a rejected
+    password can't reach the browser's network panel or anything else that
+    keeps responses. What the 422 logs is untested (R-095).
     """
     form = {"username": user.email, "password": PASSWORD, field: value}
 
@@ -461,9 +600,10 @@ def test_login_with_an_email_of_the_longest_allowed_length_reaches_the_service(
 ) -> None:
     """An email exactly as long as the limit is checked like any other.
 
-    It gets the standard 401 for an unknown email, not a 422: the form
-    refuses only longer ones. No address that long is valid, so no account
-    is needed for the check to fail.
+    It gets the 401 for an unknown email, not a 422: the form refuses only
+    longer ones. No address that long is valid, so no account is needed
+    for the check to fail. Only the status and the message are compared
+    (R-097).
     """
     response = client.post(
         LOGIN_URL, data={"username": "a" * EMAIL_MAX_LENGTH, "password": PASSWORD}

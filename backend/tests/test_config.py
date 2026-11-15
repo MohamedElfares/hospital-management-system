@@ -176,7 +176,12 @@ def test_settings_with_a_fixed_set_of_values_reject_any_other(field_name: str, v
         pytest.param("postgresql://hms:hms@127.0.0.1:5432/hms", id="neon-style-prefix"),
         pytest.param("postgres://hms:hms@127.0.0.1:5432/hms", id="short-scheme"),
         pytest.param("postgresql+asyncpg://hms:hms@127.0.0.1:5432/hms", id="other-driver"),
+        pytest.param("postgresql+psycopg2://hms:hms@127.0.0.1:5432/hms", id="psycopg2-driver"),
+        pytest.param(
+            "postgresql+psycopg_async://hms:hms@127.0.0.1:5432/hms", id="psycopg-async-driver"
+        ),
         pytest.param("sqlite:///hms.db", id="sqlite"),
+        pytest.param("", id="empty"),
     ],
 )
 def test_database_url_without_the_psycopg_driver_is_rejected(database_url: str) -> None:
@@ -184,9 +189,15 @@ def test_database_url_without_the_psycopg_driver_is_rejected(database_url: str) 
 
     The design depends on PostgreSQL features and on psycopg 3. Neon's
     connection string starts with ``postgresql://``, so forgetting to
-    rewrite its prefix is the likeliest mistake of all. Each URL gets the
-    one error, whose message names ``DATABASE_URL`` and the prefix it
-    needs.
+    rewrite its prefix is the likeliest mistake of all. Two cases start
+    like the right prefix, so they pin where it ends, at its ``://``:
+    ``postgresql+psycopg_async`` is SQLAlchemy's name for psycopg 3's async
+    dialect, which a check that stopped before the ``://`` would let the
+    app start with, only to fail its first query, and
+    ``postgresql+psycopg2`` names the older driver, which isn't installed.
+    An empty value is refused too, since plan §13's checklist lists empty
+    strings among the validation boundaries. Each URL gets the one error,
+    whose message names ``DATABASE_URL`` and the prefix it needs.
     """
     with pytest.raises(ValidationError) as exc_info:
         _make_settings(database_url=database_url)

@@ -46,20 +46,21 @@ The password change and sign-in races: a password change waits for the
 user's row lock that a refresh still in flight holds, held at either of those
 points, then revokes the token that refresh issued, and it never waits for a
 refresh that has only found its user. It checks the current password against
-a change committed after the request loaded the account, and refuses an
-account deactivated or deleted after loading with the error every rejected
-token gets. A sign-in whose account changes during its password check,
-because the password was changed or the account deactivated or deleted, is
-refused with the error every failed sign-in gets; a password change waits for
-the user's row lock that a sign-in still in flight holds, then revokes the
-session that sign-in started; a sign-in that meets a password change still
-in progress waits for that lock, then is refused; two sign-ins of one
-account sent together take turns at it, and each starts a session; and a
-failed sign-in checks the password without locking the account, so failed
-attempts on one account never wait for each other. Every refusal that only
-the tests in this file reach has its whole error compared, its status, code,
-message, and details, since the API sends all four. No race has a password
-change wait for another password change (R-117).
+a change committed after the request loaded the account, and against one
+still in progress, whose lock it waits for, so that of two changes sent
+together with the same password only the one that locks first succeeds. It
+refuses an account deactivated or deleted after loading with the error every
+rejected token gets. A sign-in whose account changes during its password
+check, because the password was changed or the account deactivated or
+deleted, is refused with the error every failed sign-in gets; a password
+change waits for the user's row lock that a sign-in still in flight holds,
+then revokes the session that sign-in started; a sign-in that meets a
+password change still in progress waits for that lock, then is refused; two
+sign-ins of one account sent together take turns at it, and each starts a
+session; and a failed sign-in checks the password without locking the
+account, so failed attempts on one account never wait for each other. Every
+refusal that only the tests in this file reach has its whole error compared,
+its status, code, message, and details, since the API sends all four.
 
 The same use cases without a competing request are tested in
 ``tests/test_auth_service.py``, the routes in ``tests/test_auth_api.py``, and
@@ -193,10 +194,12 @@ from app.modules.users.models import User
 # session on the race database, as SessionLocal() opens one in a request.
 SessionFactory = Callable[[], Session]
 
-# The committed user's password, a valid new one that differs from it, and a
-# wrong one, for the failed sign-ins.
+# The committed user's password, a valid new one that differs from it, a third
+# for a second password change from PASSWORD, and a wrong one, for the failed
+# sign-ins.
 PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
+THIRD_PASSWORD = "Third-Password-1"
 WRONG_PASSWORD = "Wrong-Password-1"
 
 # The message every failed sign-in gets, and the one every rejected token
@@ -506,16 +509,20 @@ def _sign_out_in_new_session(
 def _change_password_in_new_session(
     session_factory: SessionFactory,
     user: User,
+    *,
+    new_password: str = NEW_PASSWORD,
 ) -> IssuedTokens:
     """Change a user's password in a session of its own, as one request would.
 
     The user is loaded in the request's session first, as the
     authentication dependency loads the signed-in user, and the password
-    goes from ``PASSWORD`` to ``NEW_PASSWORD``.
+    goes from ``PASSWORD`` to ``new_password``.
 
     Args:
         session_factory: Makes the request's session.
         user: The user whose password changes.
+        new_password: The password to change to: ``NEW_PASSWORD``, unless
+            a second change of the same password needs another.
 
     Returns:
         The tokens of the new session the change starts.
@@ -528,7 +535,7 @@ def _change_password_in_new_session(
     with session_factory() as session:
         signed_in_user = session.get(User, user.id)
         assert signed_in_user is not None
-        data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+        data = PasswordChange(current_password=PASSWORD, new_password=new_password)
 
         return service.change_password(session, signed_in_user, data)
 
@@ -783,6 +790,35 @@ def _pause_after_the_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
         return is_correct
 
     monkeypatch.setattr(service, "verify_login_password", check_then_pause)
+    return pause
+
+
+def _pause_after_the_current_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
+    """Make the held request stop just after a password change has checked the current password.
+
+    The auth service imported ``verify_password`` by name, so the
+    replacement goes into its namespace. Only a password change calls it,
+    once it holds the user's row lock: first for the current password,
+    then to make sure the new one differs. The held request therefore
+    stops at the first call with the user's row locked and nothing written
+    yet, and passes the second, since the test has released it by then.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+
+    Returns:
+        The pause the held request will stop at.
+    """
+    pause = _Pause()
+    real_check = service.verify_password
+
+    def check_then_pause(password: str, password_hash: str) -> bool:
+        """Check the password as usual, then stop the held request."""
+        is_correct = real_check(password, password_hash)
+        pause.wait_here()
+        return is_correct
+
+    monkeypatch.setattr(service, "verify_password", check_then_pause)
     return pause
 
 
@@ -1410,9 +1446,10 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
     at the start, it would succeed and silently overwrite the other
     device's change. The other change commits before this request asks for
     its lock, so the test shows that the check reads the stored hash
-    afresh, not that it reads it under the lock: no race has a password
-    change wait for another one, and a change that checked the passwords
-    before it took its lock would pass (R-117).
+    afresh, not that it reads it under the lock, which is what refuses a
+    change that meets another still in progress;
+    ``test_a_password_change_that_waits_for_another_is_checked_against_its_new_password``
+    shows that.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1420,7 +1457,7 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
         _change_password_in_new_session(session_factory, committed_user)
 
-        data = PasswordChange(current_password=PASSWORD, new_password="Third-Password-1")
+        data = PasswordChange(current_password=PASSWORD, new_password=THIRD_PASSWORD)
 
         with pytest.raises(BadRequestError):
             service.change_password(session, signed_in_user, data)
@@ -1430,6 +1467,70 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
     assert stored_user is not None
     assert verify_password(NEW_PASSWORD, stored_user.password_hash)
+
+
+def test_a_password_change_that_waits_for_another_is_checked_against_its_new_password(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A password change that meets another still in progress waits, then is checked against it.
+
+    Two password changes are sent together with the same current password,
+    from two devices, or by the user and someone who knows the old
+    password. The first is held just after it has checked the current
+    password, with the user's row locked and nothing written yet. The
+    second, from ``PASSWORD`` to ``THIRD_PASSWORD``, has to wait for the
+    user's lock. Once the first commits, the second reads the account
+    again under the lock, checks ``PASSWORD`` against the first change's
+    new hash, and must be refused, so it can't save its own password over
+    the first's and revoke the session the first started. The first
+    change's password must stay, and its session must be the user's only
+    token and go on refreshing.
+
+    A change that checked the passwords before it took its lock would let
+    two changes sent together both pass against the old hash, and the one
+    that locked second would then save its password over the first's and
+    revoke the session the first started; held at its check, such a change
+    holds no lock yet, so here the second goes through without waiting and
+    the race fails at once. One that locked ``FOR SHARE`` would let both
+    take the lock and then deadlock when they wrote, until PostgreSQL
+    aborted one with an error the API answers with a 500. The first change
+    is held before it writes because, once it has written its row, it holds
+    the lock every update takes, whatever lock it asked for, and a second
+    change that locked ``FOR SHARE`` would then wait and be refused, as
+    this one is.
+    """
+    pause = _pause_after_the_current_password_check(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _change_password_in_new_session(session_factory, committed_user),
+        competing=lambda: _change_password_in_new_session(
+            session_factory, committed_user, new_password=THIRD_PASSWORD
+        ),
+    )
+
+    first_change_tokens = held_future.result()
+
+    assert isinstance(first_change_tokens, IssuedTokens)
+
+    with pytest.raises(BadRequestError) as exc_info:
+        competing_future.result()
+
+    with session_factory() as session:
+        stored_user = session.get(User, committed_user.id)
+
+    assert exc_info.value.message == "Current password is incorrect."
+    assert stored_user is not None
+    assert verify_password(NEW_PASSWORD, stored_user.password_hash)
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert isinstance(
+        _refresh_in_new_session(session_factory, first_change_tokens.refresh_token),
+        IssuedTokens,
+    )
 
 
 def test_a_password_change_is_refused_when_the_account_is_deactivated_after_loading(

@@ -1561,11 +1561,15 @@ def test_only_the_new_password_signs_in(user: User, client: TestClient) -> None:
 
     assert change_response.status_code == 200
 
-    old_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
-    new_login = client.post(LOGIN_URL, data={"username": user.email, "password": NEW_PASSWORD})
+    old_password_response = client.post(
+        LOGIN_URL, data={"username": user.email, "password": PASSWORD}
+    )
+    new_password_response = client.post(
+        LOGIN_URL, data={"username": user.email, "password": NEW_PASSWORD}
+    )
 
-    assert old_login.status_code == 401
-    assert new_login.status_code == 200
+    assert old_password_response.status_code == 401
+    assert new_password_response.status_code == 200
 
 
 def test_change_password_keeps_the_spaces_around_both_passwords(
@@ -1590,12 +1594,12 @@ def test_change_password_keeps_the_spaces_around_both_passwords(
         json={"current_password": " Correct-Password-1 ", "new_password": " New-Password-123 "},
         headers=_auth_header(user),
     )
-    new_login = client.post(
+    login_response = client.post(
         LOGIN_URL, data={"username": user.email, "password": " New-Password-123 "}
     )
 
     assert response.status_code == 200
-    assert new_login.status_code == 200
+    assert login_response.status_code == 200
 
 
 def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: TestClient) -> None:
@@ -1684,7 +1688,7 @@ def test_a_refused_change_is_a_400_without_a_cookie(
 
 
 @pytest.mark.parametrize(("body", "field"), INVALID_PASSWORD_CHANGE_BODIES)
-def test_an_invalid_body_is_a_validation_error(
+def test_change_password_with_an_invalid_body_is_a_validation_error(
     user: User,
     client: TestClient,
     body: dict[str, str],
@@ -1706,7 +1710,10 @@ def test_an_invalid_body_is_a_validation_error(
         assert password not in response.text
 
 
-def test_a_form_body_is_a_validation_error(user: User, client: TestClient) -> None:
+def test_change_password_with_a_form_body_is_a_validation_error(
+    user: User,
+    client: TestClient,
+) -> None:
     """The route reads JSON only; a form body like login's is a 422."""
     response = client.post(
         CHANGE_PASSWORD_URL, data=_password_change_body(), headers=_auth_header(user)
@@ -1776,21 +1783,25 @@ def test_another_device_refreshing_after_a_change_keeps_this_session(
     session survives. Its refresh still gets a 200. The order matters:
     only the phone refreshing first can show a false alarm.
     """
-    phone_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    phone_login_response = client.post(
+        LOGIN_URL, data={"username": user.email, "password": PASSWORD}
+    )
 
-    assert phone_login.status_code == 200
+    assert phone_login_response.status_code == 200
 
-    phone_cookie = phone_login.cookies[REFRESH_COOKIE_NAME]
+    phone_cookie = phone_login_response.cookies[REFRESH_COOKIE_NAME]
 
     client.cookies.clear()
-    laptop_login = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
+    laptop_login_response = client.post(
+        LOGIN_URL, data={"username": user.email, "password": PASSWORD}
+    )
 
-    assert laptop_login.status_code == 200
+    assert laptop_login_response.status_code == 200
 
     change_response = client.post(
         CHANGE_PASSWORD_URL,
         json=_password_change_body(),
-        headers={"Authorization": f"Bearer {laptop_login.json()['access_token']}"},
+        headers={"Authorization": f"Bearer {laptop_login_response.json()['access_token']}"},
     )
 
     assert change_response.status_code == 200
@@ -1799,14 +1810,14 @@ def test_another_device_refreshing_after_a_change_keeps_this_session(
 
     client.cookies.clear()
     client.cookies.set(REFRESH_COOKIE_NAME, phone_cookie, path="/api/v1/auth")
-    phone_refresh = client.post(REFRESH_URL)
+    phone_refresh_response = client.post(REFRESH_URL)
 
     client.cookies.clear()
     client.cookies.set(REFRESH_COOKIE_NAME, laptop_new_cookie, path="/api/v1/auth")
-    laptop_refresh = client.post(REFRESH_URL)
+    laptop_refresh_response = client.post(REFRESH_URL)
 
-    assert phone_refresh.status_code == 401
-    assert laptop_refresh.status_code == 200
+    assert phone_refresh_response.status_code == 401
+    assert laptop_refresh_response.status_code == 200
 
 
 @pytest.mark.usefixtures("gated_route")

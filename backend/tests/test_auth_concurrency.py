@@ -29,14 +29,16 @@ another connection between the moment a request loads the account and the
 moment it locks it.
 
 The refresh and sign-out races: two refreshes with one cookie run one after
-the other, and the second raises the reuse alarm, which also ends the session
-the first one started. A refresh that meets a sign-out of its token waits for
-it and is refused; a sign-out that waits for a refresh of its token revokes
-the replacement that refresh issues, and a refresh of that replacement waits
-for the sign-out and is refused. The reuse alarm revokes the token of a
-refresh still in flight, held after its checks or right after it has locked
-the token, and a refresh whose user is deleted while it waits gets the usual
-refusal.
+the other, because the second waits for the user's row lock, and that one
+raises the reuse alarm, which also ends the session the first one started. A
+sign-out locks tokens but never the user, so a refresh that meets a sign-out
+of its token takes the user's lock, waits for the token's, and is refused; a
+sign-out that waits for a refresh of its token revokes the replacement that
+refresh issues; and a refresh of a replacement waits for the sign-out that is
+revoking it, and is refused. The reuse alarm waits for a refresh still in
+flight, held after its checks or right after it has locked the token, and
+then revokes the token that refresh issued. A refresh whose user is deleted
+while it waits for the user's lock is refused.
 
 The password change and sign-in races: a password change revokes the token of
 a refresh still in flight, held at either of those points, and never waits
@@ -1003,13 +1005,18 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
 ) -> None:
     """Two refreshes sent together with one cookie never both rotate it.
 
-    The first refresh is held after its checks, with its locks taken. The
-    second has to wait for it, then finds the token already rotated and
-    raises the reuse alarm, which revokes every token of the user,
-    including the one the first refresh just issued. ADR-0004 accepts that
-    trade-off, and the web app must send one refresh at a time. Without
-    the row lock both would read the token as unused, and one cookie would
-    become two working sessions with no alarm.
+    The first refresh is held after its checks, with the user's row and
+    the token's locked. The second has to wait for the user's lock, then
+    finds the token already rotated and raises the reuse alarm, which
+    revokes every token of the user, including the one the first refresh
+    just issued. ADR-0004 accepts that trade-off, and the web app must
+    send one refresh at a time. Either lock alone keeps the two refreshes
+    apart, since without the user's lock the second would wait for the
+    token's; only without both would each read the token as unused,
+    turning one cookie into two working sessions with no alarm. This test
+    therefore can't see either lock on its own: the races with a sign-out
+    pin the token's lock, and the reuse alarm's and the password change's
+    races pin the user's.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_before_issuing_tokens(monkeypatch)
@@ -1038,10 +1045,11 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     """A refresh that meets a sign-out of its token waits, then is refused.
 
     The sign-out is held after it has found and locked the token, before
-    revoking it. The refresh has to wait for that lock; once the sign-out
-    commits, the refresh reads the token as revoked, with no replacement,
-    and is refused, so a refresh sent at the same moment can't revive the
-    session that signed out. Without the lock the refresh would read the
+    revoking it. A sign-out locks no user, so the refresh takes the user's
+    lock and then has to wait for the token's; once the sign-out commits,
+    the refresh reads the token as revoked, with no replacement, and is
+    refused, so a refresh sent at the same moment can't revive the session
+    that signed out. Without the token's lock the refresh would read the
     token as unused and rotate it while the sign-out was still deciding,
     and its new session would outlive the sign-out.
     """
@@ -1072,13 +1080,14 @@ def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_t
 ) -> None:
     """A sign-out that meets a refresh of the same cookie also ends the token that refresh issues.
 
-    The refresh is held after its checks, with the token locked, so the
-    sign-out of the same token has to wait. Released, the refresh rotates
-    the token and returns a replacement, which the browser may store after
-    the sign-out has deleted the cookie. The sign-out must then revoke the
-    replacement, so no token of that session works afterwards. Before the
-    fix the sign-out found the token rotated and changed nothing, and the
-    replacement kept the session alive.
+    The refresh is held after its checks, with the user's row and the
+    token's locked, so the sign-out of the same token has to wait for the
+    token's. Released, the refresh rotates the token and returns a
+    replacement, which the browser may store after the sign-out has
+    deleted the cookie. The sign-out must then revoke the replacement, so
+    no token of that session works afterwards. Before the fix the sign-out
+    found the token rotated and changed nothing, and the replacement kept
+    the session alive.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_before_issuing_tokens(monkeypatch)
@@ -1109,11 +1118,13 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
     """A refresh of the replacement waits for the sign-out that is revoking it, then is refused.
 
     The cookie's token was already rotated, and the sign-out is held right
-    after it has locked the replacement. A refresh of that replacement, as
-    the browser that received it would send, has to wait for the lock, and
-    once the sign-out commits it finds the replacement revoked and is
-    refused. Without the lock the refresh would rotate the replacement
-    while the sign-out was deciding, and its new token would outlive the
+    after it has locked the replacement, with the cookie's token locked
+    too. A refresh of that replacement, as the browser that received it
+    would send, takes the user's lock, which a sign-out never holds, and
+    has to wait for the replacement's; once the sign-out commits, the
+    refresh finds the replacement revoked and is refused. Without the
+    sign-out's lock on the replacement the refresh would rotate it while
+    the sign-out was deciding, and its new token would outlive the
     sign-out.
     """
     raw_replacement = _commit_refresh_token(session_factory, committed_user)
@@ -1141,12 +1152,17 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
 
 
 # Where the held refresh in the next two tests stops: after all its checks,
-# or right after it has locked the token. A refresh that locked the token
-# before the user would hold only the token at the second point, and it and
-# the competing request would then wait for each other until PostgreSQL
-# aborted one, so the second point is what pins the order of the two locks.
-# That the lookup before them takes no lock at all is pinned by
+# or right after it has locked the token, holding the user's row and the
+# token's at either point. A refresh that locked the token before the user
+# would hold only the token at the second point, and it and the competing
+# request would then wait for each other until PostgreSQL aborted one, so
+# the second point is what pins the order of the two locks. That the lookup
+# before them, which finds the token's user, takes no row lock a password
+# change would wait for is pinned by
 # test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user.
+# A FOR KEY SHARE lock there passes it, since no password change waits for
+# that lock, although two refreshes of one cookie would then deadlock
+# (R-114).
 HELD_REFRESH_PAUSES = [
     pytest.param(_pause_before_issuing_tokens, id="held-before-issuing-tokens"),
     pytest.param(_pause_after_the_token_lookup, id="held-after-locking-the-token"),
@@ -1164,13 +1180,14 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     """The reuse alarm also ends a session that a refresh is issuing at that moment.
 
     A thief refreshes with the replacement of a stolen token, and that
-    refresh is held with its locks taken. The real user then presents the
-    stolen token, which was already rotated, so the alarm goes off. The
-    alarm has to wait for the held refresh, then revoke the token that
-    refresh issued along with the rest, so the thief's new session ends
-    with the others. Before the fix the alarm's revocation saw only the
-    tokens committed when it started, and the thief kept a session that
-    went on refreshing.
+    refresh is held with the user's row and its token's locked. The real
+    user then presents the stolen token, which was already rotated. That
+    refresh has to wait for the user's lock until the held one commits,
+    then finds the stolen token rotated and raises the alarm, which
+    revokes the token the held refresh issued along with the rest, so the
+    thief's new session ends with the others. Before the fix, when refresh
+    took no user lock, the alarm's revocation saw only the tokens committed
+    when it started, and the thief kept a session that went on refreshing.
     """
     raw_thief_token = _commit_refresh_token(session_factory, committed_user)
     raw_stolen_token = _commit_refresh_token(
@@ -1380,14 +1397,18 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
     session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A refresh gets the usual refusal when its user is deleted while it waits.
+    """A refresh is refused when its user is deleted while it waits.
 
-    The app never deletes users, but tests do. The deletion is held after
-    its ``DELETE``, with the user's row locked. The refresh still finds the
-    token's user, because the deletion isn't committed, and then has to
-    wait for that lock. Once the deletion commits, the refresh finds
-    neither the user nor the token, which the cascade removed, and must
-    raise the usual error rather than fail on the missing token.
+    The application never deletes users, but a development database can
+    be reset while a browser still holds a token. The deletion is held
+    after its ``DELETE``, with the user's row locked and the user's tokens
+    deleted and locked through the cascade, none of it committed. The
+    refresh still finds the token's user, because the deletion isn't
+    committed, and then has to wait for the user's lock. Once the deletion
+    commits, the refresh finds neither the user nor the token, and must be
+    refused rather than fail on the missing token. Only the error's class
+    is checked, so a refusal with a message, a code, or details of its own,
+    which would tell the token's holder why it failed, would pass (R-113).
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _Pause()

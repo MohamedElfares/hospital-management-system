@@ -17,11 +17,14 @@ function the service calls, or, for a deletion, in the helper that runs it.
 There it waits, still holding the locks it has taken. The competing request
 starts next, and ``_race`` releases the held one only once PostgreSQL shows a
 statement waiting for a lock, so every run tests the same interleaving and no
-sleep decides it; a lock that is missing fails the test after
-``TIMEOUT_SECONDS`` instead of letting it pass. A few tests run a second
-request to its end while the first is held, to show that it never waits, and
-a few commit a change from another connection between the moment a request
-loads the account and the moment it locks it.
+sleep decides it. A request that ends before its turn fails the test at once,
+with its own error if it raised one: a competing request that goes through
+because the lock under test is missing, or a request with a bug in it, which
+then shows as itself rather than as a lock or a pause that never came. The
+first test pins that. A few tests run a second request to its end while the
+first is held, to show that it never waits, and a few commit a change from
+another connection between the moment a request loads the account and the
+moment it locks it.
 
 The refresh and sign-out races: two refreshes with one cookie run one after
 the other, and the second raises the reuse alarm, which also ends the session
@@ -179,7 +182,8 @@ INVALID_TOKEN = "Invalid or expired token."
 # How long a test waits for a request to reach its pause and for a lock wait
 # to show, and how long a held request waits for the test to release it. A
 # pause or a lock wait that never comes, or a release that never does, fails
-# the test after this long instead of hanging it.
+# the test after this long instead of hanging it; a request that ends first
+# fails it at once.
 TIMEOUT_SECONDS = 10.0
 
 # Thread name prefixes; each executor names its thread with one. A pause stops
@@ -725,7 +729,42 @@ def _pause_after_the_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     return pause
 
 
-def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
+def _wait_until_the_held_request_pauses(pause: _Pause, held_future: Future[object]) -> None:
+    """Return once the held request has reached its pause.
+
+    The held request's future is checked while the test waits, so a held
+    request that ends before its pause fails the test at once rather than
+    after ``TIMEOUT_SECONDS``, with its own error if it raised one: a bug in
+    the request, such as a ``NameError`` or a database error, then shows as
+    itself instead of as a pause that never came.
+
+    Args:
+        pause: Where the held request stops.
+        held_future: The held request, running in a thread of its own.
+
+    Raises:
+        Exception: The held request's own error, if it failed before its
+            pause.
+        pytest.fail.Exception: If the held request finished without
+            reaching its pause, or didn't reach it within
+            ``TIMEOUT_SECONDS``.
+    """
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+
+    while not pause.reached.wait(0.01):
+        if held_future.done():
+            # result() raises the request's own error; one that returned
+            # went through without the pause.
+            held_future.result()
+            pytest.fail("the held request finished without reaching its pause", pytrace=False)
+
+        if time.monotonic() >= deadline:
+            pytest.fail("the held request never reached its pause", pytrace=False)
+
+
+def _wait_until_a_request_waits_for_a_lock(
+    engine: Engine, competing_future: Future[object]
+) -> None:
     """Return once a statement in the race database is waiting for a lock.
 
     PostgreSQL lists every session in ``pg_stat_activity``, and a statement
@@ -740,14 +779,23 @@ def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
     read first: polled in one transaction, a request that started waiting
     after the first poll would never appear.
 
+    Between two polls the competing request's future is checked. A request
+    that waits for a lock can't finish while the held one holds it, so one
+    that has finished never waited: it failed on its own, and its error is
+    raised as it is, or it went through, as it does when the lock under
+    test is missing. Either way the test fails at once rather than after
+    ``TIMEOUT_SECONDS``.
+
     Args:
         engine: Engine for the race database.
+        competing_future: The competing request, running in a thread of its
+            own.
 
     Raises:
-        pytest.fail.Exception: If nothing waits within ``TIMEOUT_SECONDS``.
-            Either the lock under test wasn't there, or the competing
-            request ended, or failed, before it reached one; its own error
-            isn't shown.
+        Exception: The competing request's own error, if it failed before
+            it waited for a lock.
+        pytest.fail.Exception: If the competing request finished without
+            waiting for a lock, or nothing waits within ``TIMEOUT_SECONDS``.
     """
     query = text(
         "SELECT count(*) FROM pg_stat_activity "
@@ -761,6 +809,14 @@ def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
         while time.monotonic() < deadline:
             if connection.execute(query).scalar_one():
                 return
+
+            if competing_future.done():
+                # result() raises the request's own error; one that returned
+                # went through without waiting.
+                competing_future.result()
+                pytest.fail(
+                    "the competing request finished without waiting for a lock", pytrace=False
+                )
 
             time.sleep(0.01)
 
@@ -778,10 +834,12 @@ def _race(
     Each request runs in a thread of its own. The held request starts first
     and stops at ``pause`` with its locks taken. The competing request
     starts next, and the held one is released only once the competing one
-    waits for a lock, so every run tests the same interleaving. The held
-    request is released in every case, even when a step fails, and leaving
-    the executors waits for both threads, so no request keeps a lock past
-    the test.
+    waits for a lock, so every run tests the same interleaving. A request
+    that ends before its turn, the held one before its pause or the
+    competing one before it waits, fails the race at once, with its own
+    error if it raised one. The held request is released in every case,
+    even when a step fails, and leaving the executors waits for both
+    threads, so no request keeps a lock past the test.
 
     Args:
         engine: Engine for the race database, for the lock check.
@@ -794,12 +852,10 @@ def _race(
         request returned, or raises the exception it raised.
 
     Raises:
-        AssertionError: If the held request doesn't reach its pause within
-            ``TIMEOUT_SECONDS``, which is also what a held request that
-            ends, or fails, before its pause looks like; its own error
-            isn't shown.
-        pytest.fail.Exception: If the competing request never waits for a
-            lock, from ``_wait_until_a_request_waits_for_a_lock``.
+        Exception: The held or the competing request's own error, if it
+            failed before its turn.
+        pytest.fail.Exception: If a request finished before its turn, or
+            didn't get there within ``TIMEOUT_SECONDS``.
     """
     with (
         ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as held_pool,
@@ -808,13 +864,103 @@ def _race(
         held_future = held_pool.submit(held)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the held request never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_future)
             competing_future = competing_pool.submit(competing)
-            _wait_until_a_request_waits_for_a_lock(engine)
+            _wait_until_a_request_waits_for_a_lock(engine, competing_future)
         finally:
             pause.released.set()
 
     return held_future, competing_future
+
+
+class _RequestError(Exception):
+    """The error a stand-in request raises on its own, as a bug in a request would."""
+
+
+def _fail_on_its_own() -> None:
+    """Stand in for a request that fails before its pause or its lock wait.
+
+    Raises:
+        _RequestError: Always, before it touches the database.
+    """
+    raise _RequestError("the request's own error")
+
+
+def _finish_on_its_own() -> None:
+    """Stand in for a request that goes through without its pause or its lock wait."""
+
+
+# How a request can end before its turn in a race: the held one before its
+# pause, or the competing one before it waits for a lock, by failing or by
+# going through. Each case names the request that ends early, what it does,
+# and what _race must raise at once: the request's own error, or a failure
+# that says which request finished early.
+REQUESTS_THAT_END_EARLY = [
+    pytest.param(
+        "held",
+        _fail_on_its_own,
+        _RequestError,
+        "the request's own error",
+        id="held-request-fails",
+    ),
+    pytest.param(
+        "held",
+        _finish_on_its_own,
+        pytest.fail.Exception,
+        "the held request finished without reaching its pause",
+        id="held-request-finishes",
+    ),
+    pytest.param(
+        "competing",
+        _fail_on_its_own,
+        _RequestError,
+        "the request's own error",
+        id="competing-request-fails",
+    ),
+    pytest.param(
+        "competing",
+        _finish_on_its_own,
+        pytest.fail.Exception,
+        "the competing request finished without waiting for a lock",
+        id="competing-request-finishes",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("early_request", "end_early", "expected_error", "message"), REQUESTS_THAT_END_EARLY
+)
+def test_a_race_fails_at_once_with_the_cause_when_a_request_ends_early(
+    early_request: str,
+    end_early: Callable[[], None],
+    expected_error: type[BaseException],
+    message: str,
+    race_engine: Engine,
+) -> None:
+    """A request that ends before its turn fails the race at once, and says why.
+
+    Either the held request ends early, or it waits at its pause while the
+    competing one does. The race must then fail with the request's own
+    error when it raised one, so a bug inside a request shows as itself,
+    and otherwise with a message that names the request that finished
+    early, as a competing request does when the lock under test is
+    missing. It must fail well within ``TIMEOUT_SECONDS``: before the fix
+    the race waited the whole timeout, then blamed a pause or a lock that
+    never came, and the request's own error was lost.
+    """
+    pause = _Pause()
+
+    if early_request == "held":
+        held, competing = end_early, _finish_on_its_own
+    else:
+        held, competing = pause.wait_here, end_early
+
+    started = time.monotonic()
+
+    with pytest.raises(expected_error, match=message):
+        _race(race_engine, pause, held=held, competing=competing)
+
+    assert time.monotonic() - started < TIMEOUT_SECONDS / 2
 
 
 def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
@@ -1089,7 +1235,7 @@ def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_use
         held_refresh = pool.submit(_refresh_in_new_session, session_factory, raw_token)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the refresh never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_refresh)
 
             with session_factory() as session:
                 session.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -1258,7 +1404,7 @@ def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check
         sign_in = pool.submit(_sign_in_in_new_session, session_factory, PASSWORD)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the sign-in never reached its pause"
+            _wait_until_the_held_request_pauses(pause, sign_in)
             change_account(session_factory, committed_user)
         finally:
             pause.released.set()
@@ -1327,7 +1473,7 @@ def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
         first_sign_in = pool.submit(_sign_in_in_new_session, session_factory, WRONG_PASSWORD)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the sign-in never reached its pause"
+            _wait_until_the_held_request_pauses(pause, first_sign_in)
 
             with session_factory() as session:
                 session.execute(text("SET LOCAL lock_timeout = '1s'"))

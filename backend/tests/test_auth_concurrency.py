@@ -3,10 +3,11 @@
 A row lock shows only between two transactions, so these tests can't run in
 ``db_session``, whose one transaction every query shares and which is rolled
 back at the end, as the rest of the suite does. Each request runs in a
-session of its own, as the application opens one per request, and commits
-for real, on a database these tests have to themselves: ``race_engine``
-creates it next to the test database, named after this process, migrates it
-as the test database is migrated, and drops it when the module ends.
+session of its own, as the application opens one per request, built by the
+application's ``SessionLocal`` so it has the same options, and commits for
+real, on a database these tests have to themselves: ``race_engine`` creates
+it next to the test database, named after this process, migrates it as the
+test database is migrated, and drops it when the module ends.
 ``committed_user`` commits the one account every test uses, whose password
 is ``PASSWORD``, and deletes it afterwards, its refresh tokens with it, so no
 row of one test reaches the next.
@@ -21,7 +22,8 @@ sleep decides it. A request that ends before its turn fails the test at once,
 with its own error if it raised one: a competing request that goes through
 because the lock under test is missing, or a request with a bug in it, which
 then shows as itself rather than as a lock or a pause that never came. The
-first test pins that. A few tests run a second request to its end while the
+first test pins that, and the second that each request's session comes from
+``SessionLocal``. A few tests run a second request to its end while the
 first is held, to show that it never waits, and a few commit a change from
 another connection between the moment a request loads the account and the
 moment it locks it.
@@ -88,6 +90,9 @@ from datetime import UTC
 # The current time: when a test's already rotated token was revoked.
 from datetime import datetime
 
+# Binds SessionLocal to the race engine, so each request opens SessionLocal(bind=race_engine).
+from functools import partial
+
 # Finds backend/, the directory Alembic runs in.
 from pathlib import Path
 
@@ -127,9 +132,6 @@ from sqlalchemy import update
 # Type of each request's session.
 from sqlalchemy.orm import Session
 
-# Builds the factory each request opens its session from, bound to the race database.
-from sqlalchemy.orm import sessionmaker
-
 # Cached settings; the race database is named after TEST_DATABASE_URL's database.
 from app.core.config import get_settings
 
@@ -151,6 +153,9 @@ from app.core.security import hash_refresh_token
 # Checks a password against a stored hash; tells which password an account has after a race.
 from app.core.security import verify_password
 
+# The application's session factory; each request's session comes from it, with its options.
+from app.db.session import SessionLocal
+
 # The auth repository as a module, so the pauses can replace the lookups the service calls.
 from app.modules.auth import repository
 
@@ -168,6 +173,10 @@ from app.modules.auth.service import IssuedTokens
 
 # The users table's ORM model: the committed account, and the deletions and updates of it.
 from app.modules.users.models import User
+
+# What session_factory gives the tests: called with no arguments, it opens a
+# session on the race database, as SessionLocal() opens one in a request.
+SessionFactory = Callable[[], Session]
 
 # The committed user's password, a valid new one that differs from it, and a
 # wrong one, for the failed sign-ins.
@@ -330,7 +339,7 @@ def race_engine() -> Iterator[Engine]:
 
 
 @pytest.fixture
-def session_factory(race_engine: Engine) -> sessionmaker[Session]:
+def session_factory(race_engine: Engine) -> SessionFactory:
     """Make sessions that commit for real, each on its own connection.
 
     A row lock only matters between two transactions, so these tests can't
@@ -338,22 +347,26 @@ def session_factory(race_engine: Engine) -> sessionmaker[Session]:
     is rolled back at the end. Each request opens its own session from this
     factory, as the application opens one per request, and commits for
     real; ``committed_user`` deletes what a test leaves behind.
-    ``expire_on_commit=False`` is the one option the application's
-    ``SessionLocal`` sets besides its engine, copied here rather than taken
-    from it, so an option ``SessionLocal`` gains later would reach
-    ``db_session`` but not these sessions.
+
+    The sessions are built by the application's ``SessionLocal``, as
+    ``db_session`` is, bound to the race database in place of the engine
+    ``SessionLocal`` holds, which stays bound to the development database.
+    They therefore have the application's options, ``expire_on_commit=False``
+    among them, and an option ``SessionLocal`` gains later reaches them too,
+    so the races run in sessions that behave as a request's do.
 
     Args:
         race_engine: Engine for the database these tests have to themselves.
 
     Returns:
-        A factory whose sessions run on that database.
+        A function that opens a new session on that database each time it
+        is called.
     """
-    return sessionmaker(bind=race_engine, expire_on_commit=False)
+    return partial(SessionLocal, bind=race_engine)
 
 
 @pytest.fixture
-def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
+def committed_user(session_factory: SessionFactory) -> Iterator[User]:
     """Commit a user every connection can see, then delete it and its tokens.
 
     The user is ``concurrency@example.com``, whose password is
@@ -385,7 +398,7 @@ def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
 
 
 def _commit_refresh_token(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     **overrides: object,
 ) -> str:
@@ -414,9 +427,7 @@ def _commit_refresh_token(
     return raw_token
 
 
-def _count_tokens(
-    session_factory: sessionmaker[Session], user: User, *, is_unrevoked_only: bool
-) -> int:
+def _count_tokens(session_factory: SessionFactory, user: User, *, is_unrevoked_only: bool) -> int:
     """Count a user's refresh tokens, all of them or only the unrevoked ones.
 
     Args:
@@ -440,7 +451,7 @@ def _count_tokens(
 
 
 def _refresh_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     raw_token: str,
 ) -> IssuedTokens:
     """Refresh with a token in a session of its own, as one request would.
@@ -460,7 +471,7 @@ def _refresh_in_new_session(
 
 
 def _sign_out_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     raw_token: str,
 ) -> None:
@@ -476,7 +487,7 @@ def _sign_out_in_new_session(
 
 
 def _change_password_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
 ) -> IssuedTokens:
     """Change a user's password in a session of its own, as one request would.
@@ -505,7 +516,7 @@ def _change_password_in_new_session(
         return service.change_password(session, signed_in_user, data)
 
 
-def _sign_in_in_new_session(session_factory: sessionmaker[Session], password: str) -> IssuedTokens:
+def _sign_in_in_new_session(session_factory: SessionFactory, password: str) -> IssuedTokens:
     """Sign in as the committed user in a session of its own, as one request would.
 
     The email is ``committed_user``'s, typed here as the fixture saves it.
@@ -524,7 +535,7 @@ def _sign_in_in_new_session(session_factory: sessionmaker[Session], password: st
         return service.login(session, "concurrency@example.com", password)
 
 
-def _deactivate_user_in_new_session(session_factory: sessionmaker[Session], user: User) -> None:
+def _deactivate_user_in_new_session(session_factory: SessionFactory, user: User) -> None:
     """Deactivate a user in a session of its own, as another request would.
 
     Only ``is_active`` changes. Deactivation through staff administration
@@ -542,7 +553,7 @@ def _deactivate_user_in_new_session(session_factory: sessionmaker[Session], user
 
 
 def _delete_user_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     pause: _Pause | None = None,
 ) -> None:
@@ -570,7 +581,7 @@ def _delete_user_in_new_session(
         session.commit()
 
 
-def _token_id(session_factory: sessionmaker[Session], raw_token: str) -> uuid.UUID:
+def _token_id(session_factory: SessionFactory, raw_token: str) -> uuid.UUID:
     """Return the primary key of the refresh token a raw value belongs to.
 
     Args:
@@ -963,10 +974,31 @@ def test_a_race_fails_at_once_with_the_cause_when_a_request_ends_early(
     assert time.monotonic() - started < TIMEOUT_SECONDS / 2
 
 
+def test_the_race_sessions_are_built_by_the_applications_session_factory(
+    race_engine: Engine,
+    session_factory: SessionFactory,
+) -> None:
+    """Each request's session comes from ``SessionLocal``, bound to the race database.
+
+    A session built by ``SessionLocal`` has every option the application's
+    sessions have, one added later included, so the races run in sessions
+    that behave as a request's do, instead of quietly copying some options
+    and missing the next. ``sessionmaker`` builds a subclass of ``Session``
+    of its own, its ``class_``, so a factory of these tests' own fails the
+    check even when it is given the same options, as the one before the
+    fix was. The session must still be bound to the race database, never
+    to the engine ``SessionLocal`` holds, which stays bound to the
+    development database.
+    """
+    with session_factory() as session:
+        assert isinstance(session, SessionLocal.class_)
+        assert session.get_bind() is race_engine
+
+
 def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """Two refreshes sent together with one cookie never both rotate it.
@@ -1000,7 +1032,7 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
 def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh that meets a sign-out of its token waits, then is refused.
@@ -1035,7 +1067,7 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
 def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_too(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A sign-out that meets a refresh of the same cookie also ends the token that refresh issues.
@@ -1071,7 +1103,7 @@ def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_t
 def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh of the replacement waits for the sign-out that is revoking it, then is refused.
@@ -1126,7 +1158,7 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """The reuse alarm also ends a session that a refresh is issuing at that moment.
@@ -1174,7 +1206,7 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change also ends a session another device is refreshing at that moment.
@@ -1214,7 +1246,7 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
 
 def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user(
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh takes no lock before it locks the user, so a password change never waits for it.
@@ -1252,7 +1284,7 @@ def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_use
 
 
 def test_a_password_change_is_checked_against_a_change_committed_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change is checked against the stored hash as it is now.
@@ -1283,7 +1315,7 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
 
 def test_a_password_change_is_refused_when_the_account_is_deactivated_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change saves nothing if its account is deactivated after loading.
@@ -1317,7 +1349,7 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
 
 
 def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change gets the usual refusal, not a 500, if its account is deleted after loading.
@@ -1345,7 +1377,7 @@ def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
 
 def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh gets the usual refusal when its user is deleted while it waits.
@@ -1384,9 +1416,9 @@ ACCOUNT_CHANGES_DURING_SIGN_IN = [
 
 @pytest.mark.parametrize("change_account", ACCOUNT_CHANGES_DURING_SIGN_IN)
 def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check(
-    change_account: Callable[[sessionmaker[Session], User], object],
+    change_account: Callable[[SessionFactory, User], object],
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A sign-in whose account changes while it checks the password starts no session.
@@ -1416,7 +1448,7 @@ def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check
 def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change also ends a session that a sign-in is starting at that moment.
@@ -1454,7 +1486,7 @@ def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
 
 def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """Two failed sign-ins of one account never wait for each other.

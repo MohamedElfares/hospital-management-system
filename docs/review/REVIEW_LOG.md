@@ -998,6 +998,26 @@ closes when the last stage is done, so an interrupted run is obvious.
   already covers, found in tests written a few hours before that rule.
   R-109's kind, a setting described as read when nothing reads it yet,
   is R-017's, for the second time, so no line is proposed.
+- **Stage 24's findings fixed (2026-11-15):** R-107 (`01319cf`) and
+  R-108 (`49162aa`), written at your request ("fix the openings with
+  recommendations and best practices and then push"), one commit each,
+  in ID order, both in the tests. Neither changes the code under test,
+  so there is no OpenAPI change. Steps beyond the recommendations:
+  R-107's async case is named `psycopg-async-driver`, so it can't be
+  mistaken for the asyncpg case, and R-108 includes the optional test,
+  which compares the names in upper case, the spelling the file and CI
+  use, so a name listed twice fails too. The fixes change
+  `tests/test_config.py` after this stage reviewed it, which its
+  `STATE.md` row at `62747e8` sends to the next `/review new`. Each
+  commit passes Ruff and the suite on its own, run like CI in a clean
+  worktree: 414, then 416 tests, with coverage at 99.86%, and the final
+  suite also passes reversed, shuffled twice, and at `LOG_LEVEL` INFO
+  and DEBUG. Run against the fixed suite, all six copies the fixes
+  target fail it, as do the eight controls, while the seven copies noted
+  above still pass it. R-109 is in `config.py`, your file, so it waits
+  for you: a tested copy with only its two docstring edits (the code's
+  AST identical, Ruff clean, the suite passing with it) is ready to copy
+  in, and is then committed as yours and settled.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

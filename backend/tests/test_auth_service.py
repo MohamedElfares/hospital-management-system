@@ -48,10 +48,10 @@ wrong current password or an unchanged new one gets a 400 with a
 message of its own and no details and writes nothing, and a wrong
 current password is refused as wrong even when the new one is the real
 password. No sign-out logs or prints a token, the stored hash, or the
-user's email or name, and no password change logs a password, a hash,
-or a token. The password-change gate refuses a user with a pending
-change with a 403 with a code and a message of its own and no details,
-and lets every other user through.
+user's email or name, and no password change logs or prints a password,
+a hash, a token, or the user's email or name. The password-change gate
+refuses a user with a pending change with a 403 with a code and a
+message of its own and no details, and lets every other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -1893,23 +1893,30 @@ def test_change_password_leaves_other_users_alone(db_session: Session, user: Use
     assert other_user.password_hash == other_user_original_hash
 
 
-def test_change_password_logs_neither_the_passwords_nor_the_tokens(
+def test_change_password_logs_and_prints_neither_the_secrets_nor_the_users_details(
     db_session: Session,
     user: User,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """No password change, refused or made, logs a password, a hash, or a token.
+    """No password change, refused or made, logs or prints a secret or the user's details.
 
-    Plan §12 says passwords are never logged, ``CLAUDE.md`` says the same
-    of password hashes and tokens, and ``change_password``'s docstring
-    says neither password is logged. A change refused for a wrong current
-    password, one refused because the new password is the current one,
-    and a successful one run while every record down to DEBUG is
-    captured, so a stray log line at any level shows. None of the three
-    passwords typed, the hash from before the change, the new hash, which
-    ``user`` holds once the change is made, nor either token the
-    successful change issued may appear in the captured text. The test of
-    the same name in ``tests/test_auth_api.py`` checks the route's logs.
+    Plan §12 says passwords are never logged and keeps personal data out
+    of logs, ``CLAUDE.md`` says the same of password hashes and tokens,
+    and ``change_password``'s docstring says neither password is logged.
+    The change is handed the signed-in account and reads it again, with
+    its hash, its email, and its full name. A change refused for a wrong
+    current password, one refused because the new password is the current
+    one, and a successful one run while every record down to DEBUG is
+    captured, and so is everything printed to stdout and stderr, where the
+    application's log records go too, so a stray log line at any level or
+    a stray ``print`` shows. None of the three passwords typed, the hash
+    from before the change, the new hash, which ``user`` holds once the
+    change is made, either token the successful change issued, the email,
+    nor the full name may appear in the records or in either stream; a
+    failure names each value found and where, never the value itself. The
+    test of the same name in ``tests/test_auth_api.py`` checks the route,
+    the bearer-token dependency, and the validation handler too.
     """
     original_hash = user.password_hash
 
@@ -1924,13 +1931,26 @@ def test_change_password_logs_neither_the_passwords_nor_the_tokens(
 
         issued_tokens = service.change_password(db_session, user, _password_change())
 
-    assert PASSWORD not in caplog.text
-    assert NEW_PASSWORD not in caplog.text
-    assert "Wrong-Password-1" not in caplog.text
-    assert original_hash not in caplog.text
-    assert user.password_hash not in caplog.text
-    assert issued_tokens.access_token not in caplog.text
-    assert issued_tokens.refresh_token not in caplog.text
+    printed = capsys.readouterr()
+    sensitive_values = {
+        "current password": PASSWORD,
+        "new password": NEW_PASSWORD,
+        "wrong password": "Wrong-Password-1",
+        "hash before the change": original_hash,
+        "hash after the change": user.password_hash,
+        "access token": issued_tokens.access_token,
+        "refresh token": issued_tokens.refresh_token,
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
+
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 def test_a_token_revoked_without_rotation_is_refused_quietly(

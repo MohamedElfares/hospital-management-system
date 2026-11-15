@@ -65,9 +65,11 @@ and opens the current-user route, and with one new cookie, with the
 cookie's flags, that refresh accepts; the session from before the change
 ends, and only the new password signs in afterwards, both passwords used
 as typed, spaces included. The new refresh token never appears in the
-body. Nothing a refused or a successful change logs, at any level, holds
-a password typed, the hash from before or after the change, or a token
-the change returned. A refused change gets the standard 400, compared
+body. Nothing a change logs, at any level, or prints holds a password
+typed, the hash from before or after the change, the access token sent,
+a token the change returned, the email, or the full name, whether the
+service refuses the change, the schema refuses its body, or it
+succeeds. A refused change gets the standard 400, compared
 whole, with the message for its case and no details, and no cookie; a
 body the schema refuses gets a 422 that names the field and never
 repeats a password sent, and a form body gets a 422 too. Without an
@@ -1646,31 +1648,36 @@ def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: Tes
     assert new_cookie not in response.text
 
 
-def test_change_password_logs_neither_the_passwords_nor_the_tokens(
+def test_change_password_logs_and_prints_neither_the_secrets_nor_the_users_details(
     db_session: Session,
     user: User,
     client: TestClient,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A password change through the API logs no password, no hash, and neither token it returns.
+    """A password change through the API logs and prints no password, hash, token, or user detail.
 
     The service test of the same name sees only the service. Here the
-    route, its dependencies, the middleware, and the error handler run
-    too, and every record down to DEBUG is captured, the test client's
-    own included. A change refused for a wrong current password and a
-    successful one are sent. None of the passwords typed, the hash from
-    before the change, the new hash, read back from the database, nor
-    either token the successful change returned may appear in the
-    captured text: the access token from the body, and the refresh token
-    from the cookie. What a change prints isn't captured; the access token
-    it is sent is found only when it is the same string as the one it
-    returns, which holds only when both were signed in the same second;
-    the email and the full name, which the change reads with the account,
-    aren't looked for; and no body the schema refuses is sent, although
-    FastAPI's validation error holds the real current password (R-105).
+    route, the bearer-token dependency, which takes the access token and
+    reads the account, the middleware, and the error handlers run too.
+    Every record down to DEBUG is captured, the test client's own
+    included, and so is everything printed to stdout and stderr. Four
+    changes are sent with an access token signed here, so the test knows
+    the token it sends: one refused for a wrong current password; two the
+    schema refuses with a 422, one whose new password is too short and one
+    without the new password, whose validation errors hold the body as it
+    was sent, the real current password included, so the handler for
+    them must log none of it either; and a successful one. No password
+    typed, the hash from before the change, the new hash, read back from
+    the database, the access token sent, either token the change
+    returned, the email, nor the full name may appear in the records or
+    in either stream; a failure names each value found and where, never
+    the value itself.
     """
-    headers = _auth_header(user)
+    access_token = create_access_token(user.id)
+    headers = {"Authorization": f"Bearer {access_token}"}
     original_hash = user.password_hash
+    short_password = "s" * (PASSWORD_MIN_LENGTH - 1)
 
     with caplog.at_level("DEBUG"):
         refused_response = client.post(
@@ -1678,22 +1685,45 @@ def test_change_password_logs_neither_the_passwords_nor_the_tokens(
             json=_password_change_body(current_password="Wrong-Password-1"),
             headers=headers,
         )
+        short_password_response = client.post(
+            CHANGE_PASSWORD_URL,
+            json=_password_change_body(new_password=short_password),
+            headers=headers,
+        )
+        no_new_password_response = client.post(
+            CHANGE_PASSWORD_URL, json={"current_password": PASSWORD}, headers=headers
+        )
         response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=headers)
 
+    printed = capsys.readouterr()
+
     assert refused_response.status_code == 400
+    assert short_password_response.status_code == 422
+    assert no_new_password_response.status_code == 422
     assert response.status_code == 200
 
     db_session.refresh(user)
-    access_token = response.json()["access_token"]
-    refresh_token = response.cookies[REFRESH_COOKIE_NAME]
+    sensitive_values = {
+        "current password": PASSWORD,
+        "new password": NEW_PASSWORD,
+        "wrong password": "Wrong-Password-1",
+        "short password": short_password,
+        "hash before the change": original_hash,
+        "hash after the change": user.password_hash,
+        "access token sent": access_token,
+        "access token returned": response.json()["access_token"],
+        "refresh token returned": response.cookies[REFRESH_COOKIE_NAME],
+        "email": user.email,
+        "full name": user.full_name,
+    }
+    captured_texts = {"logs": caplog.text, "stdout": printed.out, "stderr": printed.err}
 
-    assert PASSWORD not in caplog.text
-    assert NEW_PASSWORD not in caplog.text
-    assert "Wrong-Password-1" not in caplog.text
-    assert original_hash not in caplog.text
-    assert user.password_hash not in caplog.text
-    assert access_token not in caplog.text
-    assert refresh_token not in caplog.text
+    assert [
+        (name, channel)
+        for name, value in sensitive_values.items()
+        for channel, text in captured_texts.items()
+        if value in text
+    ] == []
 
 
 @pytest.mark.parametrize(("overrides", "message"), REFUSED_PASSWORD_CHANGES)
@@ -1743,10 +1773,11 @@ def test_change_password_with_an_invalid_body_is_a_validation_error(
     allows, a current password one character longer than any password can
     be, and a body without the new password. The response never repeats a
     password that was sent, so the browser's network panel can't show one.
-    Only the response is read: no test captures what the validation handler
-    logs, although FastAPI's validation error holds the body as it was
-    sent, so for the short and the missing new password it holds the real
-    current password (R-105).
+    Only the response is read here. FastAPI's validation error holds the
+    body as it was sent, so for the short and the missing new password it
+    holds the real current password, and
+    ``test_change_password_logs_and_prints_neither_the_secrets_nor_the_users_details``
+    checks that the handler logs none of it.
     """
     response = client.post(CHANGE_PASSWORD_URL, json=body, headers=_auth_header(user))
 

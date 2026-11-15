@@ -1,55 +1,223 @@
+"""Race tests for the auth service: the row locks that keep concurrent requests apart.
+
+A row lock shows only between two transactions, so these tests can't run in
+``db_session``, whose one transaction every query shares and which is rolled
+back at the end, as the rest of the suite does. Each request runs in a
+session of its own, as the application opens one per request, built by the
+application's ``SessionLocal`` so it has the same options, and commits for
+real, on a database these tests have to themselves: ``race_engine`` creates
+it next to the test database, named after this process, migrates it as the
+test database is migrated, and drops it when the module ends.
+``committed_user`` commits the one account every test uses, whose password
+is ``PASSWORD``, and deletes it afterwards, its refresh tokens with it, so no
+row of one test reaches the next.
+
+A race runs two requests, each in a thread of its own. The held request goes
+first and stops at a pause, which the test puts in its path by replacing a
+function the service calls, or, for a deletion, in the helper that runs it.
+There it waits, still holding the locks it has taken. The competing request
+starts next, and ``_race`` releases the held one only once PostgreSQL shows a
+statement waiting for a lock, so every run tests the same interleaving and no
+sleep decides it. A request that ends before its turn fails the test at once,
+with its own error if it raised one: a competing request that goes through
+because the lock under test is missing, or a request with a bug in it, which
+then shows as itself rather than as a lock or a pause that never came. The
+first test pins that, and the second that each request's session comes from
+``SessionLocal``. A few tests run a second request to its end while the
+first is held, to show that it never waits, and a few commit a change from
+another connection between the moment a request loads the account and the
+moment it locks it.
+
+The refresh and sign-out races: two refreshes with one cookie run one after
+the other, because the second waits for the user's row lock, and that one
+raises the reuse alarm, which also ends the session the first one started.
+A refresh that has only found the token's user holds no row lock yet, so a
+second refresh of its cookie never waits for it. A sign-out locks tokens but
+never the user, so a refresh that meets a sign-out of its token takes the
+user's lock, waits for the token's, and is refused; a sign-out that waits
+for a refresh of its token revokes the replacement that refresh issues; and
+a refresh of a replacement waits for the sign-out that is revoking it, and
+is refused. The reuse alarm waits for a refresh still in flight, held after
+its checks or right after it has locked the token, and then revokes the
+token that refresh issued. A refresh whose user is deleted while it waits
+for the user's lock is refused with the error every rejected token gets.
+
+The password change and sign-in races: a password change waits for the
+user's row lock that a refresh still in flight holds, held at either of those
+points, then revokes the token that refresh issued, and it never waits for a
+refresh that has only found its user. It checks the current password against
+a change committed after the request loaded the account, and against one
+still in progress, whose lock it waits for, so that of two changes sent
+together with the same password only the one that locks first succeeds. It
+refuses an account deactivated or deleted after loading with the error every
+rejected token gets. A sign-in whose account changes during its password
+check, because the password was changed or the account deactivated or
+deleted, is refused with the error every failed sign-in gets; a password
+change waits for the user's row lock that a sign-in still in flight holds,
+then revokes the session that sign-in started; a sign-in that meets a
+password change still in progress waits for that lock, then is refused; two
+sign-ins of one account sent together take turns at it, and each starts a
+session; and a failed sign-in checks the password without locking the
+account, so failed attempts on one account never wait for each other. Every
+refusal that only the tests in this file reach has its whole error compared,
+its status, code, message, and details, since the API sends all four.
+
+The same use cases without a competing request are tested in
+``tests/test_auth_service.py``, the routes in ``tests/test_auth_api.py``, and
+the repository's lookups in ``tests/test_auth_repository.py``.
+"""
+
+# Process ID, which names the race database, and the environment the Alembic subprocess inherits.
 import os
+
+# Runs alembic upgrade head against the race database in a process of its own.
 import subprocess
+
+# The running Python, so the Alembic subprocess uses this virtual environment's.
 import sys
+
+# Events that hold and release a request, and the thread name that marks the held one.
 import threading
+
+# Deadlines for the waits, the short sleep between two polls, and how long a failed race took.
 import time
+
+# Type of a token row's primary key, and of the user ID refresh's first lookup returns.
 import uuid
+
+# Type of the requests a race runs, of the callables tests take, and of SessionFactory.
 from collections.abc import Callable
+
+# Return type of the fixtures that clean up after their yield.
 from collections.abc import Iterator
+
+# Type of a running request: what _race returns, and what the waits watch for an early end.
 from concurrent.futures import Future
+
+# Runs each request in a named thread of its own, and waits for it before the test ends.
 from concurrent.futures import ThreadPoolExecutor
+
+# UTC time zone, for the revocation time of a token a test commits as already rotated.
 from datetime import UTC
+
+# The current time: when a test's already rotated token was revoked.
 from datetime import datetime
+
+# Binds SessionLocal to the race engine, so each request opens SessionLocal(bind=race_engine).
+from functools import partial
+
+# Finds backend/, the directory Alembic runs in.
 from pathlib import Path
 
+# Test framework: fixtures, parametrize, raises, fail, and the monkeypatch type.
 import pytest
-from factories import make_refresh_token
-from factories import make_user
-from sqlalchemy import Engine
-from sqlalchemy import create_engine
-from sqlalchemy import delete
-from sqlalchemy import func
-from sqlalchemy import make_url
-from sqlalchemy import select
-from sqlalchemy import text
-from sqlalchemy import update
-from sqlalchemy.orm import Session
-from sqlalchemy.orm import sessionmaker
 
+# Builds an unsaved refresh token; _commit_refresh_token gives it a real token's hash.
+from factories import make_refresh_token
+
+# Builds the unsaved account committed_user commits.
+from factories import make_user
+
+# Type of the race database's engine.
+from sqlalchemy import Engine
+
+# Builds the race database's engine, and one for the server's postgres database that creates it.
+from sqlalchemy import create_engine
+
+# Deletes the committed user, its tokens going with it: the cleanup, and the tests that delete it.
+from sqlalchemy import delete
+
+# SQL count(), for counting a user's tokens.
+from sqlalchemy import func
+
+# Parses the test database's URL, so the race database's URL can be built from it.
+from sqlalchemy import make_url
+
+# Builds the queries that count a user's tokens and find a token's ID.
+from sqlalchemy import select
+
+# Raw SQL: creating and dropping the database, lock_timeout, and the poll of pg_stat_activity.
+from sqlalchemy import text
+
+# Deactivates the committed user from another connection.
+from sqlalchemy import update
+
+# Type of each request's session.
+from sqlalchemy.orm import Session
+
+# Cached settings; the race database is named after TEST_DATABASE_URL's database.
 from app.core.config import get_settings
+
+# What a refused sign-in, refresh, or password change raises, which the API answers with 401.
 from app.core.errors import AuthenticationError
+
+# What a password change with a stale current password raises, which the API answers with 400.
 from app.core.errors import BadRequestError
+
+# Machine-readable error codes; each refusal that only these tests reach must carry the generic one.
+from app.core.errors import ErrorCode
+
+# Makes the raw value of a token a test commits.
 from app.core.security import generate_refresh_token
+
+# Hashes PASSWORD with Argon2id for the committed user, so it can sign in.
 from app.core.security import hash_password
+
+# Hashes a raw token as the service stores it; commits a token and finds its row.
 from app.core.security import hash_refresh_token
+
+# Checks a password against a stored hash; tells which password an account has after a race.
 from app.core.security import verify_password
+
+# The application's session factory; each request's session comes from it, with its options.
+from app.db.session import SessionLocal
+
+# The auth repository as a module, so the pauses can replace the lookups the service calls.
 from app.modules.auth import repository
+
+# The auth service, under test, as a module, so the pauses can replace names it looks up.
 from app.modules.auth import service
+
+# The refresh_tokens table's ORM model; the counts and the ID lookup query it.
 from app.modules.auth.models import RefreshToken
+
+# Validated password change input, built as the route receives it.
 from app.modules.auth.schemas import PasswordChange
+
+# What sign-in, refresh, and a password change return; a request that succeeded returns one.
 from app.modules.auth.service import IssuedTokens
+
+# The users table's ORM model: the committed account, and the deletions and updates of it.
 from app.modules.users.models import User
 
+# What session_factory gives the tests: called with no arguments, it opens a
+# session on the race database, as SessionLocal() opens one in a request.
+SessionFactory = Callable[[], Session]
+
+# The committed user's password, a valid new one that differs from it, a third
+# for a second password change from PASSWORD, and a wrong one, for the failed
+# sign-ins.
 PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
+THIRD_PASSWORD = "Third-Password-1"
 WRONG_PASSWORD = "Wrong-Password-1"
+
+# The message every failed sign-in gets, and the one every rejected token
+# gets, written out rather than imported from the service, so a changed text
+# fails here.
+INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
 
-# The longest any wait in these tests may take. A lock that is missing or
-# never released makes a test fail after this long instead of hanging.
+# How long a test waits for a request to reach its pause and for a lock wait
+# to show, and how long a held request waits for the test to release it. A
+# pause or a lock wait that never comes, or a release that never does, fails
+# the test after this long instead of hanging it; a request that ends first
+# fails it at once.
 TIMEOUT_SECONDS = 10.0
 
-# Thread name prefixes. The pauses stop only the held request's thread.
+# Thread name prefixes; each executor names its thread with one. A pause stops
+# only a thread whose name starts with HELD, so the competing request, and the
+# test itself, pass straight through the same replaced functions.
 HELD = "held"
 COMPETING = "competing"
 
@@ -58,9 +226,11 @@ class _Pause:
     """A point where the held request stops until the test lets it go on.
 
     The held request's thread sets ``reached`` when it arrives, still
-    holding every lock the request has taken, and waits there. The test
-    starts the competing request, waits until a lock blocks it, then sets
-    ``released``.
+    holding every lock the request has taken, and waits there; every other
+    thread passes straight through. While it waits, the test runs the
+    competing request, through ``_race`` until a lock blocks it, or to its
+    end in a test that shows the competing request never waits, and then
+    sets ``released``.
 
     Attributes:
         reached: Set by the held thread when it arrives at the pause.
@@ -75,12 +245,16 @@ class _Pause:
     def wait_here(self) -> None:
         """Stop the calling thread if it runs the held request.
 
-        Any other thread returns at once. The held one signals its arrival,
-        then blocks until the test releases it.
+        A thread runs the held request when its name starts with ``HELD``,
+        the prefix the held request's executor gives its thread. Any other
+        thread returns at once. The held one signals its arrival, then
+        blocks until the test releases it.
 
         Raises:
-            TimeoutError: If the test never releases it, so a failing test
-                can't leave the thread, and its locks, behind for good.
+            TimeoutError: If the test doesn't release it within
+                ``TIMEOUT_SECONDS``, so a failing test can't leave the
+                thread, and its locks, behind for good: the request fails,
+                and closing its session rolls back and releases its locks.
         """
         if not threading.current_thread().name.startswith(HELD):
             return
@@ -94,18 +268,22 @@ class _Pause:
 def _run_migrations(database_url: str) -> None:
     """Bring a database's schema up to date with ``alembic upgrade head``.
 
-    It runs in a subprocess, as the ``apply_migrations`` fixture runs it for
-    the test database, because ``migrations/env.py`` reads ``DATABASE_URL``,
-    and an in-process call would migrate the development database instead.
+    Alembic runs in a subprocess with ``DATABASE_URL`` set to the given
+    database, as the ``apply_migrations`` fixture runs it for the test
+    database, because ``migrations/env.py`` takes its URL from
+    ``get_settings().database_url``. In this process that cached value is
+    the development database's, so an in-process call would migrate the
+    development database instead.
 
     Args:
-        database_url: SQLAlchemy URL of the database to migrate.
+        database_url: SQLAlchemy URL of the database to migrate, with its
+            password, since the subprocess connects with it.
 
     Raises:
-        Failed: pytest's failure, with Alembic's error output, if the
-            migration fails.
+        pytest.fail.Exception: If the migration fails, with Alembic's error
+            output in the message.
     """
-    result = subprocess.run(
+    upgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=Path(__file__).resolve().parents[1],
         env=os.environ | {"DATABASE_URL": database_url},
@@ -114,8 +292,8 @@ def _run_migrations(database_url: str) -> None:
         text=True,
     )
 
-    if result.returncode != 0:
-        pytest.fail(f"Alembic migration failed:\n{result.stderr}", pytrace=False)
+    if upgrade.returncode != 0:
+        pytest.fail(f"Alembic migration failed:\n{upgrade.stderr}", pytrace=False)
 
 
 @pytest.fixture(scope="module")
@@ -127,13 +305,27 @@ def race_engine() -> Iterator[Engine]:
     same moment would see them too, and its tests that count every row of
     a table would fail. A database of their own, named after this process,
     keeps the runs apart: no other run sees these rows, and only this
-    module's requests ever wait for a lock in it. It is created next to the
-    test database, through the server's ``postgres`` database, migrated as
-    the test database is, and dropped at the end with ``FORCE``, which
-    closes any connection still open to it, even when the migration fails.
+    module's requests ever wait for a lock in it.
+
+    It is created next to the test database, through the server's
+    ``postgres`` database, so the test database's role must be allowed to
+    create databases, as the ``hms`` superuser of the Compose and CI
+    containers is; for a role that isn't, every test here errors at setup.
+    A database left with the same name by a run that was killed, whose
+    process ID this run reuses, is dropped first. The new one is migrated
+    as the test database is, and dropped at the end with ``FORCE``, even
+    when the migration failed. ``FORCE`` closes every connection still open
+    to it, a stuck request's too, while ``engine.dispose()`` closes only
+    the connections back in the pool. The engine connects as the test
+    engine does: timestamps come back in UTC, and an unreachable server
+    fails within seconds.
 
     Yields:
         An engine connected to the new database.
+
+    Raises:
+        pytest.fail.Exception: If ``TEST_DATABASE_URL`` isn't set, or the
+            migration fails, with Alembic's error output in the message.
     """
     test_database_url = get_settings().test_database_url
 
@@ -167,7 +359,7 @@ def race_engine() -> Iterator[Engine]:
 
 
 @pytest.fixture
-def session_factory(race_engine: Engine) -> sessionmaker[Session]:
+def session_factory(race_engine: Engine) -> SessionFactory:
     """Make sessions that commit for real, each on its own connection.
 
     A row lock only matters between two transactions, so these tests can't
@@ -175,32 +367,42 @@ def session_factory(race_engine: Engine) -> sessionmaker[Session]:
     is rolled back at the end. Each request opens its own session from this
     factory, as the application opens one per request, and commits for
     real; ``committed_user`` deletes what a test leaves behind.
-    ``expire_on_commit=False`` matches the application's sessions.
+
+    The sessions are built by the application's ``SessionLocal``, as
+    ``db_session`` is, bound to the race database in place of the engine
+    ``SessionLocal`` holds, which stays bound to the development database.
+    They therefore have the application's options, ``expire_on_commit=False``
+    among them, and an option ``SessionLocal`` gains later reaches them too,
+    so the races run in sessions that behave as a request's do.
 
     Args:
         race_engine: Engine for the database these tests have to themselves.
 
     Returns:
-        A factory whose sessions run on that database.
+        A function that opens a new session on that database each time it
+        is called.
     """
-    return sessionmaker(bind=race_engine, expire_on_commit=False)
+    return partial(SessionLocal, bind=race_engine)
 
 
 @pytest.fixture
-def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
+def committed_user(session_factory: SessionFactory) -> Iterator[User]:
     """Commit a user every connection can see, then delete it and its tokens.
 
-    The user's password is ``PASSWORD``. Deleting the user deletes its
-    refresh tokens through ``ON DELETE CASCADE``, so the next test starts
-    from an empty database. ``lock_timeout`` makes the cleanup fail after a
-    few seconds, rather than hang, if a thread that never finished still
-    holds a lock.
+    The user is ``concurrency@example.com``, whose password is
+    ``PASSWORD``, the only account any test here commits. Deleting it
+    deletes its refresh tokens through ``ON DELETE CASCADE``, so no row of
+    one test reaches the next. ``SET LOCAL lock_timeout`` makes the cleanup
+    fail after five seconds, rather than hang, if a request that never
+    finished still holds a lock on the user's row or on a token's;
+    ``LOCAL`` keeps the setting to the cleanup's own transaction.
 
     Args:
         session_factory: Makes the sessions that commit and clean up.
 
     Yields:
-        The committed user, detached, with its attributes loaded.
+        The committed user, detached, with the values it was saved with,
+        so reading an attribute needs no session.
     """
     with session_factory() as session:
         user = make_user(email="concurrency@example.com", password_hash=hash_password(PASSWORD))
@@ -216,11 +418,14 @@ def committed_user(session_factory: sessionmaker[Session]) -> Iterator[User]:
 
 
 def _commit_refresh_token(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     **overrides: object,
 ) -> str:
     """Commit a refresh token for a user and return its raw value.
+
+    The row stores only the token's hash, as the service stores it, so the
+    raw value returned is the token's only copy.
 
     Args:
         session_factory: Makes the session that commits the token.
@@ -242,13 +447,14 @@ def _commit_refresh_token(
     return raw_token
 
 
-def _count_tokens(session_factory: sessionmaker[Session], user: User, *, is_usable: bool) -> int:
+def _count_tokens(session_factory: SessionFactory, user: User, *, is_unrevoked_only: bool) -> int:
     """Count a user's refresh tokens, all of them or only the unrevoked ones.
 
     Args:
         session_factory: Makes the session that counts.
         user: The user whose tokens to count.
-        is_usable: True to count only tokens that aren't revoked.
+        is_unrevoked_only: True to count only tokens that aren't revoked,
+            False to count every token, revoked or not.
 
     Returns:
         How many of the user's token rows match.
@@ -257,7 +463,7 @@ def _count_tokens(session_factory: sessionmaker[Session], user: User, *, is_usab
         select(func.count()).select_from(RefreshToken).where(RefreshToken.user_id == user.id)
     )
 
-    if is_usable:
+    if is_unrevoked_only:
         statement = statement.where(RefreshToken.revoked_at.is_(None))
 
     with session_factory() as session:
@@ -265,7 +471,7 @@ def _count_tokens(session_factory: sessionmaker[Session], user: User, *, is_usab
 
 
 def _refresh_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     raw_token: str,
 ) -> IssuedTokens:
     """Refresh with a token in a session of its own, as one request would.
@@ -276,13 +482,16 @@ def _refresh_in_new_session(
 
     Returns:
         The tokens the refresh issued.
+
+    Raises:
+        AuthenticationError: If refresh refuses the token.
     """
     with session_factory() as session:
         return service.refresh(session, raw_token)
 
 
 def _sign_out_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     raw_token: str,
 ) -> None:
@@ -298,32 +507,43 @@ def _sign_out_in_new_session(
 
 
 def _change_password_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
+    *,
+    new_password: str = NEW_PASSWORD,
 ) -> IssuedTokens:
     """Change a user's password in a session of its own, as one request would.
 
     The user is loaded in the request's session first, as the
     authentication dependency loads the signed-in user, and the password
-    goes from ``PASSWORD`` to ``NEW_PASSWORD``.
+    goes from ``PASSWORD`` to ``new_password``.
 
     Args:
         session_factory: Makes the request's session.
         user: The user whose password changes.
+        new_password: The password to change to: ``NEW_PASSWORD``, unless
+            a second change of the same password needs another.
 
     Returns:
         The tokens of the new session the change starts.
+
+    Raises:
+        AuthenticationError: If the account was deactivated or deleted
+            after it was loaded.
+        BadRequestError: If ``PASSWORD`` is no longer the stored password.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, user.id)
         assert signed_in_user is not None
-        data = PasswordChange(current_password=PASSWORD, new_password=NEW_PASSWORD)
+        data = PasswordChange(current_password=PASSWORD, new_password=new_password)
 
         return service.change_password(session, signed_in_user, data)
 
 
-def _sign_in_in_new_session(session_factory: sessionmaker[Session], password: str) -> IssuedTokens:
+def _login_in_new_session(session_factory: SessionFactory, password: str) -> IssuedTokens:
     """Sign in as the committed user in a session of its own, as one request would.
+
+    The email is ``committed_user``'s, typed here as the fixture saves it.
 
     Args:
         session_factory: Makes the request's session.
@@ -331,13 +551,21 @@ def _sign_in_in_new_session(session_factory: sessionmaker[Session], password: st
 
     Returns:
         The tokens of the session the sign-in starts.
+
+    Raises:
+        AuthenticationError: If the sign-in is refused.
     """
     with session_factory() as session:
         return service.login(session, "concurrency@example.com", password)
 
 
-def _deactivate_user_in_new_session(session_factory: sessionmaker[Session], user: User) -> None:
-    """Deactivate a user in a session of its own, as staff administration will.
+def _deactivate_user_in_new_session(session_factory: SessionFactory, user: User) -> None:
+    """Deactivate a user in a session of its own, as another request would.
+
+    Only ``is_active`` changes. Deactivation through staff administration
+    (ADM-2) will also revoke the user's refresh tokens (plan §8.1); the
+    tests that use this need only the flag, which sign-in and a password
+    change read again once they hold the account's lock.
 
     Args:
         session_factory: Makes the request's session.
@@ -349,15 +577,18 @@ def _deactivate_user_in_new_session(session_factory: sessionmaker[Session], user
 
 
 def _delete_user_in_new_session(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     user: User,
     pause: _Pause | None = None,
 ) -> None:
     """Delete a user in a session of its own, optionally stopping before the commit.
 
-    The ``DELETE`` locks the user's row, and ``ON DELETE CASCADE`` removes
-    the user's refresh tokens in the same statement, so a request held at
-    ``pause`` holds that lock with both deletions not yet committed.
+    The application deactivates users and never deletes them, but a
+    deleted account is what a reset development database looks like to a
+    browser still holding a token. The ``DELETE`` locks the user's row, and
+    ``ON DELETE CASCADE`` deletes the user's refresh tokens within the same
+    statement, locking their rows too, so a request held at ``pause`` holds
+    those locks with every deletion not yet committed.
 
     Args:
         session_factory: Makes the request's session.
@@ -374,7 +605,7 @@ def _delete_user_in_new_session(
         session.commit()
 
 
-def _token_id(session_factory: sessionmaker[Session], raw_token: str) -> uuid.UUID:
+def _token_id(session_factory: SessionFactory, raw_token: str) -> uuid.UUID:
     """Return the primary key of the refresh token a raw value belongs to.
 
     Args:
@@ -392,12 +623,46 @@ def _token_id(session_factory: sessionmaker[Session], raw_token: str) -> uuid.UU
         return session.execute(statement).scalar_one()
 
 
+def _assert_generic_error(error: AuthenticationError, message: str) -> None:
+    """Check that an error is the very one a failed sign-in or a rejected token gets.
+
+    A sign-in refused because its account changed after it checked the
+    password must look like every other failed sign-in, and a refresh or a
+    password change refused because its account was deactivated or deleted
+    in the meantime like every other rejected token, so the caller can't
+    tell why the request failed. The API sends the error's status, code,
+    message, and details in its response, so all four are compared: a
+    refusal that gave one case a status, a code, or details of its own
+    would tell that case apart, even with the same message. Only the tests
+    in this file reach these refusals; ``tests/test_auth_service.py``
+    compares the others the same way.
+
+    Args:
+        error: The error the request raised.
+        message: The message the generic error carries,
+            ``INVALID_CREDENTIALS`` for a sign-in and ``INVALID_TOKEN`` for
+            a refresh or a password change.
+
+    Raises:
+        AssertionError: If any of the four differs from the generic error's.
+    """
+    assert error.status_code == 401
+    assert error.code == ErrorCode.AUTHENTICATION_FAILED
+    assert error.message == message
+    assert error.details == []
+
+
 def _pause_before_issuing_tokens(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     """Make the held request stop just before the auth service issues its tokens.
 
-    The service calls ``generate_refresh_token`` only after every check has
-    passed, and after every lock the request takes, so a request stopped
-    there holds those locks while the competing request starts.
+    The auth service imported ``generate_refresh_token`` by name, so the
+    replacement goes into its namespace. Sign-in, refresh, and a password
+    change all call it only after every check has passed and every lock
+    the request takes, so a request stopped there holds those locks while
+    the competing request starts: a sign-in holds the user's row, a
+    refresh the user's row and its token's, and a password change the
+    user's row and those of the tokens it revokes, having already written
+    the new hash and the revocation.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -422,7 +687,8 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     The service looks tokens up through the repository module, so replacing
     the function there reaches its calls. The held request stops with the
-    token's row lock taken and nothing written yet.
+    token's row locked and nothing written yet. A refresh has locked the
+    user's row before it; a sign-out locks no user.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -435,9 +701,9 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     def lookup_then_pause(session: Session, token_hash: str) -> RefreshToken | None:
         """Look the token up as usual, then stop the held request."""
-        token = real_lookup(session, token_hash)
+        found_token = real_lookup(session, token_hash)
         pause.wait_here()
-        return token
+        return found_token
 
     monkeypatch.setattr(repository, "get_refresh_token_by_hash_for_update", lookup_then_pause)
     return pause
@@ -447,8 +713,10 @@ def _pause_after_the_owner_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     """Make the held request stop just after refresh has found its token's user.
 
     Refresh reads the token's user through the repository module before it
-    takes any lock, so a request stopped here holds no lock at all: its
-    first lock is the user's row, which it asks for next.
+    takes any lock, so a request stopped here holds no row lock: only the
+    lock every read takes on the table, which blocks nothing but a change
+    to the table itself. Its first row lock is the user's, which it asks
+    for next.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -461,9 +729,9 @@ def _pause_after_the_owner_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     def lookup_then_pause(session: Session, token_hash: str) -> uuid.UUID | None:
         """Find the token's user as usual, then stop the held request."""
-        user_id = real_lookup(session, token_hash)
+        found_user_id = real_lookup(session, token_hash)
         pause.wait_here()
-        return user_id
+        return found_user_id
 
     monkeypatch.setattr(repository, "get_refresh_token_user_id_by_hash", lookup_then_pause)
     return pause
@@ -474,7 +742,8 @@ def _pause_after_the_replacement_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pau
 
     The service looks tokens up through the repository module, so replacing
     the function there reaches its calls. The held sign-out stops with the
-    rotated token and its replacement both locked, and nothing written yet.
+    rotated token and its replacement both locked, no user locked, and
+    nothing written yet.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -487,9 +756,9 @@ def _pause_after_the_replacement_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pau
 
     def lookup_then_pause(session: Session, token_id: uuid.UUID) -> RefreshToken | None:
         """Look the token up as usual, then stop the held request."""
-        token = real_lookup(session, token_id)
+        found_token = real_lookup(session, token_id)
         pause.wait_here()
-        return token
+        return found_token
 
     monkeypatch.setattr(repository, "get_refresh_token_by_id_for_update", lookup_then_pause)
     return pause
@@ -500,7 +769,10 @@ def _pause_after_the_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     The auth service imported ``verify_login_password`` by name, so the
     replacement goes into its namespace. The held request stops with the
-    check's result in hand and nothing written yet.
+    check's result in hand, nothing written yet, and no row locked, since
+    sign-in locks the account only once the password has passed. A wrong
+    password and an unknown email reach this pause too: every sign-in runs
+    the check, against a dummy hash when the email is unknown.
 
     Args:
         monkeypatch: pytest's patching fixture; undoes the patch afterwards.
@@ -521,24 +793,102 @@ def _pause_after_the_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
     return pause
 
 
-def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
+def _pause_after_the_current_password_check(monkeypatch: pytest.MonkeyPatch) -> _Pause:
+    """Make the held request stop just after a password change has checked the current password.
+
+    The auth service imported ``verify_password`` by name, so the
+    replacement goes into its namespace. Only a password change calls it,
+    once it holds the user's row lock: first for the current password,
+    then to make sure the new one differs. The held request therefore
+    stops at the first call with the user's row locked and nothing written
+    yet, and passes the second, since the test has released it by then.
+
+    Args:
+        monkeypatch: pytest's patching fixture; undoes the patch afterwards.
+
+    Returns:
+        The pause the held request will stop at.
+    """
+    pause = _Pause()
+    real_check = service.verify_password
+
+    def check_then_pause(password: str, password_hash: str) -> bool:
+        """Check the password as usual, then stop the held request."""
+        is_correct = real_check(password, password_hash)
+        pause.wait_here()
+        return is_correct
+
+    monkeypatch.setattr(service, "verify_password", check_then_pause)
+    return pause
+
+
+def _wait_until_the_held_request_pauses(pause: _Pause, held_future: Future[object]) -> None:
+    """Return once the held request has reached its pause.
+
+    The held request's future is checked while the test waits, so a held
+    request that ends before its pause fails the test at once rather than
+    after ``TIMEOUT_SECONDS``, with its own error if it raised one: a bug in
+    the request, such as a ``NameError`` or a database error, then shows as
+    itself instead of as a pause that never came.
+
+    Args:
+        pause: Where the held request stops.
+        held_future: The held request, running in a thread of its own.
+
+    Raises:
+        Exception: The held request's own error, if it failed before its
+            pause.
+        pytest.fail.Exception: If the held request finished without
+            reaching its pause, or didn't reach it within
+            ``TIMEOUT_SECONDS``.
+    """
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+
+    while not pause.reached.wait(0.01):
+        if held_future.done():
+            # result() raises the request's own error; one that returned
+            # went through without the pause.
+            held_future.result()
+            pytest.fail("the held request finished without reaching its pause", pytrace=False)
+
+        if time.monotonic() >= deadline:
+            pytest.fail("the held request never reached its pause", pytrace=False)
+
+
+def _wait_until_a_request_waits_for_a_lock(
+    engine: Engine, competing_future: Future[object]
+) -> None:
     """Return once a statement in the race database is waiting for a lock.
 
     PostgreSQL lists every session in ``pg_stat_activity``, and a statement
     blocked by another transaction's lock shows ``wait_event_type = 'Lock'``.
     Only the running test's requests use that database, and the held one is
-    paused in Python, not in the database, so a waiting statement is the
-    competing request's. A sleep would only guess: on a slow run the held
-    request could be released before the competing one reached the lock,
-    and the test would no longer race them. The polls run in autocommit
-    mode, each in a transaction of its own.
+    paused in Python, not in the database, where it shows as idle in its
+    transaction, so a waiting statement is the competing request's. A sleep
+    would only guess: on a slow run the held request could be released
+    before the competing one reached the lock, and the test would no longer
+    race them. The polls run in autocommit mode, each in a transaction of
+    its own, because PostgreSQL keeps showing a transaction the activity it
+    read first: polled in one transaction, a request that started waiting
+    after the first poll would never appear.
+
+    Between two polls the competing request's future is checked. A request
+    that waits for a lock can't finish while the held one holds it, so one
+    that has finished never waited: it failed on its own, and its error is
+    raised as it is, or it went through, as it does when the lock under
+    test is missing. Either way the test fails at once rather than after
+    ``TIMEOUT_SECONDS``.
 
     Args:
         engine: Engine for the race database.
+        competing_future: The competing request, running in a thread of its
+            own.
 
     Raises:
-        Failed: pytest's failure, if nothing waits within
-            ``TIMEOUT_SECONDS``, meaning the lock under test wasn't there.
+        Exception: The competing request's own error, if it failed before
+            it waited for a lock.
+        pytest.fail.Exception: If the competing request finished without
+            waiting for a lock, or nothing waits within ``TIMEOUT_SECONDS``.
     """
     query = text(
         "SELECT count(*) FROM pg_stat_activity "
@@ -552,6 +902,14 @@ def _wait_until_a_request_waits_for_a_lock(engine: Engine) -> None:
         while time.monotonic() < deadline:
             if connection.execute(query).scalar_one():
                 return
+
+            if competing_future.done():
+                # result() raises the request's own error; one that returned
+                # went through without waiting.
+                competing_future.result()
+                pytest.fail(
+                    "the competing request finished without waiting for a lock", pytrace=False
+                )
 
             time.sleep(0.01)
 
@@ -569,10 +927,12 @@ def _race(
     Each request runs in a thread of its own. The held request starts first
     and stops at ``pause`` with its locks taken. The competing request
     starts next, and the held one is released only once the competing one
-    waits for a lock, so every run tests the same interleaving. The held
-    request is released in every case, even when a step fails, and leaving
-    the executors waits for both threads, so no request keeps a lock past
-    the test.
+    waits for a lock, so every run tests the same interleaving. A request
+    that ends before its turn, the held one before its pause or the
+    competing one before it waits, fails the race at once, with its own
+    error if it raised one. The held request is released in every case,
+    even when a step fails, and leaving the executors waits for both
+    threads, so no request keeps a lock past the test.
 
     Args:
         engine: Engine for the race database, for the lock check.
@@ -583,6 +943,12 @@ def _race(
     Returns:
         The two requests' futures, held first. ``result()`` returns what a
         request returned, or raises the exception it raised.
+
+    Raises:
+        Exception: The held or the competing request's own error, if it
+            failed before its turn.
+        pytest.fail.Exception: If a request finished before its turn, or
+            didn't get there within ``TIMEOUT_SECONDS``.
     """
     with (
         ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as held_pool,
@@ -591,30 +957,146 @@ def _race(
         held_future = held_pool.submit(held)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the held request never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_future)
             competing_future = competing_pool.submit(competing)
-            _wait_until_a_request_waits_for_a_lock(engine)
+            _wait_until_a_request_waits_for_a_lock(engine, competing_future)
         finally:
             pause.released.set()
 
     return held_future, competing_future
 
 
+class _RequestError(Exception):
+    """The error a stand-in request raises on its own, as a bug in a request would."""
+
+
+def _fail_on_its_own() -> None:
+    """Stand in for a request that fails before its pause or its lock wait.
+
+    Raises:
+        _RequestError: Always, before it touches the database.
+    """
+    raise _RequestError("the request's own error")
+
+
+def _finish_on_its_own() -> None:
+    """Stand in for a request that goes through without its pause or its lock wait."""
+
+
+# How a request can end before its turn in a race: the held one before its
+# pause, or the competing one before it waits for a lock, by failing or by
+# going through. Each case names the request that ends early, what it does,
+# and what _race must raise at once: the request's own error, or a failure
+# that says which request finished early.
+REQUESTS_THAT_END_EARLY = [
+    pytest.param(
+        "held",
+        _fail_on_its_own,
+        _RequestError,
+        "the request's own error",
+        id="held-request-fails",
+    ),
+    pytest.param(
+        "held",
+        _finish_on_its_own,
+        pytest.fail.Exception,
+        "the held request finished without reaching its pause",
+        id="held-request-finishes",
+    ),
+    pytest.param(
+        "competing",
+        _fail_on_its_own,
+        _RequestError,
+        "the request's own error",
+        id="competing-request-fails",
+    ),
+    pytest.param(
+        "competing",
+        _finish_on_its_own,
+        pytest.fail.Exception,
+        "the competing request finished without waiting for a lock",
+        id="competing-request-finishes",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("early_request", "end_early", "expected_error", "message"), REQUESTS_THAT_END_EARLY
+)
+def test_a_race_fails_at_once_with_the_cause_when_a_request_ends_early(
+    early_request: str,
+    end_early: Callable[[], None],
+    expected_error: type[BaseException],
+    message: str,
+    race_engine: Engine,
+) -> None:
+    """A request that ends before its turn fails the race at once, and says why.
+
+    Either the held request ends early, or it waits at its pause while the
+    competing one does. The race must then fail with the request's own
+    error when it raised one, so a bug inside a request shows as itself,
+    and otherwise with a message that names the request that finished
+    early, as a competing request does when the lock under test is
+    missing. It must fail well within ``TIMEOUT_SECONDS``: before the fix
+    the race waited the whole timeout, then blamed a pause or a lock that
+    never came, and the request's own error was lost.
+    """
+    pause = _Pause()
+
+    if early_request == "held":
+        held, competing = end_early, _finish_on_its_own
+    else:
+        held, competing = pause.wait_here, end_early
+
+    started = time.monotonic()
+
+    with pytest.raises(expected_error, match=message):
+        _race(race_engine, pause, held=held, competing=competing)
+
+    assert time.monotonic() - started < TIMEOUT_SECONDS / 2
+
+
+def test_the_race_sessions_are_built_by_the_applications_session_factory(
+    race_engine: Engine,
+    session_factory: SessionFactory,
+) -> None:
+    """Each request's session comes from ``SessionLocal``, bound to the race database.
+
+    A session built by ``SessionLocal`` has every option the application's
+    sessions have, one added later included, so the races run in sessions
+    that behave as a request's do, instead of quietly copying some options
+    and missing the next. ``sessionmaker`` builds a subclass of ``Session``
+    of its own, its ``class_``, so a factory of these tests' own fails the
+    check even when it is given the same options, as the one before the
+    fix was. The session must still be bound to the race database, never
+    to the engine ``SessionLocal`` holds, which stays bound to the
+    development database.
+    """
+    with session_factory() as session:
+        assert isinstance(session, SessionLocal.class_)
+        assert session.get_bind() is race_engine
+
+
 def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """Two refreshes sent together with one cookie never both rotate it.
 
-    The first refresh is held after its checks, with its locks taken. The
-    second has to wait for it, then finds the token already rotated and
-    raises the reuse alarm, which revokes every token of the user,
-    including the one the first refresh just issued. ADR-0004 accepts that
-    trade-off, and the web app must send one refresh at a time. Without
-    the row lock both would read the token as unused, and one cookie would
-    become two working sessions with no alarm.
+    The first refresh is held after its checks, with the user's row and
+    the token's locked. The second has to wait for the user's lock, then
+    finds the token already rotated and raises the reuse alarm, which
+    revokes every token of the user, including the one the first refresh
+    just issued. ADR-0004 accepts that trade-off, and the web app must
+    send one refresh at a time. Either lock alone keeps the two refreshes
+    apart, since without the user's lock the second would wait for the
+    token's; only without both would each read the token as unused,
+    turning one cookie into two working sessions with no alarm. This test
+    therefore can't see either lock on its own: the races with a sign-out
+    pin the token's lock, and the reuse alarm's and the password change's
+    races pin the user's.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_before_issuing_tokens(monkeypatch)
@@ -631,22 +1113,69 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
+
+
+def test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A refresh holds no row lock until it locks the user, so a second refresh never waits for it.
+
+    The first refresh is held right after its first lookup, which reads
+    only the token's user. A second refresh with the same cookie must then
+    go through without waiting: ``lock_timeout`` turns any wait into an
+    error. If that lookup locked the token's row, in any mode, the second
+    refresh would wait for it, at the latest when it locks the token
+    ``FOR UPDATE``, which conflicts with every row lock. Even
+    ``FOR KEY SHARE``, the weakest, which no password change waits for,
+    would let two refreshes sent together deadlock: each would hold that
+    lock on the token, and the one that locked the user first would wait
+    for the other's before it could lock the token itself, while the other
+    waited for the user's lock, until PostgreSQL aborted one of them with
+    an error the API answers with a 500. Released after the second refresh
+    commits, the first finds its token rotated and raises the reuse alarm,
+    which revokes the token the second issued too, so no token of the user
+    is left unrevoked.
+    """
+    raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = _pause_after_the_owner_lookup(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
+        held_refresh = pool.submit(_refresh_in_new_session, session_factory, raw_token)
+
+        try:
+            _wait_until_the_held_request_pauses(pause, held_refresh)
+
+            with session_factory() as session:
+                session.execute(text("SET LOCAL lock_timeout = '1s'"))
+                second_refresh_tokens = service.refresh(session, raw_token)
+        finally:
+            pause.released.set()
+
+    assert isinstance(second_refresh_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError):
+        held_refresh.result()
+
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh that meets a sign-out of its token waits, then is refused.
 
     The sign-out is held after it has found and locked the token, before
-    revoking it. The refresh has to wait for that lock; once the sign-out
-    commits, the refresh reads the token as revoked, with no replacement,
-    and is refused, so a refresh sent at the same moment can't revive the
-    session that signed out. Without the lock the refresh would read the
+    revoking it. A sign-out locks no user, so the refresh takes the user's
+    lock and then has to wait for the token's; once the sign-out commits,
+    the refresh reads the token as revoked, with no replacement, and is
+    refused, so a refresh sent at the same moment can't revive the session
+    that signed out. Without the token's lock the refresh would read the
     token as unused and rotate it while the sign-out was still deciding,
     and its new session would outlive the sign-out.
     """
@@ -665,25 +1194,26 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=False) == 1
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_too(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A sign-out that meets a refresh of the same cookie also ends the token that refresh issues.
 
-    The refresh is held after its checks, with the token locked, so the
-    sign-out of the same token has to wait. Released, the refresh rotates
-    the token and returns a replacement, which the browser may store after
-    the sign-out has deleted the cookie. The sign-out must then revoke the
-    replacement, so no token of that session works afterwards. Before the
-    fix the sign-out found the token rotated and changed nothing, and the
-    replacement kept the session alive.
+    The refresh is held after its checks, with the user's row and the
+    token's locked, so the sign-out of the same token has to wait for the
+    token's. Released, the refresh rotates the token and returns a
+    replacement, which the browser may store after the sign-out has
+    deleted the cookie. The sign-out must then revoke the replacement, so
+    no token of that session works afterwards. Before the fix the sign-out
+    found the token rotated and changed nothing, and the replacement kept
+    the session alive.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_before_issuing_tokens(monkeypatch)
@@ -699,7 +1229,7 @@ def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_t
 
     assert isinstance(refreshed_tokens, IssuedTokens)
     assert competing_future.result() is None
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
     with pytest.raises(AuthenticationError):
         _refresh_in_new_session(session_factory, refreshed_tokens.refresh_token)
@@ -708,17 +1238,19 @@ def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_t
 def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A refresh of the replacement waits for the sign-out that is revoking it, then is refused.
 
     The cookie's token was already rotated, and the sign-out is held right
-    after it has locked the replacement. A refresh of that replacement, as
-    the browser that received it would send, has to wait for the lock, and
-    once the sign-out commits it finds the replacement revoked and is
-    refused. Without the lock the refresh would rotate the replacement
-    while the sign-out was deciding, and its new token would outlive the
+    after it has locked the replacement, with the cookie's token locked
+    too. A refresh of that replacement, as the browser that received it
+    would send, takes the user's lock, which a sign-out never holds, and
+    has to wait for the replacement's; once the sign-out commits, the
+    refresh finds the replacement revoked and is refused. Without the
+    sign-out's lock on the replacement the refresh would rotate it while
+    the sign-out was deciding, and its new token would outlive the
     sign-out.
     """
     raw_replacement = _commit_refresh_token(session_factory, committed_user)
@@ -742,16 +1274,20 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 # Where the held refresh in the next two tests stops: after all its checks,
-# or right after it has locked the token. A refresh that locked the token
-# before the user would hold only the token at the second point, and it and
-# the competing request would then wait for each other until PostgreSQL
-# aborted one, so the second point is what pins the order of the two locks.
-# That the lookup before them takes no lock at all is pinned by
-# test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user.
+# or right after it has locked the token, holding the user's row and the
+# token's at either point. A refresh that locked the token before the user
+# would hold only the token at the second point, and it and the competing
+# request would then wait for each other until PostgreSQL aborted one, so
+# the second point is what pins the order of the two locks. That the lookup
+# before them, which finds the token's user, takes no row lock is pinned by
+# test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user;
+# test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user
+# sees every row lock there but FOR KEY SHARE, which no password change
+# waits for.
 HELD_REFRESH_PAUSES = [
     pytest.param(_pause_before_issuing_tokens, id="held-before-issuing-tokens"),
     pytest.param(_pause_after_the_token_lookup, id="held-after-locking-the-token"),
@@ -763,34 +1299,35 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """The reuse alarm also ends a session that a refresh is issuing at that moment.
 
     A thief refreshes with the replacement of a stolen token, and that
-    refresh is held with its locks taken. The real user then presents the
-    stolen token, which was already rotated, so the alarm goes off. The
-    alarm has to wait for the held refresh, then revoke the token that
-    refresh issued along with the rest, so the thief's new session ends
-    with the others. Before the fix the alarm's revocation saw only the
-    tokens committed when it started, and the thief kept a session that
-    went on refreshing.
+    refresh is held with the user's row and its token's locked. The real
+    user then presents the stolen token, which was already rotated. That
+    refresh has to wait for the user's lock until the held one commits,
+    then finds the stolen token rotated and raises the alarm, which
+    revokes the token the held refresh issued along with the rest, so the
+    thief's new session ends with the others. Before the fix, when refresh
+    took no user lock, the alarm's revocation saw only the tokens committed
+    when it started, and the thief kept a session that went on refreshing.
     """
-    thief_raw_token = _commit_refresh_token(session_factory, committed_user)
-    stolen_raw_token = _commit_refresh_token(
+    raw_thief_token = _commit_refresh_token(session_factory, committed_user)
+    raw_stolen_token = _commit_refresh_token(
         session_factory,
         committed_user,
         revoked_at=datetime.now(UTC),
-        replaced_by_id=_token_id(session_factory, thief_raw_token),
+        replaced_by_id=_token_id(session_factory, raw_thief_token),
     )
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _refresh_in_new_session(session_factory, thief_raw_token),
-        competing=lambda: _refresh_in_new_session(session_factory, stolen_raw_token),
+        held=lambda: _refresh_in_new_session(session_factory, raw_thief_token),
+        competing=lambda: _refresh_in_new_session(session_factory, raw_stolen_token),
     )
 
     thief_tokens = held_future.result()
@@ -800,7 +1337,7 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
     with pytest.raises(AuthenticationError):
         _refresh_in_new_session(session_factory, thief_tokens.refresh_token)
@@ -811,26 +1348,28 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
     pause_held_refresh: Callable[[pytest.MonkeyPatch], _Pause],
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change also ends a session another device is refreshing at that moment.
 
-    The other device's refresh is held with its locks taken, and the user
+    The other device's refresh is held with the user's row and its token's
+    locked, at either point of ``HELD_REFRESH_PAUSES``, and the user
     changes the password on this device. The change has to wait for the
-    held refresh, then revoke the token that refresh issued along with the
-    rest, while this device keeps the new session the change started.
-    Before the fix the change's revocation saw only the tokens committed
-    when it started, and the other device stayed signed in after the
-    password change.
+    user's lock until the held refresh commits, then revokes the token that
+    refresh issued along with the rest, so the other device's next refresh
+    is refused, while the new session the change started goes on
+    refreshing. Before the fix, when neither request took the user's lock,
+    the change's revocation saw only the tokens committed when it started,
+    and the other device stayed signed in after the password change.
     """
-    other_device_raw_token = _commit_refresh_token(session_factory, committed_user)
+    raw_other_device_token = _commit_refresh_token(session_factory, committed_user)
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _refresh_in_new_session(session_factory, other_device_raw_token),
+        held=lambda: _refresh_in_new_session(session_factory, raw_other_device_token),
         competing=lambda: _change_password_in_new_session(session_factory, committed_user),
     )
 
@@ -851,19 +1390,24 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
 
 def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user(
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A refresh takes no lock before it locks the user, so a password change never waits for it.
+    """A refresh holds no row lock until it locks the user, so a password change never waits for it.
 
     The refresh is held right after its first lookup, which reads only the
-    token's user. A password change of the same user must then finish
-    without waiting: ``lock_timeout`` turns any wait into an error. If that
-    lookup locked the token, the held refresh would go on to wait for the
-    user's lock while holding the token, and a password change, holding
-    the user's lock, would wait for the token: a deadlock, which PostgreSQL
-    ends by aborting one of them with an error. Released after the change,
-    the refresh finds its token revoked and is refused.
+    token's user and holds only the lock every read takes on the table. A
+    password change of the same user must then finish without waiting:
+    ``lock_timeout`` turns any wait into an error. If that lookup locked
+    the token's row in a mode the change's revocation waits for,
+    ``FOR SHARE`` or a stronger one, the held refresh would go on to wait
+    for the user's lock while holding the token, and a password change,
+    holding the user's lock, would wait for the token: a deadlock, which
+    PostgreSQL ends by aborting one of them with an error. The weakest,
+    ``FOR KEY SHARE``, blocks no revocation, so this test can't see it;
+    ``test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user``
+    does. Released after the change, the refresh finds its token revoked
+    and is refused.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_after_the_owner_lookup(monkeypatch)
@@ -872,7 +1416,7 @@ def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_use
         held_refresh = pool.submit(_refresh_in_new_session, session_factory, raw_token)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the refresh never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_refresh)
 
             with session_factory() as session:
                 session.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -889,7 +1433,7 @@ def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_use
 
 
 def test_a_password_change_is_checked_against_a_change_committed_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change is checked against the stored hash as it is now.
@@ -897,9 +1441,15 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
     This request loads the user first, as its authentication does. Another
     device then changes the password from ``PASSWORD`` and commits before
     this request continues with the same old password. It must be refused,
-    because the stored password is no longer the one it gives. Checked
-    against the copy it loaded at the start, it would succeed and silently
-    overwrite the other device's change.
+    because the stored password is no longer the one it gives, and the
+    other device's password must stay. Checked against the copy it loaded
+    at the start, it would succeed and silently overwrite the other
+    device's change. The other change commits before this request asks for
+    its lock, so the test shows that the check reads the stored hash
+    afresh, not that it reads it under the lock, which is what refuses a
+    change that meets another still in progress;
+    ``test_a_password_change_that_waits_for_another_is_checked_against_its_new_password``
+    shows that.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -907,7 +1457,7 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
 
         _change_password_in_new_session(session_factory, committed_user)
 
-        data = PasswordChange(current_password=PASSWORD, new_password="Third-Password-1")
+        data = PasswordChange(current_password=PASSWORD, new_password=THIRD_PASSWORD)
 
         with pytest.raises(BadRequestError):
             service.change_password(session, signed_in_user, data)
@@ -919,19 +1469,88 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
     assert verify_password(NEW_PASSWORD, stored_user.password_hash)
 
 
+def test_a_password_change_that_waits_for_another_is_checked_against_its_new_password(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A password change that meets another still in progress waits, then is checked against it.
+
+    Two password changes are sent together with the same current password,
+    from two devices, or by the user and someone who knows the old
+    password. The first is held just after it has checked the current
+    password, with the user's row locked and nothing written yet. The
+    second, from ``PASSWORD`` to ``THIRD_PASSWORD``, has to wait for the
+    user's lock. Once the first commits, the second reads the account
+    again under the lock, checks ``PASSWORD`` against the first change's
+    new hash, and must be refused, so it can't save its own password over
+    the first's and revoke the session the first started. The first
+    change's password must stay, and its session must be the user's only
+    token and go on refreshing.
+
+    A change that checked the passwords before it took its lock would let
+    two changes sent together both pass against the old hash, and the one
+    that locked second would then save its password over the first's and
+    revoke the session the first started; held at its check, such a change
+    holds no lock yet, so here the second goes through without waiting and
+    the race fails at once. One that locked ``FOR SHARE`` would let both
+    take the lock and then deadlock when they wrote, until PostgreSQL
+    aborted one with an error the API answers with a 500. The first change
+    is held before it writes because, once it has written its row, it holds
+    the lock every update takes, whatever lock it asked for, and a second
+    change that locked ``FOR SHARE`` would then wait and be refused, as
+    this one is.
+    """
+    pause = _pause_after_the_current_password_check(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _change_password_in_new_session(session_factory, committed_user),
+        competing=lambda: _change_password_in_new_session(
+            session_factory, committed_user, new_password=THIRD_PASSWORD
+        ),
+    )
+
+    first_change_tokens = held_future.result()
+
+    assert isinstance(first_change_tokens, IssuedTokens)
+
+    with pytest.raises(BadRequestError) as exc_info:
+        competing_future.result()
+
+    with session_factory() as session:
+        stored_user = session.get(User, committed_user.id)
+
+    assert exc_info.value.message == "Current password is incorrect."
+    assert stored_user is not None
+    assert verify_password(NEW_PASSWORD, stored_user.password_hash)
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert isinstance(
+        _refresh_in_new_session(session_factory, first_change_tokens.refresh_token),
+        IssuedTokens,
+    )
+
+
 def test_a_password_change_is_refused_when_the_account_is_deactivated_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change saves nothing if its account is deactivated after loading.
 
     This request loads the user first, as its authentication does, and the
     account is then deactivated on another connection. The change reads
-    the account again under its lock, so it must refuse with the usual
-    token error, as the request's authentication would refuse it now, keep
-    the old password, and issue no session. Before the fix it went on with
-    the account it had loaded, so the inactive account got a new password
-    and a refresh token.
+    the account again under its lock, so it must refuse with the error
+    every rejected token gets, as the request's authentication would
+    refuse it now, keep the old password, and issue no session. Before the
+    fix the change took the lock and read the account again, but never
+    checked it, so the inactive account got a new password and a refresh
+    token. No other test reaches this refusal, since through the API the
+    bearer-token dependency refuses a deactivated account before the route
+    runs, so the whole error is compared here, its status, code, message,
+    and details: a refusal with any of them its own would tell the token's
+    holder that the account is the problem.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -947,24 +1566,26 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
     with session_factory() as session:
         stored_user = session.get(User, committed_user.id)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
     assert stored_user is not None
     assert verify_password(PASSWORD, stored_user.password_hash)
-    assert _count_tokens(session_factory, committed_user, is_usable=False) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 0
 
 
 def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A password change gets the usual refusal, not a 500, if its account is deleted after loading.
+    """A password change is refused, not answered with a 500, if its account is deleted after loading.
 
-    The app never deletes users, but a development database can be reset
-    while a browser still holds a token. The change finds no account under
-    its lock, so it must raise the usual token error. Before the fix it
-    changed the copy it had loaded, and flushing an ``UPDATE`` that matched
-    no row raised SQLAlchemy's ``StaleDataError``, which the API answers
-    with a 500.
+    The application never deletes users, but a development database can
+    be reset while a browser still holds a token. The change finds no
+    account under its lock, so it must raise the error every rejected
+    token gets. Before the fix it ignored what the lock found and changed
+    the copy it had loaded, and flushing an ``UPDATE`` that matched no row
+    raised SQLAlchemy's ``StaleDataError``, which the API answers with a
+    500. No other test reaches this refusal either, so the whole error is
+    compared here too.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -977,22 +1598,28 @@ def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
         with pytest.raises(AuthenticationError) as exc_info:
             service.change_password(session, signed_in_user, data)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
 
 
 def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A refresh gets the usual refusal when its user is deleted while it waits.
+    """A refresh is refused when its user is deleted while it waits.
 
-    The app never deletes users, but tests do. The deletion is held after
-    its ``DELETE``, with the user's row locked. The refresh still finds the
-    token's user, because the deletion isn't committed, and then has to
-    wait for that lock. Once the deletion commits, the refresh finds
-    neither the user nor the token, which the cascade removed, and must
-    raise the usual error rather than fail on the missing token.
+    The application never deletes users, but a development database can
+    be reset while a browser still holds a token. The deletion is held
+    after its ``DELETE``, with the user's row locked and the user's tokens
+    deleted and locked through the cascade, none of it committed. The
+    refresh still finds the token's user, because the deletion isn't
+    committed, and then has to wait for the user's lock. Once the deletion
+    commits, the refresh finds neither the user nor the token, and must be
+    refused rather than fail on the missing token, with the error every
+    rejected token gets. No other test reaches this refusal, so the whole
+    error is compared here, its status, code, message, and details, since
+    the API sends all four in its response: a refusal with any of them its
+    own would tell the token's holder that the account is gone.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _Pause()
@@ -1006,82 +1633,103 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
 
     assert held_future.result() is None
 
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError) as exc_info:
         competing_future.result()
+
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
 
 
 # What can happen to an account while a sign-in checks its password. Each
 # runs in a session of its own and commits before the sign-in continues.
-ACCOUNT_CHANGES_DURING_SIGN_IN = [
+ACCOUNT_CHANGES_DURING_LOGIN = [
     pytest.param(_change_password_in_new_session, id="password-changed"),
     pytest.param(_deactivate_user_in_new_session, id="deactivated"),
     pytest.param(_delete_user_in_new_session, id="deleted"),
 ]
 
 
-@pytest.mark.parametrize("change_account", ACCOUNT_CHANGES_DURING_SIGN_IN)
-def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check(
-    change_account: Callable[[sessionmaker[Session], User], object],
+@pytest.mark.parametrize("change_account", ACCOUNT_CHANGES_DURING_LOGIN)
+def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
+    change_account: Callable[[SessionFactory, User], object],
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A sign-in whose account changes while it checks the password starts no session.
+    """A sign-in whose account changes while it checks the password is refused.
 
     The sign-in is held right after its check passed, against the account
-    as it read it, and the account then changes and commits: its password
-    is changed, it is deactivated, or it is deleted. Released, the sign-in
-    must be refused with the usual error. Before the fix it went on with
-    what it had read, so a sign-in with the old password kept a session
-    that the password change should have ended.
+    as it read it, with no row locked, and the account then changes and
+    commits: its password is changed, it is deactivated, or it is deleted.
+    Released, the sign-in locks the account, reads it again, and must be
+    refused. Before the fix it went on with what it had read, so a sign-in
+    with the old password kept a session that the password change should
+    have ended.
+
+    Each change commits before the sign-in asks for the lock, so the test
+    shows that the sign-in reads the account again, but not that it reads
+    it under the lock, which is what refuses a sign-in that meets a change
+    still in progress; ``test_a_login_that_waits_for_a_password_change_is_refused``
+    shows that. The refusal is the error a wrong password gets at the
+    check, so this test alone can't tell the two apart, but that race can,
+    since a sign-in waits for the lock only once its password has passed.
+    Only these two tests reach this refusal, so both compare the whole
+    error, its status, code, message, and details: every failed sign-in
+    must get the very same one, and a refusal with any of them its own
+    would tell the caller why the sign-in failed.
     """
     pause = _pause_after_the_password_check(monkeypatch)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
-        sign_in = pool.submit(_sign_in_in_new_session, session_factory, PASSWORD)
+        held_login = pool.submit(_login_in_new_session, session_factory, PASSWORD)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the sign-in never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_login)
             change_account(session_factory, committed_user)
         finally:
             pause.released.set()
 
-    with pytest.raises(AuthenticationError):
-        sign_in.result()
+    with pytest.raises(AuthenticationError) as exc_info:
+        held_login.result()
+
+    _assert_generic_error(exc_info.value, INVALID_CREDENTIALS)
 
 
-def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
+def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
-    session_factory: sessionmaker[Session],
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """A password change also ends a session that a sign-in is starting at that moment.
 
-    The sign-in is held after its checks, with the account locked, and the
-    user changes the password on another device. The change has to wait
-    for the held sign-in, then revoke the session it started along with
-    the rest, while the changing device keeps its own new session. Before
-    the fix the sign-in held no lock, the change didn't wait, and the
-    sign-in's session outlived it.
+    A sign-in on another device is held after its checks, with the user's
+    row locked, and the user changes the password on this device. The
+    change has to wait for the user's lock until the held sign-in commits,
+    then revokes the session that sign-in started, so a refresh with its
+    token is refused, while the new session the change started goes on
+    refreshing. Before the fix the sign-in held no lock, the change didn't
+    wait, and the sign-in's session outlived it. Here the sign-in holds the
+    lock and the change waits;
+    ``test_a_login_that_waits_for_a_password_change_is_refused`` has it the
+    other way round.
     """
     pause = _pause_before_issuing_tokens(monkeypatch)
 
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _sign_in_in_new_session(session_factory, PASSWORD),
+        held=lambda: _login_in_new_session(session_factory, PASSWORD),
         competing=lambda: _change_password_in_new_session(session_factory, committed_user),
     )
 
-    sign_in_tokens = held_future.result()
+    login_tokens = held_future.result()
     this_device_tokens = competing_future.result()
 
-    assert isinstance(sign_in_tokens, IssuedTokens)
+    assert isinstance(login_tokens, IssuedTokens)
     assert isinstance(this_device_tokens, IssuedTokens)
 
     with pytest.raises(AuthenticationError):
-        _refresh_in_new_session(session_factory, sign_in_tokens.refresh_token)
+        _refresh_in_new_session(session_factory, login_tokens.refresh_token)
 
     assert isinstance(
         _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
@@ -1089,28 +1737,129 @@ def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
     )
 
 
-def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
+def test_a_login_that_waits_for_a_password_change_is_refused(
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: sessionmaker[Session],
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A sign-in that meets a password change still in progress waits for it, then is refused.
+
+    The user changes the password on this device, and the change is held
+    just before it issues its tokens, with the user's row locked and the
+    new hash and the revocation written but not committed. A sign-in with
+    the old password on another device, sent at that moment, still reads
+    the committed account, so its password passes, and it then has to wait
+    for the user's lock. Once the change commits, the sign-in reads the
+    account again under the lock, finds the hash changed, and must be
+    refused with the whole error every failed sign-in gets, so the old
+    password can't start a session that the change should have ended. The
+    sign-in must write nothing, which leaves the change's session as the
+    user's only token, and that session must go on refreshing.
+
+    A sign-in waits for the lock only once its password has passed, since a
+    failed one takes no lock, so this refusal is the one under the lock: a
+    sign-in refused at its check never waits, and the race would fail at
+    once with that refusal. A sign-in that read the account again before
+    it took the lock, or locked it ``FOR KEY SHARE``, which the change's
+    lock doesn't block, would start its session. One that locked with
+    ``NOWAIT`` would fail with an error the API answers with a 500, and one
+    with ``SKIP LOCKED`` would be refused without waiting, as if the
+    account were gone.
+    """
+    pause = _pause_before_issuing_tokens(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _change_password_in_new_session(session_factory, committed_user),
+        competing=lambda: _login_in_new_session(session_factory, PASSWORD),
+    )
+
+    this_device_tokens = held_future.result()
+
+    assert isinstance(this_device_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        competing_future.result()
+
+    _assert_generic_error(exc_info.value, INVALID_CREDENTIALS)
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert isinstance(
+        _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
+        IssuedTokens,
+    )
+
+
+def test_a_second_login_waits_for_the_first_and_both_start_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """Two sign-ins of one account sent together take turns, and each starts a session.
+
+    A double-clicked button, or two tabs, can send the same sign-in twice
+    at the same moment. The first is held just before it issues its
+    tokens, with the user's row locked and nothing written yet. The second
+    passes its password check, then has to wait for the user's lock, which
+    sign-in takes as refresh and a password change do, so that all three
+    take turns. Once the first commits, the second reads the account again,
+    finds it unchanged, and goes on. Both must start a session, each with
+    its own refresh token, so the user then holds two unrevoked tokens, as
+    after two sign-ins on two devices.
+
+    A sign-in that locked with ``NOWAIT`` would fail the second with an
+    error the API answers with a 500, and one with ``SKIP LOCKED`` would
+    refuse it as if the account were gone. One that locked ``FOR SHARE``
+    would let both take the lock and then deadlock when each recorded its
+    sign-in time, until PostgreSQL aborted one, again a 500. And with
+    ``FOR KEY SHARE`` the second would not wait at all, nor would a
+    password change.
+    """
+    pause = _pause_before_issuing_tokens(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _login_in_new_session(session_factory, PASSWORD),
+        competing=lambda: _login_in_new_session(session_factory, PASSWORD),
+    )
+
+    first_login_tokens = held_future.result()
+    second_login_tokens = competing_future.result()
+
+    assert isinstance(first_login_tokens, IssuedTokens)
+    assert isinstance(second_login_tokens, IssuedTokens)
+    assert first_login_tokens.refresh_token != second_login_tokens.refresh_token
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 2
+
+
+def test_a_failed_login_checks_the_password_without_locking_the_account(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
     """Two failed sign-ins of one account never wait for each other.
 
-    A sign-in with a wrong password is held right after its check. A second
-    wrong-password sign-in for the same account must be refused at once,
-    without waiting for a lock: ``lock_timeout`` turns any wait into an
-    error. If sign-in locked the account before the check, the second
-    attempt would wait for the first, while attempts on an unknown email
-    never wait, and that difference in time would tell an attacker which
-    accounts exist. Sign-in therefore locks only after a password passes.
+    A sign-in with a wrong password for the committed account is held right
+    after its check, with no row locked. A second wrong-password sign-in
+    for the same account must then be refused without waiting for a lock:
+    ``lock_timeout`` turns any wait into an error. If sign-in locked the
+    account before the check, the held attempt would hold that lock and
+    the second would wait for it, while attempts on an unknown email never
+    wait, so that difference in time would tell an attacker which accounts
+    exist. Sign-in therefore locks only after a password passes. Both
+    refusals are the one a wrong password gets at the check, whose whole
+    error ``tests/test_auth_service.py`` compares.
     """
     pause = _pause_after_the_password_check(monkeypatch)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
-        first_sign_in = pool.submit(_sign_in_in_new_session, session_factory, WRONG_PASSWORD)
+        held_login = pool.submit(_login_in_new_session, session_factory, WRONG_PASSWORD)
 
         try:
-            assert pause.reached.wait(TIMEOUT_SECONDS), "the sign-in never reached its pause"
+            _wait_until_the_held_request_pauses(pause, held_login)
 
             with session_factory() as session:
                 session.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -1121,4 +1870,4 @@ def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
             pause.released.set()
 
     with pytest.raises(AuthenticationError):
-        first_sign_in.result()
+        held_login.result()

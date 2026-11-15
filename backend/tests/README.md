@@ -17,6 +17,7 @@ uv run pytest tests/test_health.py::test_liveness_returns_ok_while_the_database_
 |---|---|
 | PostgreSQL running | `docker compose up -d db` from the repository root |
 | A test database | `docker compose exec db createdb -U hms hms_test`, once per machine |
+| A role that may create databases | Nothing to do with the Compose `hms` user, a superuser; the race tests create and drop a database of their own |
 | `TEST_DATABASE_URL` in `backend/.env` | `postgresql+psycopg://hms:hms@127.0.0.1:5432/hms_test` |
 
 Without `TEST_DATABASE_URL`, every test that needs the database errors with
@@ -40,7 +41,8 @@ naming it as a parameter; nothing is imported from that file.
 
 ## How isolation works
 
-Each test that touches the database runs inside one transaction:
+Each test that touches the database runs inside one transaction, apart from the race tests
+below:
 
 1. `db_session` opens a connection and begins a transaction.
 2. The session, built by the application's `SessionLocal` so it has the same options, joins
@@ -68,6 +70,20 @@ The application's own engine stays bound to `DATABASE_URL`, the development data
 the whole run, so `refuse_the_development_database` refuses every connection through it
 before one opens. A test that bypasses `client` or `get_test_db` meets `RuntimeError: Tests
 must not connect to the development database` instead of writing there.
+
+## Race tests
+
+A row lock only matters between two transactions that commit, so the race tests in
+`test_auth_concurrency.py` can't share the one rolled-back transaction. Their own fixtures
+give them a database of their own: `race_engine` creates it next to the test database,
+named `<test database>_race_<process ID>` so that two runs at the same moment never see
+each other's rows, migrates it as `apply_migrations` migrates the test database, and drops
+it with `FORCE` when the module ends, even after a failure. Each request opens a session
+from `SessionLocal`, bound to that database through `session_factory`, and commits for
+real; `committed_user` commits the one account the tests use and deletes it afterwards,
+its refresh tokens with it. A race holds one request at a pause inside the service and
+releases it only once PostgreSQL shows the other waiting for a lock; the module docstring
+explains the helpers.
 
 ## Conventions
 

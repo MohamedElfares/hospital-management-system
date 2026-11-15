@@ -3,7 +3,7 @@
 One entry per run, newest first. An entry opens when the run is planned and
 closes when the last stage is done, so an interrupted run is obvious.
 
-## Run 1 — 2026-11-04 — `all` — open
+## Run 1 — 2026-11-04 — `all` — closed 2026-11-15
 
 - **Scope:** `all`, the first full baseline (`STATE.md` was empty).
 - **Base commit:** `646fb3a` on `main`; the run works on branch `docs/review-run-1`.
@@ -173,7 +173,7 @@ closes when the last stage is done, so an interrupted run is obvious.
   see whether the command committed (R-039); if R-039 is still open then,
   its docstring should say what the test can see. The stage 15 item is
   done, in `8c2512b`: the test now fails when the command doesn't commit,
-  and its docstring says why.
+  and its docstring says why. The stage 25 item is done, in `c8ef20d`.
 - **Stage 11's findings fixed (2026-11-06):** R-039 (`8c2512b`), R-040
   (`5cb442c`), and R-041 (`9a9df67`), written at your request ("fix the
   findings with recommendations with best practices"), one commit each,
@@ -1031,6 +1031,205 @@ closes when the last stage is done, so an interrupted run is obvious.
   file changed since its review, by the fixes that followed it, such as
   `config.py` by R-109's. `tests/test_auth_concurrency.py`, stage 25's
   file, has no row yet, so it stays in scope either way.
+- **Merged before stage 25 (2026-11-15):** at your choice ("I am going
+  to merge but after doing the last step"), PR #42 was squash-merged as
+  `8dacfec` once stage 24's findings were settled, rather than after
+  stage 25 as planned on 2026-11-04; its tree is the branch tip's,
+  `410f627`. The run stays open, and stage 25 continues on branch
+  `docs/review-run-1-stage-25`, from `main` at `de8a315`, after three
+  Dependabot merges that changed only `ci.yml` and `backend/uv.lock`.
+  `STATE.md`'s rows were moved by the rule above: 20 to `8dacfec` and 31
+  to its parent, `1510f9d`, which a run of `/review new`'s scope rule
+  on the new branch confirms: the 31 are in scope, with
+  `tests/test_auth_concurrency.py`, and the 20 are not. The commit IDs
+  this entry cites are the pull request's; after the squash they stay
+  readable with `git fetch origin refs/pull/42/head:refs/pull/42/head`,
+  which GitHub keeps at `410f627`.
+- **Carried to stages 25b and 25c (from stage 25a):** two things in the
+  races. For 25c: `_sign_in_in_new_session` types the committed user's
+  email, and a sign-in with a wrong password or an unknown email reaches
+  the password-check pause too, through the dummy check (probed), so
+  25c should check whether the sign-in refusal tests can tell the
+  refusal under the lock from an earlier one; and the three tests that
+  wait for a pause by hand have R-110's kind. For both: the refusals
+  that only a race reaches, which the stage 19 bullet above carried here
+  under `CLAUDE.md`'s rule for errors that must not say which check
+  failed, are part 2's refresh refused when its owner is deleted while
+  it waits and part 3's sign-in and password change refusals. Part 2's
+  is R-113, raised in stage 25b.
+- **Probed in stage 25a, no finding:** one broken copy of a helper
+  passes all 18 tests but was left alone, because the helper is right
+  and its docstring now says why. A lock poll that runs in one
+  transaction, without autocommit, passes three runs of the file in a
+  row: every competing request reaches its lock before the first poll,
+  so the poll's first look already shows the wait. It fails a race whose
+  competing request reaches its lock half a second late (probed), since
+  PostgreSQL keeps showing a transaction the activity it read first
+  (probed: in one transaction a later wait stays invisible, while an
+  autocommit poll, or one after `pg_stat_clear_snapshot()`, sees it).
+- **No new `CLAUDE.md` line (stage 25a):** R-112 is R-040's kind, a test
+  session that doesn't come from `SessionLocal`, for the second time,
+  and R-110 and R-111 are kinds of their own, so no line is proposed.
+- **Stage 25a's findings fixed (2026-11-15):** R-110 (`77cbf27`), R-112
+  (`2907533`), and R-111 (`1742807`), written at your request ("fix the
+  open findings with recommendations and best practices"), one commit
+  each, in dependency order: R-111's docs say where the race sessions
+  come from, which R-112 changes. Steps beyond the recommendations:
+  R-110 adds a test of the race helpers over four cases, as plan §13's
+  bug rule asks of a fix, with a time bound that catches a fix looking
+  at the future only at the deadline; R-112 adds the optional test; and
+  R-111 also names the role requirement in plan §15's
+  `TEST_DATABASE_URL` row. `834789d` then brings three import comments
+  up to the first two fixes, comments only. The fixes change part 1 of
+  `tests/test_auth_concurrency.py` after this stage reviewed it, and
+  the three hand-written waits in part 3 before stage 25c reaches them,
+  so the file's `STATE.md` row, recorded with 25c, names `33cd514`,
+  this stage's docs commit, and the next `/review new` takes the whole
+  file again, the two new tests included. Each commit passes Ruff and
+  the suite on its own, run like CI in a clean worktree: 420, 421, 421,
+  then 421 tests, with coverage at 99.86%, and the final suite also
+  passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG.
+  Run against the fixed file, all ten broken copies of the two fixes
+  fail it. No finding is open.
+- **Carried to stage 25c (from stage 25b):** two things in part 3.
+  `test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight`
+  names the other device's raw token `other_device_raw_token`, with
+  `raw` in the middle, as part 2's `thief_raw_token` and
+  `stolen_raw_token` did until this stage renamed them `raw_thief_token`
+  and `raw_stolen_token`. And
+  `test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user`
+  says "A refresh takes no lock before it locks the user", as the
+  `HELD_REFRESH_PAUSES` comment said: the owner lookup takes the lock
+  every read takes on the table, and the test catches only the row
+  locks a password change waits for, not `FOR KEY SHARE` (R-114).
+- **Probed in stage 25b, no finding:** while each part 2 race held its
+  first request, `pg_stat_activity` and `pg_locks` showed what the
+  competing request waits for: the user's row for the second refresh,
+  the alarm, and the refresh of a deleted user, and a token's row for
+  the three requests that meet a sign-out, which locks no user. The
+  two-refresh test alone can't see either of refresh's two locks,
+  since either keeps two refreshes apart, but each is pinned elsewhere:
+  a copy of `refresh` whose own token lookup takes no lock fails the
+  three races with a sign-out (in two of them the refresh still waits,
+  at its write, then rotates the token the sign-out revoked; in the
+  third the sign-out no longer waits), one without the user's lock
+  fails the alarm's and the password change's races, and only one
+  without both fails the two-refresh test. The sign-out's lock on a
+  replacement is pinned by one test alone,
+  `test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it`:
+  a copy without that lock fails nothing else in the suite.
+- **No new `CLAUDE.md` line (stage 25b):** R-113 is the kind stage 19's
+  line covers, which `CLAUDE.md` already has, and R-114 is R-073's kind,
+  a lock taken before refresh's first one that no race test sees, for
+  the second time, so no line is proposed.
+- **Stage 25b's findings fixed (2026-11-15):** R-113 (`7586c12`) and
+  R-114 (`9176155`), written at your request ("fix the open findings
+  with recommendations and best practices, then push"), one commit
+  each, in ID order, since neither depends on the other. Steps beyond
+  the recommendations: R-113's fix was also run against a fourth copy,
+  whose refusal is a subclass answering 410, which only the status
+  check catches; R-114's fix keeps the `HELD_REFRESH_PAUSES` comment's
+  sentence on what pins the owner lookup, now naming the new test; and
+  both bring the module docstring's part 2 paragraph up to what its
+  tests now check. The fixes change part 2 of
+  `tests/test_auth_concurrency.py` after this stage reviewed it, so the
+  file's `STATE.md` row, recorded with 25c, still names `33cd514`, and
+  the next `/review new` takes the whole file again, the new test
+  included. The second item carried to stage 25c stands, since
+  `test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user`
+  still says "A refresh takes no lock before it locks the user"; its
+  docstring can now point to the new test for `FOR KEY SHARE`. Each
+  commit passes Ruff and the suite on its own, run like CI in a clean
+  worktree: 421, then 422 tests, with coverage at 99.86%, and the final
+  suite also passes reversed, shuffled twice, and at `LOG_LEVEL` INFO
+  and DEBUG. Run against the fixed file, all nine broken copies fail
+  it, and the new race test passed ten runs in a row. No finding is
+  open.
+- **Carried to stage 25c, answered:** from stage 25a, whether the sign-in
+  refusal tests can tell the refusal under the lock from an earlier one.
+  The refusal test can't: a refusal at the password check is the very
+  same error, and the test passes with a wrong password, in all three
+  cases, even with the whole error compared (probed). R-116's first
+  recommended race can, since a sign-in reaches the lock only once its
+  check has passed; one refused at its check fails that race at once
+  with its own refusal (probed). The failed sign-in test needs its held
+  attempt to be the committed account's, since an unknown email takes no
+  lock in any design, and `_login_in_new_session` types that account's
+  email; a copy of `login` that locks before the check fails it with
+  `LockNotAvailable` (probed). The three hand-written waits use R-110's
+  helper since `77cbf27`, and the race-only refusals carried from stage
+  19 are R-115. From stage 25b: `other_device_raw_token` is renamed in
+  `cd40526`, and the never-waits test's "A refresh takes no lock before
+  it locks the user" is corrected in `df581ce`, which points to R-114's
+  test for `FOR KEY SHARE`.
+- **Probed in stage 25c, no finding:** while each part 3 race held its
+  first request, `pg_stat_activity` and `pg_locks` showed the password
+  change waiting at its locked read of the user's row, `FOR NO KEY
+  UPDATE`, for the transaction of the held refresh or sign-in, and the
+  three recommended races' competing requests wait at the same read.
+  Re-run at this stage's base, R-073's test catches the owner lookup with
+  `FOR SHARE`, `FOR NO KEY UPDATE`, or `FOR UPDATE`, and R-114's all four
+  modes, as the `HELD_REFRESH_PAUSES` comment says. A sign-in that locks
+  `FOR KEY SHARE`, or takes no lock, fails the in-flight race, since the
+  change then no longer waits; a password change with `NOWAIT` fails
+  three races; and copies that give the race-only refusals the wrong
+  class, or a message of their own, fail the tests that check those.
+  Before R-022's fix, refresh read the user without a lock and the
+  password change took none (read at `9f603dd^`); before R-026's, the
+  change locked and reread the account in place but never checked it
+  (read at `a97d21e^`).
+- **No new `CLAUDE.md` line (stage 25c):** R-115 is the kind stage 19's
+  line covers, which `CLAUDE.md` already has, and R-116 and R-117 are
+  one kind, a use case's row lock that no race has the use case wait
+  for, seen twice, both here, so no line is proposed. Plan §13's
+  edge-case checklist already names "the same action submitted twice at
+  the same moment", which R-116's second race and R-117's race are, and
+  the copies they catch that re-check before the lock break stage 8's
+  line in `CLAUDE.md`'s conventions.
+- **Run 1 closed (2026-11-15):** stage 25c was its last stage. 52 files
+  have a `STATE.md` row, the 47 the run planned and the five added for
+  its findings, `app/api/__init__.py` and four test files,
+  `tests/test_auth_concurrency.py` among them, so every Python file
+  under `backend/` has one. Checks at
+  the close: Ruff clean, and the suite run like CI
+  in a clean worktree passes, 422 tests with coverage at 99.86%; the
+  race file also passes reversed, shuffled twice, and at `LOG_LEVEL`
+  INFO and DEBUG. Findings: 117, R-001 to R-117. 114 are settled: 112
+  resolved by a change (109 fixes, R-002's naming rule applied in its
+  stages, R-007's removal, and R-030's rename), R-013 settled as fine,
+  and R-034 turned into issue #41. 3 are open, R-115 to R-117, all from
+  stage 25c, waiting for your decision. Eight `CLAUDE.md` lines were
+  proposed for recurring findings, in stages 2, 8, 12b, 13, 19, 20, 21,
+  and 22, and all were accepted: seven new lines, and stage 13's in
+  place of stage 2's.
+- **Stage 25c's findings fixed (2026-11-15):** R-115 (`cec06c9`), R-116
+  (`62cfd03`), and R-117 (`64a9f89`), written at your request ("fix the
+  open findings with recommendations and best practices, then push"),
+  one commit each, in ID order, which is also their dependency order,
+  since R-116's first race compares its refusal through R-115's helper.
+  Steps beyond the recommendations: R-115's fix was also run against
+  R-113's copies, since the helper now holds that test's asserts; R-116's
+  first race was probed with a wrong password, which fails it at once
+  with the refusal from the password check, as the refusal test's
+  docstring now says; and R-117's race also checks that the first
+  change's session still refreshes, with a `new_password` option on
+  `_change_password_in_new_session` and the committed-change test's
+  third password now the constant `THIRD_PASSWORD`. The fixes change all
+  three parts of `tests/test_auth_concurrency.py` after their reviews,
+  so the file's `STATE.md` row still names `33cd514`, as its intro now
+  says, and the next `/review new` takes the whole file again, the three
+  new races, the new helper, and the new pause included. Each commit
+  passes Ruff and the suite on its own, run like CI in a clean worktree:
+  422, 424, then 425 tests, with coverage at 99.86%, and the final race
+  file also passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and
+  DEBUG. Run against the fixed file, all 13 copies the findings named
+  fail it, as do the sign-in that locks `FOR KEY SHARE`, R-113's four,
+  the four owner-lookup copies, and every control but one, sign-in's own
+  locked read with the shared function's options, which passes, as it
+  should; each new race passed ten runs in a row. With these, all 117 findings of run 1 are settled: 115 resolved
+  by a change (112 fixes, R-002's naming rule applied in its stages,
+  R-007's removal, and R-030's rename), R-013 settled as fine, and R-034
+  turned into issue #41. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 
@@ -1066,4 +1265,7 @@ Each ticked stage lists its `refactor` and `docs` commit SHAs.
 - [x] 22. auth API tests, part 2 — `tests/test_auth_api.py`: `GET /auth/me`, `POST /auth/refresh`, and `POST /auth/logout` tests (about 375 lines when planned, 529 before the docs, 564 after) — refactor: `7a5cb76` (the error object `body` → `error` in the three current-user tests that read one, the name the rest of the file gives it, and the sign-in response `login` → `login_response` in `test_me_accepts_the_access_token_from_login`, both carried from stage 21; in `test_reusing_an_old_cookie_signs_out_every_session`, the cookie values `old_token` and `new_token` → `old_cookie` and `new_cookie`, since `NAMING.md`'s raw-token row rules out a bare `token` where either kind could be meant, and its twin, `test_reuse_is_logged_with_the_request_id`, and part 3 already say so, now a sentence in that row; and in `test_every_kind_of_401_names_the_bearer_scheme`, `wrong_password` → `wrong_password_form` and `expired_header` → `expired_token_header`, for what each holds); docs: `3302745` (the module docstring's part 2 paragraph brought up to what its tests check, and its first paragraph says why a test clears the cookie jar before it sets a cookie; eight claims corrected or made exact: that a cookie on any other path is left out, when one on `/` or `/api` is sent; that `Max-Age` may "still be aligned later", when ADR-0004 accepts the reset; that the gate is "added later" and "once the gate exists", in two tests; that `WWW-Authenticate` tells clients how to sign in; that signing out never fails; that neither cookie may appear "anywhere" in a capture that holds only WARNING and above; that the chaining test is the one that proves sign-in's tokens open "the protected routes"; and why an empty bearer token reaches the service; the tests next to an open finding say what they can't see); Ruff clean, 406 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings, with the renames mapped back for the refactor; claims checked in probes on the test database and in the installed FastAPI 0.141.1 and Starlette 1.6.0 (which cookie paths the client sends to the refresh URL; that without clearing the jar it sends the server's cookie and the test's both, and the "replay" refreshes with the new one, 200, because Starlette keeps one value per name; that the client drops the cookie sign-out clears; that `OAuth2PasswordBearer` hands on whatever follows `Bearer`, so `Bearer ` reaches the service as an empty token, and no unusable header sends a query for a user; that every 401 of this part has `details` empty, the request ID of its `X-Request-ID` header, `WWW-Authenticate: Bearer`, and no cookie; that the fixture's account must change its password and refreshes all the same; that at DEBUG these requests log only the request lines, the test client's lines, asyncio's, and the reuse warning, and print nothing; that sign-in's and refresh's access tokens, signed in the same second, are the same string; and that `caplog.at_level("WARNING", logger=...)` keeps the WARNING records of every logger), with a status-first scan of `tests/` widened to header reads and responses never read (R-103), and with 33 broken copies of the three routes, the bearer-token dependency, `refresh`, `logout`, `get_authenticated_user`, the token decoder, the error handlers, and `login`, and a baseline, run against the whole suite on a scratch database, where only `test_engine_points_at_the_test_database` fails, by design: 8 fail a test, the controls, the two copies R-103 shows its tests failing on, and two that only the API password change test catches, by chance (R-101); 22 pass it and are R-100 to R-102; and 3 are left as notes; each recommendation was then run against the copies it targets; findings R-100 to R-103
 - [x] 23. auth API tests, part 3 — `tests/test_auth_api.py`: `POST /auth/change-password` and gated-route tests (about 340 lines when planned, 440 when the stage began, 451 before the docs, 525 after) — refactor: `33e04ff` (sign-in and refresh responses get the `_response` suffix that the 110 other responses the test client returns in `tests/` have: `old_login` and `new_login` → `old_password_response` and `new_password_response`, after the password each sends, a lone sign-in's `new_login` → `login_response`, and `phone_login`, `laptop_login`, `phone_refresh`, and `laptop_refresh` → `phone_login_response`, `laptop_login_response`, `phone_refresh_response`, and `laptop_refresh_response`, as carried from stage 22, now a `NAMING.md` row; and `test_an_invalid_body_is_a_validation_error` and `test_a_form_body_is_a_validation_error` → `test_change_password_with_an_invalid_body_is_a_validation_error` and `test_change_password_with_a_form_body_is_a_validation_error`, since the file tests five routes and sign-in takes nothing but a form body); docs: `e422734` (the module docstring's paragraph for part 3, brief since stage 21, brought up to what its tests check; seven claims corrected or made exact: the "7d gate" and the exemption kept "once the gate is added", when the gate exists as `CurrentUser`; that every route outside the exempt three uses `CurrentUser`, when none does yet; "the previous test"; a body that "breaks the password rule", and a rejected password that "can't end up in logs", in a test that reads only the response; why a form body is refused; which flags the cookie test checks, and why it leaves `Max-Age` and `Secure` to the helper's tests, as carried from stage 22; and "the standard 400", "the standard 401 body", and "the standard 403", where the tests compare the code and at most the message; the tests next to an open finding say what they can't see); Ruff clean, 409 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings, with the renames mapped back for the refactor; claims checked in probes on a scratch database and in the installed FastAPI 0.141.1 (a JSON body reaches validation as a dict, and a form body sent to a JSON route as raw bytes, refused as `model_attributes_type`; FastAPI's validation error holds the body as it was sent, and a missing field's error holds the rest of the body as its `input`; the change's 400 has `details` empty, no `WWW-Authenticate`, and no cookie, and every 401 and 403 of this part `details` empty and the request ID of its `X-Request-ID` header; the bearer-token dependency refuses a deactivated user before the service is called; the change's new cookie replaces the old one in the client's jar; the access token from before a change still passes the gate, which reads the flag from the database; the token a change returns and the one it was sent, signed in the same second, are the same string; at DEBUG a change logs only the request lines, the test client's, and asyncio's, and prints nothing), and with 34 broken copies of the change route, `change_password`, the gate, `CurrentUser`'s dependency, the bearer-token dependency, and the error handlers, run against the whole suite on a scratch database, where only `test_engine_points_at_the_test_database` fails, by design: 14 fail a test, the 13 controls and one that only the change's logging test catches, by chance (R-105); 17 pass it and are R-104 to R-106; and 3 are left as notes; each recommendation was then run against the copies it targets; findings R-104 to R-106
 - [x] 24. Settings tests — `tests/test_config.py` (327 lines when planned, 385 after the docs), added 2026-11-04 for R-012 — refactor: `1af53c5` (`test_unknown_hospital_timezone_is_rejected` → `test_unknown_or_malformed_hospital_timezone_is_rejected`, since two of its three cases, the empty string and the path, are malformed names that `ZoneInfo` refuses before any lookup, the two kinds the validator's docstring names; and the parametrized boolean `expected` → `is_production`, under the shape rule that booleans start with `is_`, as `tests/test_auth_service.py`'s parametrized `is_active` does); docs: `62747e8` (a module docstring, the four import comments, and a comment for each constant; six claims corrected or made exact: that CI sets four settings variables, when it sets five, `LOG_LEVEL` among them; that each test sees only its own values "on every machine", when on Linux a variable spelled in lower case would still reach the settings; that every rejection test changes "one value of this baseline"; how pydantic shortens a printed value, only past 50 characters, quotes included; that a zero lifetime "would sign every user out at once", when it issues tokens already expired; and that "today" and slots depend on the timezone, which nothing reads until Milestone 1.4; the fixed-values test also says why `LOG_LEVEL` is a fixed set); Ruff clean, 411 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings; claims checked in the installed pydantic 2.13.5, pydantic-core 2.46.5, and pydantic-settings 2.16.2 (an unknown `.env` key left empty is skipped and one with a value refused; environment variables are read with `_env_file=None` and matched in any case; a printed value is cut in the middle past 50 characters; neither `repr` nor `str` of the settings shows the URLs or the secret, while `errors()` still holds a rejected value), in Python 3.13.15's `zoneinfo` and `logging`, in PyJWT's and refresh's expiry checks, and in probes of the application started with each URL a weaker check would accept; and with 21 broken copies of `config.py` and `.env.example`: the 8 controls fail `tests/test_config.py`, and the other 13 pass the whole suite on a scratch database, where only `test_engine_points_at_the_test_database` fails, by design: 5 are R-107 and R-108, one more shows what R-108's optional test adds, and 7 are notes; each recommendation was then run against the copies it targets; findings R-107 to R-109
-- [ ] 25. auth concurrency tests — `tests/test_auth_concurrency.py` (893 lines), added 2026-11-05 for R-022, R-023, and R-025; split it in three when reached: the fixtures and helpers, the refresh and sign-out races, then the password change and sign-in races
+- Stage 25, auth concurrency tests (893 lines when planned), had grown to 1,124 lines with the fixes for R-026, R-028, and R-073, so it was split in three on 2026-11-15, as planned, each test going to the part of the use case its name starts with:
+- [x] 25a. auth concurrency tests, part 1 — `tests/test_auth_concurrency.py`: imports, constants, fixtures, and helpers (600 lines when split, 817 after the docs) — refactor: `c8ef20d` (`_run_migrations`' `result` → `upgrade`, the finished `alembic upgrade head` run, as carried from stage 11; in the three pauses that wrap a repository lookup, what the lookup returns, `token` → `found_token` and `user_id` → `found_user_id`, under `NAMING.md`'s `found_<thing>` row; and `_count_tokens`' keyword `is_usable` → `is_unrevoked_only`, your choice of my recommendation, since `False` counts every token, revoked or not, and `is_usable=False` read as "the unusable tokens" in the two tests that pass it); docs: `33cd514` (a module docstring for the whole file, which had none, with two paragraphs for the setup and the races and one in brief for each of parts 2 and 3; a comment above each of the 41 imports, none of which had one, and a comment for each constant; claims corrected or made exact: that the held refresh after its owner lookup holds "no lock at all", when it holds the lock every read takes on the table and no row lock; which rows each pause holds, the user's beside the token's for a refresh, none for a sign-out, and the rows a password change has already written before it issues; that a wrong password and an unknown email reach the password-check pause too; that `_Pause` serves only `_race`; why the lock poll runs in autocommit mode; that `committed_user` yields a user "with its attributes loaded", when `last_login_at` is unloaded, though it reads `None` without a session; the cleanup's five-second timeout and what `LOCAL` limits; that the race database needs a role allowed to create databases, is dropped first if a killed run left it, and is dropped even when its migration fails, through `FORCE`, which closes a connection `dispose()` can't; that the deactivation helper works "as staff administration will", when ADM-2's deactivation also revokes the user's tokens; that the cascade locks the token rows too; and what the request helpers raise; the helpers next to an open finding say what they can't see); Ruff clean, 416 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings, with the renames mapped back for the refactor; claims checked in probes on a scratch database (at each of the six pauses, the statements the held request had run, its locks in `pg_locks` and `pg_stat_activity`, and which of the user's and the tokens' rows a `NOWAIT` lock could still take; the cascade's deletions inside the `DELETE` statement; `pg_stat_activity` in one transaction and in autocommit mode; the cleanup's `LockNotAvailable` after 5.0 s for a lock on the user's row and on a token's; `DROP DATABASE` with and without `FORCE` against a checked-out connection; the race tests under a role without `CREATEDB`; a failed migration's message, which shows no password, and the dropped database after it; the held executor's thread name), in the installed SQLAlchemy 2.1.8 (`inspect` of the committed user) and PostgreSQL 17.11, and with copies of the helpers: what `_race` reports when a request ends or fails on its own, a lock poll without autocommit, and the race sessions beside `db_session` when `SessionLocal` gains an option; each recommendation was then run against the copies it targets and with the whole file; findings R-110 to R-112
+- [x] 25b. auth concurrency tests, part 2 — `tests/test_auth_concurrency.py`: the refresh and sign-out races, from `test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm` to `test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight`, with `HELD_REFRESH_PAUSES`, and `test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused`, which sits among part 3's tests (236 lines when split, 255 after the docs) — refactor: `6edee9c` (in `test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight`, the raw refresh tokens `thief_raw_token` and `stolen_raw_token` → `raw_thief_token` and `raw_stolen_token`, with `raw_` in front, as `NAMING.md`'s `access_token` and `refresh_token` row asks, as part 2's `raw_token`, `raw_replacement`, and `raw_rotated_token` already were, and as stage 20 renamed `tests/test_auth_service.py`'s `user_raw_token` and its kin); docs: `a63c0b1` (the module docstring's part 2 paragraph, brief since stage 25a, brought up to what its tests check, with the lock each competing request waits for; claims corrected or made exact: the two-refresh test's "Without the row lock", where since R-022 refresh takes two locks and either alone keeps two refreshes apart, with the races that pin each; the `HELD_REFRESH_PAUSES` comment's owner lookup that "takes no lock at all", which takes the lock every read takes on the table, and whose pinning test catches every row lock there but `FOR KEY SHARE` (R-114), with the rows the held refresh holds at either point; the deleted-user test's "usual" refusal, where only the class is checked (R-113), its reason for a deletion, a reset development database rather than "tests do", and the cascade's locks; and which lock each sign-out race's competing request takes and waits for, what the alarm's refresh waits for, and what "the fix" added); Ruff clean, 421 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings, with the renames mapped back for the refactor; claims checked in probes on a scratch database (what each race's competing request waits for and what its held request holds, in `pg_stat_activity` and `pg_locks`; the locks a refresh held right after its owner lookup holds; the end state of a sign-out race without the token's lock, in both requests or in the refresh only, and without the sign-out's lock on the replacement; what a refresh finds once its user's deletion commits; two refreshes of one cookie with either of refresh's locks dropped, or both; and two refreshes of one cookie, one held after an owner lookup with and without `FOR KEY SHARE`), in the installed SQLAlchemy 2.1.8 (which lock clause each `with_for_update` form renders) and PostgreSQL 17.11, and with 14 broken copies of `refresh`, `logout`, and the repository's two lookups, run against the whole suite or the race tests on a scratch database, where only `test_engine_points_at_the_test_database` fails, by design: the three copies that give the deleted-user refusal a message, details, or a code of its own, and the owner lookup with `FOR KEY SHARE`, pass the whole suite and are R-113 and R-114; the other ten each fail the race tests the docstrings say pin them; each recommendation was then run against the copies it targets; findings R-113 and R-114
+- [x] 25c. auth concurrency tests, part 3 — `tests/test_auth_concurrency.py`: the password change and sign-in races, from `test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight` to the end, with `ACCOUNT_CHANGES_DURING_SIGN_IN`, now `ACCOUNT_CHANGES_DURING_LOGIN`, except part 2's refresh test (286 lines when the stage began, 323 after the docs); the file gets its `STATE.md` row with this part, at `33cd514`, stage 25a's docs commit, since stage 25a's fixes changed part 1 after its review, and stage 25b's changed part 2 after its own — refactor: `cd40526` (the other device's raw token `other_device_raw_token` → `raw_other_device_token`, with `raw_` in front, as carried from stage 25b, under `NAMING.md`'s `access_token` and `refresh_token` row, the name stage 20 gave the same token in `tests/test_auth_service.py`; and sign-in's names, under `NAMING.md`'s `login` row, which keeps `sign_in` out of code names: the helper `_sign_in_in_new_session` → `_login_in_new_session`, after `service.login`, as its siblings are named after `refresh` and `change_password`, the case list → `ACCOUNT_CHANGES_DURING_LOGIN`, and the tests `test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check`, `test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight`, and `test_a_failed_sign_in_checks_the_password_without_locking_the_account` → `test_a_login_is_refused_when_...`, `..._of_a_login_still_in_flight`, and `test_a_failed_login_checks_...`, the last as `tests/test_auth_service.py`'s `test_a_failed_login_*` tests say; in them, the held sign-in's future, `sign_in` and `first_sign_in` → `held_login`, as the file's other hand-written races say `held_refresh`, and the tokens it issued, `sign_in_tokens` → `login_tokens`; sign-out's names stay, since `NAMING.md` has no logout row, as stages 20 and 25b left them); docs: `df581ce` (the module docstring's part 3 paragraph, brief since stage 25a, brought up to what its tests check, with the lock each competing request waits for and what no test there sees; claims corrected or made exact: the never-waits test's "A refresh takes no lock before it locks the user", as carried from stage 25b, where the owner lookup holds the lock every read takes on the table and no row lock, and the test sees a row lock there in the modes a revocation waits for, `FOR SHARE` and stronger, but not `FOR KEY SHARE`, which R-114's test catches; the refresh race's lock, and what "the fix" added; that before R-026's fix the deactivated-account change "went on with the account it had loaded", where it took the lock and reread the account in place but never checked it; "the usual token error", where only the message is checked (R-115); that a sign-in whose account changes "starts no session", where the test checks the refusal, whose class alone it compares (R-115), and whose change commits before the sign-in asks for the lock (R-116); the sign-in race's devices, the change made "on another device" beside `this_device_tokens`; and what the committed-change and failed sign-in tests can't see (R-117) or leave to another file); Ruff clean, 422 passed, both commits also run like CI in a clean worktree (coverage 99.86%), and the file passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and DEBUG; no router or schema touched, so no OpenAPI diff, and the code's AST is identical without the docstrings, with the renames mapped back for the refactor; claims checked in probes on a scratch database (what each race's competing request waits for and what its held request holds, in `pg_stat_activity` and `pg_locks`; the refusal test with a wrong password; which tests reach the two race-only refusals, each replaced by a crash; the statement two `FOR SHARE` sign-ins deadlock at; `change_password` and `refresh` at `9f603dd^` and `a97d21e^`), in the installed SQLAlchemy 2.1.8 (the lock clause each `with_for_update` option set renders) and PostgreSQL 17.11, and with 26 broken copies of `login`, `change_password`, and the owner lookup, run against the whole suite or the race tests on a scratch database, where only `test_engine_points_at_the_test_database` fails, by design: 13 pass the whole suite and are R-115 to R-117; 10, the controls among them, fail the tests the docstrings say pin them; 2 replace a race-only refusal with a crash and pass every test outside this file, so only these races reach it; and 1, sign-in's own locked read with the shared function's options, passes, as the lock copies' control; each recommendation was then run against the copies it targets; findings R-115 to R-117

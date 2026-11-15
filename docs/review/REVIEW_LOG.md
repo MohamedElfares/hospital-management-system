@@ -1014,10 +1014,23 @@ closes when the last stage is done, so an interrupted run is obvious.
   suite also passes reversed, shuffled twice, and at `LOG_LEVEL` INFO
   and DEBUG. Run against the fixed suite, all six copies the fixes
   target fail it, as do the eight controls, while the seven copies noted
-  above still pass it. R-109 is in `config.py`, your file, so it waits
-  for you: a tested copy with only its two docstring edits (the code's
-  AST identical, Ruff clean, the suite passing with it) is ready to copy
-  in, and is then committed as yours and settled.
+  above still pass it. R-109 (`7d6cfd7`) is in `config.py`, your file:
+  a tested copy with only its two docstring edits (the code's AST
+  identical, Ruff clean, the suite passing with it), copied in by you
+  and checked byte for byte against the tested copy before the commit,
+  which also passes like CI in a clean worktree (416 tests, coverage
+  99.86%). `config.py` changed after its `STATE.md` row at `7d080c0`,
+  which sends it to the next `/review new`. No finding is open.
+- **`STATE.md` after the squash merge:** this branch's commit IDs won't
+  be in `main`'s history, which `/review new` reads, so each row moves
+  to a commit on `main` before the next `/review new`, by one rule: a
+  file unchanged since the commit its row names gets the squash commit,
+  and a file changed after it gets the squash commit's parent, so the
+  next `/review new` still takes it. Moving every row to the squash
+  commit would hide those files: at `7d6cfd7`, 31 of the 51 rows name a
+  file changed since its review, by the fixes that followed it, such as
+  `config.py` by R-109's. `tests/test_auth_concurrency.py`, stage 25's
+  file, has no row yet, so it stays in scope either way.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

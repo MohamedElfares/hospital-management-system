@@ -9,7 +9,13 @@ with no row has never been reviewed and is always in scope.
 Run 1's rows name commits on `main`: after PR #42 was squash-merged as
 `8dacfec`, a file unchanged since its review names that commit, and a
 file changed after its review, by the fixes that followed it, names its
-parent, `1510f9d`, so the next `/review new` takes it again.
+parent, `1510f9d`, so the next `/review new` takes it again. The one
+exception is `tests/test_auth_concurrency.py`, reviewed in stage 25 after
+that merge, on branch `docs/review-run-1-stage-25`: its row names
+`33cd514`, where stage 25a documented part 1, because the fixes after
+stages 25a and 25b changed parts 1 and 2 after their reviews, so the next
+`/review new` takes the whole file again. When that branch is merged, the
+row moves by the same rule.
 
 | File | Reviewed at commit | Date | Run |
 |---|---|---|---|
@@ -47,6 +53,7 @@ parent, `1510f9d`, so the next `/review new` takes it again.
 | `backend/tests/conftest.py` | `1510f9d` | 2026-11-06 | 1 |
 | `backend/tests/factories.py` | `1510f9d` | 2026-11-06 | 1 |
 | `backend/tests/test_auth_api.py` | `1510f9d` | 2026-11-15 | 1 |
+| `backend/tests/test_auth_concurrency.py` | `33cd514` | 2026-11-15 | 1 |
 | `backend/tests/test_auth_repository.py` | `1510f9d` | 2026-11-08 | 1 |
 | `backend/tests/test_auth_schemas.py` | `1510f9d` | 2026-11-08 | 1 |
 | `backend/tests/test_auth_service.py` | `1510f9d` | 2026-11-09 | 1 |

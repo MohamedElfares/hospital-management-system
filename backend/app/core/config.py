@@ -80,7 +80,9 @@ class Settings(BaseSettings):
             be greater than zero.
         hospital_timezone: IANA timezone name used for business rules such as
             "today" and appointment slot boundaries. Timestamps are still
-            stored in UTC.
+            stored in UTC. Nothing reads it yet: the first rules that do,
+            such as check-in only on the appointment date, arrive with
+            appointments in Milestone 1.4.
         log_level: Minimum level of log records that are written.
         demo_mode: Whether demo accounts are protected from being
             deactivated or having their passwords changed. Nothing reads it
@@ -169,9 +171,10 @@ class Settings(BaseSettings):
     def _check_hospital_timezone(cls, value: str) -> str:
         """Require a timezone name that exists in the IANA database.
 
-        Business rules such as "check-in only on the appointment date" depend
-        on this timezone, so an invalid name must stop the app at startup.
-        On Windows, the ``tzdata`` package supplies the timezone database.
+        Business rules such as "check-in only on the appointment date" will
+        depend on this timezone from Milestone 1.4, so an invalid name must
+        stop the app at startup. On Windows, the ``tzdata`` package supplies
+        the timezone database.
 
         Args:
             value: The raw ``HOSPITAL_TIMEZONE`` value, such as

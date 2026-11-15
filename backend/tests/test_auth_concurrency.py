@@ -38,7 +38,8 @@ refresh issues; and a refresh of a replacement waits for the sign-out that is
 revoking it, and is refused. The reuse alarm waits for a refresh still in
 flight, held after its checks or right after it has locked the token, and
 then revokes the token that refresh issued. A refresh whose user is deleted
-while it waits for the user's lock is refused.
+while it waits for the user's lock is refused with the error every rejected
+token gets.
 
 The password change and sign-in races: a password change revokes the token of
 a refresh still in flight, held at either of those points, and never waits
@@ -142,6 +143,9 @@ from app.core.errors import AuthenticationError
 
 # What a password change with a stale current password raises, which the API answers with 400.
 from app.core.errors import BadRequestError
+
+# Machine-readable error codes; a refresh refused after its user's deletion gets the generic one.
+from app.core.errors import ErrorCode
 
 # Makes the raw value of a token a test commits.
 from app.core.security import generate_refresh_token
@@ -1406,9 +1410,11 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
     refresh still finds the token's user, because the deletion isn't
     committed, and then has to wait for the user's lock. Once the deletion
     commits, the refresh finds neither the user nor the token, and must be
-    refused rather than fail on the missing token. Only the error's class
-    is checked, so a refusal with a message, a code, or details of its own,
-    which would tell the token's holder why it failed, would pass (R-113).
+    refused rather than fail on the missing token, with the error every
+    rejected token gets. No other test reaches this refusal, so the whole
+    error is compared here, its status, code, message, and details, since
+    the API sends all four in its response: a refusal with any of them its
+    own would tell the token's holder that the account is gone.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _Pause()
@@ -1422,8 +1428,15 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
 
     assert held_future.result() is None
 
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError) as exc_info:
         competing_future.result()
+
+    error = exc_info.value
+
+    assert error.status_code == 401
+    assert error.code == ErrorCode.AUTHENTICATION_FAILED
+    assert error.message == INVALID_TOKEN
+    assert error.details == []
 
 
 # What can happen to an account while a sign-in checks its password. Each

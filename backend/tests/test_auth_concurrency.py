@@ -66,19 +66,19 @@ import sys
 # Events that hold and release a request, and the thread name that marks the held one.
 import threading
 
-# The lock poll's deadline, and its short sleep between two polls.
+# Deadlines for the waits, the short sleep between two polls, and how long a failed race took.
 import time
 
 # Type of a token row's primary key, and of the user ID refresh's first lookup returns.
 import uuid
 
-# Type of the requests a race runs, and of the pause makers and account changes tests take.
+# Type of the requests a race runs, of the callables tests take, and of SessionFactory.
 from collections.abc import Callable
 
 # Return type of the fixtures that clean up after their yield.
 from collections.abc import Iterator
 
-# Type of what _race returns for each request: its result, or the error it raised.
+# Type of a running request: what _race returns, and what the waits watch for an early end.
 from concurrent.futures import Future
 
 # Runs each request in a named thread of its own, and waits for it before the test ends.

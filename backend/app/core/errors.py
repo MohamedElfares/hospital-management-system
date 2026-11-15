@@ -3,8 +3,9 @@
 Services raise the exceptions defined here instead of ``HTTPException``, so
 business code never deals with HTTP. The handlers registered by
 ``register_exception_handlers`` convert those exceptions, FastAPI's input
-validation errors, Starlette's routing errors, and unexpected crashes into
-the standard error body from plan §11::
+validation errors, the framework's own HTTP errors (an unknown URL, a wrong
+method, a missing bearer token), and unexpected crashes into the standard
+error body from plan §11::
 
     {"error": {"code": ..., "message": ..., "details": [...], "request_id": ...}}
 
@@ -19,8 +20,14 @@ Example:
 # Standard logging; records the traceback of unexpected errors.
 import logging
 
+# Read-only dictionary type; the type of the headers an error adds to its response.
+from collections.abc import Mapping
+
 # Enum whose members are also strings; lists every allowed error code.
 from enum import StrEnum
+
+# Read-only view of a dict; every error class's shared headers can't be changed through it.
+from types import MappingProxyType
 
 # Type of the values inside an error's details.
 from typing import Any
@@ -37,7 +44,7 @@ from fastapi.exceptions import RequestValidationError
 # Response with a JSON body and a status code; the shape of every error response.
 from fastapi.responses import JSONResponse
 
-# Starlette's HTTP error, raised for unknown routes, wrong methods, and security helpers.
+# Base HTTP error that routing raises for 404 and 405; FastAPI's HTTPException subclasses it.
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
@@ -47,10 +54,12 @@ class ErrorCode(StrEnum):
     """Every machine-readable error code the API can return.
 
     Clients branch on these codes, not on the human-readable message, so the
-    codes are a public contract. Keeping them in one enum means a misspelled
-    code fails when the module loads instead of silently reaching a client.
-    Because ``StrEnum`` members are strings, they serialize to JSON as plain
-    text such as ``"NOT_FOUND"``.
+    codes are a public contract: changing a value breaks every client that
+    reads it. Callers always pass a member, such as ``ErrorCode.NOT_FOUND``,
+    never a string literal, so a typo raises ``AttributeError`` the first
+    time that line runs, and an editor flags it sooner, instead of sending a
+    client a code it doesn't know. Because ``StrEnum`` members are strings,
+    they serialize to JSON as plain text such as ``"NOT_FOUND"``.
 
     Attributes:
         INTERNAL_ERROR: An unexpected server error (500).
@@ -65,8 +74,10 @@ class ErrorCode(StrEnum):
         PASSWORD_CHANGE_REQUIRED: A temporary password must be replaced first (403).
         INVALID_STATUS_TRANSITION: The record's current status forbids the action (409).
         APPOINTMENT_SLOT_TAKEN: The doctor or patient is already booked then (409).
-        INSUFFICIENT_STOCK: Non-expired stock can't cover the quantity (409).
+        INSUFFICIENT_STOCK: The branch's usable stock can't cover the quantity (409).
         ACTIVATION_FAILED: A portal activation code or MRN didn't match (400).
+        SERVICE_UNAVAILABLE: A dependency such as the database can't be
+            reached right now; the client should retry shortly (503).
     """
 
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -94,12 +105,18 @@ class AppError(Exception):
     optional details. One handler registered for ``AppError`` serves every
     subclass, because exception handlers match subclasses too. Raising
     ``AppError`` itself produces a 500, so services should always raise a
-    subclass.
+    subclass. ``app.cli`` catches ``AppError`` as well, to print the message
+    of a failed ``create-admin`` and exit with status 1.
 
     Attributes:
         status_code: HTTP status returned for this class of error.
         code: Machine-readable code. The class default is used unless the
             caller passes a more specific one.
+        headers: HTTP headers the response carries for this class of
+            error, such as ``WWW-Authenticate`` on a 401. Empty unless a
+            subclass sets them. Every instance shares its class's mapping,
+            so the mapping is read-only: no one error can change the
+            headers of the rest.
         message: Human-readable explanation, safe to show to the user.
         details: Extra structured information, such as which medicines are
             short. Always a list, empty when there is nothing to add.
@@ -107,6 +124,7 @@ class AppError(Exception):
 
     status_code: int = 500
     code: str = ErrorCode.INTERNAL_ERROR
+    headers: Mapping[str, str] = MappingProxyType({})
 
     def __init__(
         self,
@@ -142,9 +160,12 @@ class AppError(Exception):
 class BadRequestError(AppError):
     """The request is well formed but can't be processed (400).
 
-    Used when the input passes schema validation but is still unusable, for
-    example a wrong or expired portal activation code, where the message is
-    deliberately generic so an attacker can't tell which part was wrong.
+    The input passes schema validation but is still refused. A password
+    change raises it when the current password is wrong or the new one
+    matches it, because a 401 there would make the web app treat the session
+    as expired (plan §8.1). Portal activation will raise it with
+    ``code=ErrorCode.ACTIVATION_FAILED`` and one generic message, so an
+    attacker can't tell whether the code or the MRN was wrong.
     """
 
     status_code: int = 400
@@ -154,22 +175,34 @@ class BadRequestError(AppError):
 class AuthenticationError(AppError):
     """The caller isn't authenticated (401).
 
-    Covers wrong credentials, a missing, invalid, or expired token, and an
-    inactive account. Login failures use one generic message whether the
-    email or the password was wrong, so accounts can't be discovered.
+    Covers wrong credentials, an invalid or expired access token, a missing,
+    unknown, revoked, or expired refresh token, and an account that is
+    missing or deactivated. Sign-in failures use one generic message whether
+    the email or the password was wrong, so accounts can't be discovered. A
+    request without a bearer token never gets this far: FastAPI's
+    ``OAuth2PasswordBearer`` answers it with its own 401, which
+    ``_handle_http_exception`` gives the same ``AUTHENTICATION_FAILED`` code.
+
+    Its response carries ``WWW-Authenticate: Bearer``, because HTTP requires
+    every 401 to name a way to authenticate (RFC 9110). That is the
+    challenge FastAPI's own 401 sends too, so every 401 the API returns
+    looks the same, whichever check failed.
     """
 
     status_code: int = 401
     code: str = ErrorCode.AUTHENTICATION_FAILED
+    headers: Mapping[str, str] = MappingProxyType({"WWW-Authenticate": "Bearer"})
 
 
 class PermissionDeniedError(AppError):
     """The caller is authenticated but not allowed to do this (403).
 
-    Raised when the user's role lacks the required permission, and with
+    The auth service's ``ensure_password_change_not_pending`` raises it with
     ``code=ErrorCode.PASSWORD_CHANGE_REQUIRED`` while a temporary password
-    must still be replaced. A record outside the user's scope is not a 403;
-    it is a ``NotFoundError``.
+    must still be replaced (plan §8.1). ``require_permission``, which arrives
+    later in Milestone 1.2, will raise it with the default code when the
+    user's role lacks a permission. A record outside the user's scope is not
+    a 403; it is a ``NotFoundError``.
     """
 
     status_code: int = 403
@@ -191,9 +224,11 @@ class ConflictError(AppError):
     """A business rule blocks the action (409).
 
     The input is valid, but the current state of the data forbids the
-    action. Services pass a specific code such as
+    action, such as an email another account already uses. When the client
+    must tell cases apart, services pass a specific code such as
     ``INVALID_STATUS_TRANSITION``, ``APPOINTMENT_SLOT_TAKEN``, or
-    ``INSUFFICIENT_STOCK`` so the client can react to each case.
+    ``INSUFFICIENT_STOCK``; otherwise the response carries the generic
+    ``CONFLICT`` code.
     """
 
     status_code: int = 409
@@ -203,8 +238,10 @@ class ConflictError(AppError):
 class RateLimitedError(AppError):
     """Too many attempts in a short time (429).
 
-    Raised by the login and portal activation rate limiters to slow down
-    password guessing and code guessing.
+    Meant for the rate limits on sign-in and portal activation, which slow
+    down password and code guessing (plan §8.1). Nothing raises it yet:
+    sign-in limits arrive later in Milestone 1.2, and activation limits in
+    Phase 4.
     """
 
     status_code: int = 429
@@ -235,8 +272,8 @@ def _error_response(
 
     Every handler goes through this function, so the body's shape is defined
     in exactly one place. The request ID is read defensively: it is missing
-    when an error happens before the request-ID middleware runs, and an error
-    handler must never raise an error of its own.
+    when an error happens before the request-context middleware stores it,
+    and an error handler must never raise an error of its own.
 
     Args:
         request: The request that failed; its state may hold the request ID.
@@ -266,17 +303,24 @@ def _error_response(
 async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     """Convert a domain error raised by a service into its HTTP response.
 
-    The status, code, message, and details all come from the exception, so
-    this one handler serves every ``AppError`` subclass.
+    The status, code, message, details, and headers all come from the
+    exception, so this one handler serves every ``AppError`` subclass. The
+    headers are copied onto the response as ``_handle_http_exception``
+    copies FastAPI's, which is how every 401 gets its ``WWW-Authenticate``
+    header.
 
     Args:
         request: The request that failed.
         exc: The domain error raised by a service.
 
     Returns:
-        The error response with the exception's own status and code.
+        The error response with the exception's own status, code, and
+        headers.
     """
-    return _error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+    response = _error_response(request, exc.status_code, exc.code, exc.message, exc.details)
+    response.headers.update(exc.headers)
+
+    return response
 
 
 async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -317,7 +361,7 @@ async def _handle_validation_error(request: Request, exc: RequestValidationError
     )
 
 
-# Maps the statuses Starlette and FastAPI's security helpers raise to error codes.
+# Framework errors carry only a status, so this gives them the codes a domain error would use.
 _STATUS_TO_ERROR_CODE: dict[int, ErrorCode] = {
     400: ErrorCode.BAD_REQUEST,
     401: ErrorCode.AUTHENTICATION_FAILED,
@@ -334,11 +378,13 @@ async def _handle_http_exception(request: Request, exc: StarletteHTTPException) 
     """Convert Starlette's HTTP errors into the standard error format.
 
     These come from the framework rather than from services: an unknown URL
-    (404), a known URL with the wrong method (405), and FastAPI's security
-    helpers (401 and 403). Unlisted statuses fall back to ``INTERNAL_ERROR``
-    for 5xx and ``BAD_REQUEST`` for 4xx, so ``code`` is always a string. The
-    exception's headers are copied onto the response because clients need
-    them: ``Allow`` on a 405 and ``WWW-Authenticate`` on a 401.
+    (404), a known URL with the wrong method (405), a request without a
+    bearer token (401, from FastAPI's security helpers), and a body FastAPI
+    can't read, such as a malformed form (400). Unlisted statuses fall back
+    to ``INTERNAL_ERROR`` for 5xx and ``BAD_REQUEST`` for anything lower, so
+    every response still has a code. The exception's headers are copied onto
+    the response because clients need them: ``Allow`` on a 405 and
+    ``WWW-Authenticate`` on a 401.
 
     Args:
         request: The request that failed.
@@ -371,12 +417,15 @@ async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResp
     traceback goes to the log with the request ID, while the client gets a
     fixed message and the same request ID. The exception's text is never
     sent, because it can contain SQL, file paths, or patient data (plan §12).
+    After this response is sent, Starlette re-raises the exception so the
+    server logs it too; a test that expects the 500 must therefore create
+    its ``TestClient`` with ``raise_server_exceptions=False``.
 
     Args:
         request: The request that failed.
         exc: The unexpected exception. It isn't read here, because
-            ``logger.exception`` records the active exception by itself, but
-            FastAPI always passes it.
+            ``logger.exception`` records the exception being handled by
+            itself, but Starlette always passes it.
 
     Returns:
         A 500 response with code ``INTERNAL_ERROR`` and a generic message.
@@ -396,9 +445,12 @@ def register_exception_handlers(app: FastAPI) -> None:
     """Attach all four error handlers to the application.
 
     ``main.py`` calls this once when it builds the app. Registration order
-    doesn't matter: for each raised exception, FastAPI uses the handler for
-    the closest class in that exception's hierarchy, so a ``ConflictError``
-    reaches the ``AppError`` handler even though it is also an ``Exception``.
+    doesn't matter: Starlette, which FastAPI builds on, picks the handler
+    registered for the closest class in the raised exception's hierarchy, so
+    a ``ConflictError`` reaches the ``AppError`` handler even though it is
+    also an ``Exception``. The ``Exception`` handler runs in Starlette's
+    outermost middleware, so it also catches a crash inside the
+    request-context middleware.
 
     Args:
         app: The FastAPI application to configure.

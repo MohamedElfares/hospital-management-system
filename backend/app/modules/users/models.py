@@ -19,13 +19,13 @@ from sqlalchemy import Boolean
 # Table-level CHECK constraint; keeps stored emails lowercase.
 from sqlalchemy import CheckConstraint
 
-# Column type that maps to TIMESTAMPTZ when timezone=True.
+# Column type that maps to TIMESTAMPTZ when timezone=True; used for last_login_at.
 from sqlalchemy import DateTime
 
-# SQLAlchemy column type that maps a Python enum to a database column.
+# SQLAlchemy's enum column type; string_enum configures it as a checked VARCHAR.
 from sqlalchemy import Enum
 
-# Declares the composite index used by the staff list filters.
+# Declares the composite index on role and is_active.
 from sqlalchemy import Index
 
 # VARCHAR column type with a maximum length.
@@ -65,8 +65,9 @@ def string_enum(enum_cls: type[StrEnum], *, name: str, length: int = 32) -> Enum
     database, the API, and SQL filters all use the same string. A named
     CHECK constraint makes PostgreSQL reject any value that isn't a member,
     even when a write bypasses the ORM. SQLAlchemy also checks plain strings
-    before sending them, so a typo fails with ``LookupError`` in Python
-    instead of a database error.
+    while it prepares the parameters, so a typo fails in Python, as a
+    ``StatementError`` wrapping ``LookupError``, before the statement
+    reaches the database.
 
     The length is fixed rather than taken from the longest current value, so
     adding a member later only changes the CHECK constraint, not the column
@@ -100,33 +101,45 @@ def string_enum(enum_cls: type[StrEnum], *, name: str, length: int = 32) -> Enum
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A person who can sign in, with one role.
 
-    There is no public sign-up: Admins and Managers create staff accounts,
-    the ``create-admin`` command creates the first Admin, and receptionists
-    enable portal access for patients (plan §3). Nullability comes from each
-    ``Mapped`` annotation: ``X`` is NOT NULL and ``X | None`` allows NULL.
+    There is no public sign-up (plan §3): the ``create-admin`` command
+    creates the first Admin, Admins create any account, Managers create
+    staff accounts for every role except Admin and Manager, and
+    receptionists enable portal access for patients. Nullability comes from
+    each ``Mapped`` annotation: ``X`` is NOT NULL and ``X | None`` allows
+    NULL.
 
     The three flags have database defaults, so rows inserted outside the ORM
     still get safe values. ``must_change_password`` defaults to true because
-    most accounts start with a temporary password that an Admin knows; if a
-    code path forgets to set it, the user only has to choose a new password.
-    ``create-admin`` and ``seed-demo`` set it to false explicitly.
+    most accounts start with a temporary password that whoever created the
+    account knows; if a code path forgets to set it, the user only has to
+    choose a new password. ``create-admin`` sets it to false explicitly, and
+    ``seed-demo`` will too (Milestone 1.7).
 
     Attributes:
-        email: Sign-in name. Unique, and stored lowercase: the service
+        email: Sign-in name. Unique, and stored lowercase: ``UserCreate``
             lowercases it, and a CHECK constraint rejects anything else, so
             uniqueness is effectively case-insensitive.
         password_hash: Argon2 hash of the password. The plain password is
             never stored, logged, or returned.
-        full_name: Name shown in the staff list and the audit log.
-        role: The user's only role. Code checks permissions derived from
-            it, never the role itself.
-        is_active: False after an Admin deactivates the account. Inactive
-            users get 401 on every request, including sign-in.
-        must_change_password: True while the password is temporary. Every
-            endpoint except the ones needed to change it returns 403
+        full_name: The person's name, returned by ``GET /auth/me``. The
+            staff list (IAM-5) and the audit log (Milestone 1.3) will show
+            it too.
+        role: The user's only role. Route authorization will check the
+            permissions it grants, never the role itself (plan §6, IAM-4).
+            Queries may still filter on it, as ``create-admin``'s check for
+            an active Admin does.
+        is_active: False once the account is deactivated. An inactive user
+            gets 401 on sign-in, on refresh, and on every authenticated
+            request.
+        must_change_password: True while the password is temporary. Until
+            it is changed, every authenticated route except
+            ``GET /auth/me``, ``POST /auth/logout``, and
+            ``POST /auth/change-password`` returns 403
             ``PASSWORD_CHANGE_REQUIRED``.
-        is_demo: True only for accounts created by ``seed-demo``, which are
+        is_demo: Marks the accounts ``seed-demo`` creates, which will be
             protected from changes and replaced by ``seed-demo --reset``.
+            Nothing sets or reads it before that command arrives in
+            Milestone 1.7.
         last_login_at: When the user last signed in, in UTC. None if they
             never have.
     """
@@ -141,9 +154,10 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, server_default=false())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    # The composite index serves the staff list filters: role alone, or role
-    # with is_active. Searching by name or email gets its own index with the
-    # search query (IAM-5).
+    # The composite index serves filters on role alone or on role with
+    # is_active: create-admin's active-Admin check today, and the staff list
+    # filters (IAM-5) later. Searching by name or email gets its own index
+    # with the search query (IAM-5).
     __table_args__ = (
         CheckConstraint("email = lower(email)", name="email_lowercase"),
         Index("ix_users_role_is_active", "role", "is_active"),

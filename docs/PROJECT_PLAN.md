@@ -125,7 +125,7 @@ From Phase 3 onward, each phase delivers its backend and its screens together.
 
 - Customer Service role: ticket inbox, assignment, replies, internal notes, and resolve, close, and reopen actions.
 - Patients open tickets and reply from the portal; Customer Service can open a ticket on a patient's behalf.
-- Manager role: operational reports with charts (appointments, no-shows, pharmacy, tickets) and administration of non-admin staff accounts.
+- Manager role: operational reports with charts (appointments, no-shows, pharmacy, tickets) and administration of staff accounts except Admin and Manager.
 
 ### Optional ideas (not planned)
 
@@ -146,7 +146,7 @@ These stay in the backlog. To build one, plan it as a new phase after Phase 5.
 | **Pharmacist** | Branch pharmacy | 1 | Medicine catalog, branch stock, and dispensing; transfers (Phase 3) |
 | **Patient** | Patient | 4 | Own appointments, visit summaries, prescriptions, and tickets |
 | **Customer Service** | Patient support | 5 | Tickets; reads patient contact details and appointments |
-| **Manager** | Hospital management | 5 | Aggregated operational reports; manages non-admin staff accounts. **No access to medical records.** |
+| **Manager** | Hospital management | 5 | Aggregated operational reports; manages staff accounts except Admin and Manager. **No access to medical records.** |
 
 **Design rules**
 
@@ -320,7 +320,7 @@ Each story becomes one GitHub issue titled with its ID, for example `APT-1: Book
 | TKT-4 | Customer Service | Reply to patients and add internal notes |
 | TKT-5 | Customer Service | Resolve, close, and reopen tickets |
 | MGR-1 | Manager | View appointment, pharmacy, and ticket reports |
-| MGR-2 | Manager | Manage non-admin staff accounts |
+| MGR-2 | Manager | Manage staff accounts except Admin and Manager |
 
 ### Acceptance criteria for the highest-risk stories
 
@@ -507,20 +507,20 @@ erDiagram
 
 ### 8.1 Authentication and sessions
 
-- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie.
-- **Passwords** are hashed with Argon2id through pwdlib. A wrong email and a wrong password return the same `401` message, and an unknown email is checked against a dummy hash so both take the same time. A stored hash in an unsupported format counts as a wrong password and logs a warning without the hash.
-- **Password rule:** 12 to 128 characters, with no composition rules (NIST SP 800-63B). One Pydantic schema enforces it for every way a password is set: the API and the CLI.
-- **First Admin:** `python -m app.cli create-admin` takes the email and full name as options and the password only from a hidden, confirmed prompt, never as an argument or environment variable. It calls the users service, creates an Admin with `must_change_password` false, and refuses when an active Admin already exists, so it works for a fresh database and for recovery after every Admin has been deactivated. It prints the new user's ID and email, never the password.
+- **Login** uses the OAuth2 password form (the email goes in `username`), so the Authorize button in Swagger UI works. The response body contains the access token, and the refresh token is set as a cookie. Like the refresh and password change responses, which issue tokens too, the response carries `Cache-Control: no-store` and `Pragma: no-cache`, as RFC 6749 §5.1 requires, so no cache stores the tokens. The form caps the email at 255 characters, the size of the `email` column, and the password at 128, the password rule's maximum, so longer input gets a `422` before any lookup (§12).
+- **Passwords** are hashed with Argon2id through pwdlib. Each password is put in Unicode NFC before it is hashed or checked, as NIST SP 800-63B-4 recommends, so the same text typed in another Unicode form still matches. A wrong email and a wrong password return the same `401` message, and an unknown email is checked against a dummy hash so both take the same time. A stored hash in an unsupported format counts as a wrong password and logs a warning without the hash.
+- **Password rule:** 15 to 128 characters, with no composition rules (NIST SP 800-63B-4, which requires at least 15 characters for a password that is the only sign-in factor, as every password here is). One Pydantic schema enforces it for every way a password is set: the API and the CLI.
+- **First Admin:** `python -m app.cli create-admin` takes the email and full name as options and the password only from a hidden, confirmed prompt, never as an argument or environment variable. It calls the users service, creates an Admin with `must_change_password` false, and refuses when an active Admin already exists, so it works for a fresh database and for recovery after every Admin has been deactivated. It prints the new user's ID and email, never the password, and its crash tracebacks never show local variables, which would print the typed password and the database password.
 - **Access token:** an HS256 JWT signed with PyJWT, valid for 15 minutes, containing only `sub` (user ID), `iat`, and `exp`.
 - **Refresh token:** a random opaque value, valid for 7 days. The database stores only its SHA-256 hash. It travels only in a cookie that is `HttpOnly`, `SameSite=Strict`, limited to `Path=/api/v1/auth`, and `Secure` in production.
-- **Rotation and reuse detection:** each refresh revokes the old token and issues a new one that keeps the old token's expiry, so refreshing never extends a session beyond 7 days from sign-in. The token's row is locked while it is checked, so two refreshes with the same cookie are handled one after the other. If a token that was already rotated is used again, it may have been stolen, so every refresh token for that user is revoked and a warning is logged without the token. A token revoked any other way (logout, password change, deactivation) is refused without the alarm: after a password change the user's other devices still hold such tokens, and an alarm would sign out the device that made the change.
-- **Revocation:** logout revokes the current token and clears the cookie. Deactivation, password change, and password reset revoke all of the user's tokens.
-- **Password change:** requires the current password, and the new one must differ from it. Both refusals return `400 BAD_REQUEST`, not `401`, because the web app treats a `401` as an expired session. A successful change clears `must_change_password`, revokes all of the user's tokens, and starts a new 7-day session for the device that made the change.
+- **Rotation and reuse detection:** each refresh revokes the old token and issues a new one that keeps the old token's expiry, so refreshing never extends a session beyond 7 days from sign-in. Refresh locks the user's row, then the token's, while it checks them, and a password change locks the user's row first too. So two refreshes with the same cookie are handled one after the other, and a refresh still running when all of the user's tokens are revoked either finishes first, and its new token is revoked too, or waits and is refused. If a token that was already rotated is used again, it may have been stolen, so every refresh token for that user is revoked and a warning is logged with the request ID and without the token. A token revoked any other way (logout, password change, deactivation) is refused without the alarm: after a password change the user's other devices still hold such tokens, and an alarm would sign out the device that made the change.
+- **Revocation:** logout revokes the current token and clears the cookie. If a refresh of the same token came first and rotated it, logout revokes the replacement instead, because that refresh sent it to the same browser. Deactivation, password change, and password reset revoke all of the user's tokens.
+- **Password change:** requires the current password, and the new one must differ from it. The current password is checked first, so the second refusal can never tell someone who holds only an access token that a guess of the password, sent as the new one, is right. Both refusals return `400 BAD_REQUEST`, not `401`, because the web app treats a `401` as an expired session. A successful change clears `must_change_password`, revokes all of the user's tokens, and starts a new 7-day session for the device that made the change. A sign-in that checked the old password while the change was being saved is refused: once a password has passed, sign-in locks the user's row and checks that the stored hash is still the one it checked against. Failed sign-ins take no lock, so waiting for one can't reveal which accounts exist.
 - **Every request** loads the user from the database; inactive users get `401`.
 - **Forced password change:** while `must_change_password` is set, every endpoint except `/auth/me`, `/auth/refresh`, `/auth/change-password`, and `/auth/logout` returns `403 PASSWORD_CHANGE_REQUIRED`. Refresh stays open so the web app can restore the session after a reload and show the change-password screen.
-- **Rate limiting:** login and portal activation are limited per IP address and per account. The limiter is in memory, which is correct for a single instance; ADR-0004 notes that several instances would need a shared store such as Redis. Over the limit, the API returns `429 RATE_LIMITED`.
+- **Rate limiting:** login and portal activation are limited per IP address and per account. Sign-in counts an account's attempts under the email as the email rule normalizes it, the rule sign-in looks accounts up with, so every spelling of one address, in another letter case or Unicode form or with a display name around it, shares one count. The limiter is in memory, which is correct for a single instance; ADR-0004 notes that several instances would need a shared store such as Redis. Over the limit, the API returns `429 RATE_LIMITED`.
 - **In the web app:** the access token lives in memory only, never in `localStorage`. After a page reload, the app calls `/auth/refresh`; on a `401`, it refreshes once and retries the request.
-- **CSRF protection:** the web app and the API share one origin, and the refresh cookie is `SameSite=Strict`, so other websites can't make the browser send it. No CORS origins are configured in production.
+- **CSRF protection:** the web app and the API share one origin, and the refresh cookie is `SameSite=Strict`, so other websites can't make the browser send it. The API installs no CORS middleware, so browsers don't let other websites read its responses.
 
 ### 8.2 Preventing double-booking
 
@@ -649,8 +649,8 @@ hospital-management-system/
 │   │   │   ├── errors.py          # Domain exceptions and error codes
 │   │   │   ├── logging.py         # Log setup and request-ID middleware
 │   │   │   └── pagination.py
-│   │   ├── db/                    # Declarative base, mixins, session
-│   │   ├── api/                   # deps.py (get_db, get_current_user, require_permission), router.py
+│   │   ├── db/                    # Declarative base, mixins, session, and get_db
+│   │   ├── api/                   # deps.py (get_current_user, require_permission), router.py, health.py
 │   │   └── modules/
 │   │       ├── auth/              # router.py, schemas.py, service.py, repository.py, models.py
 │   │       ├── users/             # Users and staff profiles
@@ -723,7 +723,7 @@ hospital-management-system/
 | Package manager | uv | Fast and lockfile-based |
 | Lint and format | Ruff and pre-commit | One fast tool, run before every commit and in CI |
 | CLI | Typer | `create-admin`, `seed-demo`, and `export-openapi` commands |
-| Tests | pytest, pytest-cov, FastAPI TestClient, Faker | Standard Python testing, with realistic fake data |
+| Tests | pytest, pytest-cov, FastAPI TestClient | Standard Python testing, with coverage, and HTTP requests that need no running server |
 
 ### Frontend
 
@@ -780,14 +780,17 @@ hospital-management-system/
 |---|---|
 | `200` / `201` / `204` | Success |
 | `400` | The request can't be processed, for example an invalid activation code |
-| `401` | Not authenticated, or the token is invalid or expired |
+| `401` | Not authenticated, or the token is invalid or expired. The response always carries `WWW-Authenticate: Bearer` |
 | `403` | Authenticated but missing the permission, or a password change is required |
 | `404` | Doesn't exist, or is outside the user's scope |
+| `405` | The path exists, but not for this HTTP method |
 | `409` | Business conflict: slot taken, invalid state change, insufficient stock |
 | `422` | Validation error |
 | `429` | Too many requests |
+| `500` | Unexpected server error, reported with a generic message only |
+| `503` | A dependency is unavailable, for example the readiness check can't reach the database |
 
-Standard error codes: `VALIDATION_ERROR`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`, `PASSWORD_CHANGE_REQUIRED`, `NOT_FOUND`, `INVALID_STATUS_TRANSITION`, `APPOINTMENT_SLOT_TAKEN`, `INSUFFICIENT_STOCK`, `ACTIVATION_FAILED`, `RATE_LIMITED`.
+Standard error codes: `VALIDATION_ERROR`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`, `PASSWORD_CHANGE_REQUIRED`, `NOT_FOUND`, `INVALID_STATUS_TRANSITION`, `APPOINTMENT_SLOT_TAKEN`, `INSUFFICIENT_STOCK`, `ACTIVATION_FAILED`, `RATE_LIMITED`. The API also sends five generic codes: `BAD_REQUEST` (400) and `CONFLICT` (409) when no more specific code applies, `METHOD_NOT_ALLOWED` (405), `INTERNAL_ERROR` (500), and `SERVICE_UNAVAILABLE` (503). `ErrorCode` in `backend/app/core/errors.py` is the full list.
 
 **OpenAPI:** every route has a summary, a module tag, a response model, and its documented error responses, and the main request bodies include examples.
 
@@ -941,7 +944,7 @@ All paths are under `/api/v1`, except the health checks.
 
 Check every item before each release.
 
-- [ ] Passwords are hashed with Argon2, at least 12 characters long, and never logged or returned
+- [ ] Passwords are hashed with Argon2, at least 15 characters long, and never logged or returned
 - [ ] Access tokens expire in 15 minutes; refresh tokens are hashed, rotated, revocable, and sent only in an `HttpOnly`, `SameSite=Strict` cookie that is `Secure` in production
 - [ ] The web app keeps access tokens in memory only, never in `localStorage`
 - [ ] Every route is Public, Authenticated, or permission-protected, verified by the route guard test
@@ -952,8 +955,8 @@ Check every item before each release.
 - [ ] Activation codes are random, hashed, single-use, expiring, and locked after 5 failed attempts
 - [ ] All SQL goes through SQLAlchemy with bound parameters
 - [ ] Inputs have limits: string lengths, numeric ranges, and a page-size cap
-- [ ] Production runs on one origin with no CORS origins configured
-- [ ] Security headers are set, including a Content-Security-Policy for web app pages
+- [ ] Production runs on one origin, and the API installs no CORS middleware
+- [ ] Security headers are set, including a Content-Security-Policy for web app pages and `Cache-Control: no-store` as the default for API responses, so no cache keeps one that holds personal data, such as `/auth/me`; the token responses already send it (§8.1)
 - [ ] Secrets live only in environment variables; `.env` is git-ignored and blocked from Claude Code; `.env.example` is committed
 - [ ] Production error responses never include stack traces
 - [ ] HTTPS in production; the container runs as a non-root user
@@ -966,7 +969,7 @@ Check every item before each release.
 | Area | Requirement |
 |---|---|
 | Performance | Lists are paginated; no N+1 queries (use `selectinload`); indexes on foreign keys and search columns; web app routes are code-split |
-| Reliability | The readiness check tests the database; migrations run before the server starts; `pool_pre_ping` replaces dropped connections |
+| Reliability | The readiness check tests the database, and a failed check logs its cause; migrations run before the server starts; `pool_pre_ping` replaces dropped connections |
 | Observability | One structured log line per request with request ID, user ID, method, path, status, and duration; an `X-Request-ID` response header |
 | Accessibility | Keyboard-operable screens, labeled form fields, visible focus, and sufficient contrast, targeting WCAG 2.2 AA |
 | Usability | Staff screens are designed for desktop; portal screens also work on phones |
@@ -996,8 +999,8 @@ Check every item before each release.
 ### Rules
 
 - Tests run against PostgreSQL, never SQLite, because the design depends on partial indexes, row locks, and sequences.
-- Each test runs inside an outer transaction that is rolled back afterward, using SQLAlchemy's "join a session into an external transaction" pattern (`join_transaction_mode="create_savepoint"`), so services can still call `commit()`.
-- Factory fixtures create users with any role, patients, medicines, batches, and branches, with Faker data.
+- Each test runs inside an outer transaction that is rolled back afterward, using SQLAlchemy's "join a session into an external transaction" pattern (`join_transaction_mode="create_savepoint"`), so services can still call `commit()`. The test's session is built by the application's `SessionLocal`, so it has the same options. API and CLI tests get that session the way a request or a command gets one: what the test set up is committed first, and whatever the code didn't commit is rolled back when it ends, so a forgotten `commit()` fails a test. No test can reach the development database: the suite refuses every connection through the application's engine, which stays bound to `DATABASE_URL`.
+- Factory functions in `tests/factories.py` build valid users of any role, and patients, medicines, batches, and branches as their modules arrive. Their defaults are fixed and readable, with random values only where a unique column needs them, such as a refresh token's hash, so failures are easy to read and every run is the same. A test overrides only the field it is about.
 - **Authorization matrix test:** a parametrized test sends a request to each protected endpoint as each role and checks for `403` wherever §6 denies access.
 - **Route guard test:** fails if any route isn't marked Public, Authenticated, or permission-protected.
 - **Isolation tests:** two patients, two doctors, and two branches confirm every record-level rule in §6.
@@ -1150,13 +1153,13 @@ You create these settings in `backend/.env` and load them in `backend/app/core/c
 
 | Variable | Example | Notes |
 |---|---|---|
-| `ENVIRONMENT` | `local`, `test`, or `production` | Controls error detail and the cookie's `Secure` flag |
+| `ENVIRONMENT` | `local`, `test`, or `production` | Controls the refresh cookie's `Secure` flag. Error responses are generic in every environment; the traceback goes to the log |
 | `DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms` | Must start with `postgresql+psycopg://` (the settings validator checks it). In production, use Neon's connection string with its `postgresql://` prefix changed to `postgresql+psycopg://`, keeping `sslmode=require` |
+| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`. Without it, every test that needs the database errors with `TEST_DATABASE_URL is not set`, and the suite never falls back to `DATABASE_URL` |
 | `JWT_SECRET_KEY` | *(64 hex characters)* | At least 32 characters and different in every environment; generate with `uv run python -c "import secrets; print(secrets.token_hex(32))"` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | |
 | `HOSPITAL_TIMEZONE` | `Europe/London` | IANA timezone name used for "today" and slot rules |
-| `CORS_ORIGINS` | *(empty)* | Comma-separated; stays empty because the web app and API share one origin |
 | `LOG_LEVEL` | `INFO` | |
 | `DEMO_MODE` | `true` in production | Turns on demo-account protection |
 | `WEB_DIST_DIR` | *(empty locally)* | Phase 2: folder of the built web app inside the container; empty turns serving off |
@@ -1173,7 +1176,7 @@ Runs on every pull request and every push to `main`.
 | `api-contract` | 2 | Export the OpenAPI schema, regenerate the client types, and fail if anything changed |
 | `e2e` | 2 | Start the app and database with Docker Compose, seed demo data, and run Playwright |
 
-`alembic check` fails when the models and migrations don't match, which catches a forgotten migration.
+`alembic check` fails when the models and migrations don't match, which catches a forgotten migration. `env.py` makes it compare server defaults too, and CHECK constraints by name through Alembic's opt-in `checkconstraint_byname` plugin: it catches a CHECK constraint that is added or removed, but not a changed rule under the same name, such as a new enum value. That change needs a migration written by hand and a test that the migrated test database enforces it.
 
 ### Continuous deployment
 

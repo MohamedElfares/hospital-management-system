@@ -1,11 +1,16 @@
 """Application factory: builds and configures the FastAPI application.
 
-This module ties the platform pieces together. Logging is configured first,
-so nothing written during startup is lost; the application then gets the
-error handlers that produce the standard error body, the middleware that
-gives every request an ID, and the routers. ``uv run fastapi dev
-app/main.py`` and the production container both import the module-level
-``app`` built at the bottom.
+This module ties the platform pieces together. Logging is configured
+first, so nothing written during startup is lost; the application then
+gets the error handlers that produce the standard error body, the
+middleware that gives every request an ID, and the routers.
+
+``uv run fastapi dev app/main.py`` serves the module-level ``app`` built
+at the bottom, and the production container will serve it the same way,
+with ``fastapi run app/main.py`` (plan §16): the ``fastapi`` command looks
+for a variable named ``app``. Importing this module therefore needs valid
+settings, for two reasons: it builds ``app`` at import, and its imports
+reach ``app.db.session``, which builds the engine from ``DATABASE_URL``.
 """
 
 # The application class returned by the factory.
@@ -17,13 +22,13 @@ from app.api.health import router as health_router
 # Every module's routes, under the /api/v1 prefix.
 from app.api.router import api_router
 
-# Cached settings; supplies the log level here, and more as the app grows.
+# Cached settings; supplies the log level.
 from app.core.config import get_settings
 
 # Attaches the four handlers that turn any failure into the standard error body.
 from app.core.errors import register_exception_handlers
 
-# Sets the level and format for every log record in the process.
+# Sets the root logger's level and line format, which every app module's log records use.
 from app.core.logging import configure_logging
 
 # Gives each request an ID, returns it in a header, and logs one line per request.
@@ -33,14 +38,19 @@ from app.core.logging import request_context_middleware
 def create_app() -> FastAPI:
     """Build a fully configured application.
 
-    A factory rather than a module-level app: importing this module no
-    longer requires valid settings, and tests can build a separate
-    application per test, for example one bound to a test database. The
-    order matters in one place only: logging is configured before anything
-    else, because records written earlier would be dropped or unformatted.
-    Handlers, middleware, and routers are registered before the server
-    starts serving, and their relative order is not significant while there
-    is a single middleware.
+    A factory rather than only a module-level app, so each test can build
+    its own application and replace a dependency on it, such as ``get_db``
+    for the test's own session, without affecting any other test. The
+    module-level ``app`` below comes from the same function.
+
+    Logging is configured first, because until then Python's fallback
+    writes only warnings and errors, as the bare message, so anything
+    logged earlier would be lost or unformatted. The rest can come in any
+    order: Starlette assembles the middleware stack, error handlers
+    included, when the first request arrives. Order would start to matter
+    with a second middleware, since the last one added runs first, and with
+    routes whose paths overlap, such as the web app's catch-all route,
+    which plan §8.7 registers after all the others.
 
     Returns:
         An application with logging configured, the error handlers
@@ -62,4 +72,5 @@ def create_app() -> FastAPI:
     return app
 
 
+# Module-level so the fastapi command can find it; tests build their own with create_app().
 app = create_app()

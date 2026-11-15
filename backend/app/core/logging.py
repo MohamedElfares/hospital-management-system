@@ -3,9 +3,10 @@
 ``configure_logging`` decides, once at startup, which log records are
 written and what each line looks like. ``request_context_middleware`` gives
 every request an ID, returns it in the ``X-Request-ID`` header, and writes
-one ``key=value`` log line per request with the method, path, status, and
-duration (plan §12, Observability). The same ID appears in error bodies and
-in the log, so a failed request a user reports can be found in the logs.
+one ``key=value`` log line per request with that ID, the signed-in user's
+ID, the method, path, status, and duration (plan §12, Observability). The
+same ID appears in error bodies and in the log, so a failed request a user
+reports can be found in the logs.
 """
 
 # Standard logging; creates this module's logger and configures output.
@@ -17,14 +18,17 @@ import time
 # Generates new request IDs and validates the ones clients send.
 import uuid
 
-# Type of call_next: a function whose result is awaited.
+# Type of call_next's result, which the middleware awaits to get the response.
 from collections.abc import Awaitable
 
-# Type of call_next: something that can be called like a function.
+# Type of call_next: the function that runs the rest of the application.
 from collections.abc import Callable
 
 # Per-request variable, so concurrent requests never see each other's ID.
 from contextvars import ContextVar
+
+# Percent-encodes the path for the log line, so its control characters and spaces stay inert.
+from urllib.parse import quote
 
 # The incoming request; the middleware reads headers and stores the ID on its state.
 from fastapi import Request
@@ -34,8 +38,9 @@ from fastapi import Response
 
 logger = logging.getLogger(__name__)
 
-# Holds the current request's ID for code that has no access to the request,
-# such as services and log helpers. Each concurrent request sees its own value.
+# The current request's ID, for code that never receives the request, such as a
+# service writing a warning. Requests that run at the same time each see only
+# their own ID, and outside a request the value is None.
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
@@ -82,7 +87,22 @@ async def request_context_middleware(
     handlers read it, and ``request_id_var``, for code that doesn't receive
     the request. The log line contains the path but never the query string,
     because query parameters can carry patient names or phone numbers.
-    ``user_id`` is ``None`` until authentication exists (Milestone 1.2).
+    ``duration_ms`` runs from the moment this middleware receives the
+    request until the application starts sending the response.
+
+    The path is percent-encoded again before it is written, because the
+    server hands it over decoded. A client could otherwise put control
+    characters into the log, such as a terminal escape code that rewrites
+    the screen of whoever reads it, or a space that fakes another
+    ``key=value`` field. Starlette already drops line breaks and tabs, and
+    an ordinary path such as ``/api/v1/auth/me`` is logged unchanged.
+
+    ``user_id`` is the signed-in user's ID, which the authentication
+    dependency in ``app.api.deps`` puts on ``request.state`` while the route
+    runs, so this middleware reads it only after the route has finished. It
+    is ``None`` when the request carried no valid token. A user the route
+    refuses after signing them in, such as one with a pending password
+    change, is still named.
 
     The context variable is reset in ``finally``, so one request's ID never
     leaks into later work. When the route raises an unexpected exception,
@@ -110,12 +130,14 @@ async def request_context_middleware(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         duration = (time.perf_counter() - start) * 1000
+        escaped_path = quote(request.url.path, safe="/")
+        user_id = getattr(request.state, "user_id", None)
         logger.info(
             "request_id=%s user_id=%s method=%s path=%s status=%s duration_ms=%.1f",
             request_id,
-            None,
+            user_id,
             request.method,
-            request.url.path,
+            escaped_path,
             response.status_code,
             duration,
         )
@@ -129,14 +151,21 @@ def configure_logging(level: str) -> None:
     """Configure how every log record in the application is written.
 
     Without this, Python's fallback prints only warnings and errors, so the
-    per-request INFO lines would silently disappear. Each line gets a
-    timestamp, level, and logger name in front of the message. ``force=True``
-    replaces any earlier configuration, so calling this again, for example
-    in tests, never adds a second handler that would print every line twice.
+    per-request INFO lines would silently disappear. It sets up the root
+    logger, which receives the records of every module's
+    ``logging.getLogger(__name__)`` logger. Each line gets a timestamp,
+    level, and logger name in front of the message. ``force=True`` replaces
+    any earlier configuration, so calling this again, for example in tests,
+    never adds a second handler that would print every line twice.
 
     Args:
         level: Minimum level to write, such as ``"INFO"``; normally
             ``Settings.log_level``.
+
+    Raises:
+        ValueError: If ``level`` isn't a level name that ``logging`` knows.
+            ``Settings.log_level`` accepts only known names, so this happens
+            only when the function is called directly with another value.
 
     Example:
         ``configure_logging(get_settings().log_level)``

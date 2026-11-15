@@ -50,13 +50,15 @@ a change committed after the request loaded the account, and refuses an
 account deactivated or deleted after loading with the error every rejected
 token gets. A sign-in whose account changes during its password check,
 because the password was changed or the account deactivated or deleted, is
-refused; a password change waits for the user's row lock that a sign-in still
-in flight holds, then revokes the session that sign-in started; and a failed
-sign-in checks the password without locking the account, so failed attempts
-on one account never wait for each other. The refusals that only these races
-reach are checked by their class or their message alone (R-115), and no race
-has a sign-in wait for the user's lock (R-116), or a password change wait
-for another password change (R-117).
+refused with the error every failed sign-in gets; a password change waits for
+the user's row lock that a sign-in still in flight holds, then revokes the
+session that sign-in started; and a failed sign-in checks the password
+without locking the account, so failed attempts on one account never wait
+for each other. Every refusal that no other test reaches, here and in the
+refresh races, has its whole error compared, its status, code, message, and
+details, since the API sends all four. No race has a sign-in wait for the
+user's lock (R-116), or a password change wait for another password change
+(R-117).
 
 The same use cases without a competing request are tested in
 ``tests/test_auth_service.py``, the routes in ``tests/test_auth_api.py``, and
@@ -150,7 +152,7 @@ from app.core.errors import AuthenticationError
 # What a password change with a stale current password raises, which the API answers with 400.
 from app.core.errors import BadRequestError
 
-# Machine-readable error codes; a refresh refused after its user's deletion gets the generic one.
+# Machine-readable error codes; each refusal that only these tests reach must carry the generic one.
 from app.core.errors import ErrorCode
 
 # Makes the raw value of a token a test commits.
@@ -196,8 +198,10 @@ PASSWORD = "Correct-Password-1"
 NEW_PASSWORD = "New-Password-123"
 WRONG_PASSWORD = "Wrong-Password-1"
 
-# The message every rejected token gets, written out rather than imported from
-# the service, so a changed text fails here.
+# The message every failed sign-in gets, and the one every rejected token
+# gets, written out rather than imported from the service, so a changed text
+# fails here.
+INVALID_CREDENTIALS = "Incorrect email or password."
 INVALID_TOKEN = "Invalid or expired token."
 
 # How long a test waits for a request to reach its pause and for a lock wait
@@ -609,6 +613,35 @@ def _token_id(session_factory: SessionFactory, raw_token: str) -> uuid.UUID:
 
     with session_factory() as session:
         return session.execute(statement).scalar_one()
+
+
+def _assert_generic_error(error: AuthenticationError, message: str) -> None:
+    """Check that an error is the very one a failed sign-in or a rejected token gets.
+
+    A sign-in refused because its account changed while it checked the
+    password must look like every other failed sign-in, and a refresh or a
+    password change refused because its account was deactivated or deleted
+    in the meantime like every other rejected token, so the caller can't
+    tell why the request failed. The API sends the error's status, code,
+    message, and details in its response, so all four are compared: a
+    refusal that gave one case a status, a code, or details of its own
+    would tell that case apart, even with the same message. Only the tests
+    in this file reach these refusals; ``tests/test_auth_service.py``
+    compares the others the same way.
+
+    Args:
+        error: The error the request raised.
+        message: The message the generic error carries,
+            ``INVALID_CREDENTIALS`` for a sign-in and ``INVALID_TOKEN`` for
+            a refresh or a password change.
+
+    Raises:
+        AssertionError: If any of the four differs from the generic error's.
+    """
+    assert error.status_code == 401
+    assert error.code == ErrorCode.AUTHENTICATION_FAILED
+    assert error.message == message
+    assert error.details == []
 
 
 def _pause_before_issuing_tokens(monkeypatch: pytest.MonkeyPatch) -> _Pause:
@@ -1413,9 +1446,9 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
     checked it, so the inactive account got a new password and a refresh
     token. No other test reaches this refusal, since through the API the
     bearer-token dependency refuses a deactivated account before the route
-    runs, yet only the error's message is checked: a refusal with details,
-    a code, or a status of its own, which would tell the token's holder
-    that the account is the problem, would pass (R-115).
+    runs, so the whole error is compared here, its status, code, message,
+    and details: a refusal with any of them its own would tell the token's
+    holder that the account is the problem.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1431,7 +1464,7 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
     with session_factory() as session:
         stored_user = session.get(User, committed_user.id)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
     assert stored_user is not None
     assert verify_password(PASSWORD, stored_user.password_hash)
     assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 0
@@ -1449,9 +1482,8 @@ def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
     token gets. Before the fix it ignored what the lock found and changed
     the copy it had loaded, and flushing an ``UPDATE`` that matched no row
     raised SQLAlchemy's ``StaleDataError``, which the API answers with a
-    500. No other test reaches this refusal either, and only the error's
-    message is checked, so one with details, a code, or a status of its
-    own would pass (R-115).
+    500. No other test reaches this refusal either, so the whole error is
+    compared here too.
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1464,7 +1496,7 @@ def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
         with pytest.raises(AuthenticationError) as exc_info:
             service.change_password(session, signed_in_user, data)
 
-    assert exc_info.value.message == INVALID_TOKEN
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
 
 
 def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
@@ -1502,12 +1534,7 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
     with pytest.raises(AuthenticationError) as exc_info:
         competing_future.result()
 
-    error = exc_info.value
-
-    assert error.status_code == 401
-    assert error.code == ErrorCode.AUTHENTICATION_FAILED
-    assert error.message == INVALID_TOKEN
-    assert error.details == []
+    _assert_generic_error(exc_info.value, INVALID_TOKEN)
 
 
 # What can happen to an account while a sign-in checks its password. Each
@@ -1541,10 +1568,11 @@ def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
     it under the lock, which is what refuses a sign-in that meets a change
     still in progress: no race has a sign-in wait for the user's lock
     (R-116). The refusal is the error a wrong password gets at the check,
-    so the test alone can't tell this refusal from one at the check. And
-    only the error's class is checked, although no other test reaches this
-    refusal: one with a message, details, a code, or a status of its own,
-    which would tell the caller why the sign-in failed, would pass (R-115).
+    so the test alone can't tell this refusal from one at the check. No
+    other test reaches this refusal, so the whole error is compared, its
+    status, code, message, and details: every failed sign-in must get the
+    very same one, and a refusal with any of them its own would tell the
+    caller why the sign-in failed.
     """
     pause = _pause_after_the_password_check(monkeypatch)
 
@@ -1557,8 +1585,10 @@ def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
         finally:
             pause.released.set()
 
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError) as exc_info:
         held_login.result()
+
+    _assert_generic_error(exc_info.value, INVALID_CREDENTIALS)
 
 
 def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(

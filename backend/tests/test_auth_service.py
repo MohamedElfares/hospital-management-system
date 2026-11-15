@@ -45,13 +45,13 @@ revokes every session the user had, and starts a new one with a fresh
 window, all in one commit, so a change whose commit fails saves
 nothing, and leaves the sign-in time and every other account alone; a
 wrong current password or an unchanged new one gets a 400 with a
-message of its own and writes nothing, and a wrong current password is
-refused as wrong even when the new one is the real password. No
-sign-out logs or prints a token, the stored hash, or the user's email
-or name, and no password change logs a password, a hash, or a token.
-The password-change gate refuses a user with a pending
-change with a 403 and a code of its own, and lets every other user
-through.
+message of its own and no details and writes nothing, and a wrong
+current password is refused as wrong even when the new one is the real
+password. No sign-out logs or prints a token, the stored hash, or the
+user's email or name, and no password change logs a password, a hash,
+or a token. The password-change gate refuses a user with a pending
+change with a 403 with a code and a message of its own and no details,
+and lets every other user through.
 
 The row locks that keep concurrent requests apart can only be seen from a
 second connection, so ``tests/test_auth_concurrency.py`` tests them. The
@@ -1838,7 +1838,10 @@ def test_a_rejected_change_raises_and_writes_nothing(
     still verify. There is no rollback, so even changes the service made
     without committing would show. The last case fails both checks and
     must get the first one's message, so the current password is checked
-    before the new one is compared with it.
+    before the new one is compared with it. The error's details are
+    compared too, since the API sends them in the 400: details that said
+    whether the new password is the current one would tell a caller who
+    holds only an access token whether a guess of the password is right.
     """
     _save_refresh_token(db_session, user)
     original_hash = user.password_hash
@@ -1856,6 +1859,7 @@ def test_a_rejected_change_raises_and_writes_nothing(
     assert error.status_code == 400
     assert error.code == ErrorCode.BAD_REQUEST
     assert error.message == message
+    assert error.details == []
     assert user.password_hash == original_hash
     assert user.must_change_password is True
     assert len(token_rows) == 1
@@ -1962,9 +1966,10 @@ def test_a_pending_password_change_is_refused(user: User) -> None:
     """A user who must change their password is refused with its own 403 code.
 
     The flag is set explicitly, so the test doesn't depend on the database
-    default. The status, the code, and the message are compared: the code,
-    not the generic ``PERMISSION_DENIED``, is what tells the web app to
-    show the change-password screen instead of an error.
+    default. The status, the code, the message, and the details are
+    compared, since the API sends all four in the 403: the code, not the
+    generic ``PERMISSION_DENIED``, is what tells the web app to show the
+    change-password screen instead of an error.
     """
     user.must_change_password = True
 
@@ -1974,6 +1979,7 @@ def test_a_pending_password_change_is_refused(user: User) -> None:
     assert exc_info.value.status_code == 403
     assert exc_info.value.code == ErrorCode.PASSWORD_CHANGE_REQUIRED
     assert exc_info.value.message == PASSWORD_CHANGE_REQUIRED
+    assert exc_info.value.details == []
 
 
 def test_a_user_without_a_pending_change_passes_the_gate(user: User) -> None:

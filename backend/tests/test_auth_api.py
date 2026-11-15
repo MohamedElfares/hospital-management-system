@@ -67,19 +67,21 @@ ends, and only the new password signs in afterwards, both passwords used
 as typed, spaces included. The new refresh token never appears in the
 body. Nothing a refused or a successful change logs, at any level, holds
 a password typed, the hash from before or after the change, or a token
-the change returned. A refused change gets a 400 with the code and the
-message for its case and no cookie; a body the schema refuses gets a 422
-that names the field and never repeats a password sent, and a form body
-gets a 422 too. Without an access token, or for a deactivated user, the
-change gets a 401 with the code every 401 has. The route stays open
-while a password change is pending, and another device's old cookie is
-refused without signing out the device that made the change. A route
-behind the password-change gate, which ``gated_route`` adds, refuses a
-user with a pending change with a 403 with a code and a message of its
-own, lets a user without one through, answers 401 rather than 403
-without an access token or for a deactivated user with a pending change,
-and lets the user in once the password is changed, since the gate reads
-the flag from the database on every request.
+the change returned. A refused change gets the standard 400, compared
+whole, with the message for its case and no details, and no cookie; a
+body the schema refuses gets a 422 that names the field and never
+repeats a password sent, and a form body gets a 422 too. Without an
+access token, or for a deactivated user, the change gets the standard
+401, compared whole. The route stays open while a password change is
+pending, and another device's old cookie is refused without signing out
+the device that made the change. A route behind the password-change
+gate, which ``gated_route`` adds, refuses a user with a pending change
+with the standard 403, compared whole, with a code and a message of its
+own, lets a user without one through, answers the standard 401 rather
+than a 403 without an access token or for a deactivated user with a
+pending change, each compared whole, and lets the user in once the
+password is changed, since the gate reads the flag from the database on
+every request.
 
 The service's rules are tested on their own in
 ``tests/test_auth_service.py``, the token and cookie helpers in
@@ -1701,13 +1703,14 @@ def test_a_refused_change_is_a_400_without_a_cookie(
     overrides: dict[str, str],
     message: str,
 ) -> None:
-    """A refused change returns a 400 with its code and message, and sets no cookie.
+    """A refused change returns the standard 400, its body compared whole, and sets no cookie.
 
     Nothing changed, so the browser keeps its current cookie: sending a new
-    one would replace a working session for no reason. Only the code and
-    the message are compared, so a 400 with details of its own, which
-    could tell a caller holding only an access token whether a guess of
-    the password, sent as the new one, is right, would pass (R-104).
+    one would replace a working session for no reason. The whole body is
+    compared, so a 400 with details of its own, which could tell a caller
+    who holds only an access token whether a guess of the password, sent
+    as the new one, is right, fails, and so does one without the request
+    ID its ``X-Request-ID`` header carries.
     """
     response = client.post(
         CHANGE_PASSWORD_URL,
@@ -1716,11 +1719,14 @@ def test_a_refused_change_is_a_400_without_a_cookie(
     )
 
     assert response.status_code == 400
-
-    error = response.json()["error"]
-
-    assert error["code"] == ErrorCode.BAD_REQUEST
-    assert error["message"] == message
+    assert response.json() == {
+        "error": {
+            "code": "BAD_REQUEST",
+            "message": message,
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
     assert "set-cookie" not in response.headers
 
 
@@ -1774,16 +1780,24 @@ def test_change_password_without_an_access_token_is_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """Without an access token the change is refused with a 401.
+    """Without an access token the change is refused with the standard 401.
 
     FastAPI's bearer scheme refuses the request, so neither the route nor
-    the service runs. Only the code is compared, so a 401 with a message or
-    details of its own, or without its request ID, would pass (R-104).
+    the service runs. The whole body is compared, so a 401 with a message
+    or details of its own, or without the request ID its ``X-Request-ID``
+    header carries, fails.
     """
     response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body())
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Not authenticated",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 def test_change_password_rejects_a_deactivated_user(
@@ -1797,9 +1811,10 @@ def test_change_password_rejects_a_deactivated_user(
     and is then deactivated. The bearer-token dependency reads the account
     and refuses it before the route runs, so the service's own check, for
     an account deactivated after the request was authenticated, isn't
-    reached here; ``tests/test_auth_concurrency.py`` tests it. Only the
-    code is compared (R-104), and no test sends this route an expired
-    access token (R-106).
+    reached here; ``tests/test_auth_concurrency.py`` tests it. The whole
+    body is compared, so a 401 with details of its own, which would tell
+    the caller that the account is the problem, fails. No test sends this
+    route an expired access token (R-106).
     """
     headers = _auth_header(user)
     user.is_active = False
@@ -1808,7 +1823,14 @@ def test_change_password_rejects_a_deactivated_user(
     response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body(), headers=headers)
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 def test_change_password_works_while_a_password_change_is_pending(
@@ -1890,15 +1912,15 @@ def test_a_pending_password_change_blocks_other_routes(
     user: User,
     client: TestClient,
 ) -> None:
-    """A user who must change their password gets a 403 on a route behind the gate.
+    """A user who must change their password gets the standard 403 on a route behind the gate.
 
     The route asks for the ordinary ``CurrentUser``, as every route that
     needs a signed-in user will, apart from the three the gate leaves open.
     The body has the ``PASSWORD_CHANGE_REQUIRED`` code, which the web app
     reads to show the change-password screen, and the message that tells
-    the user what to do. Only the code and the message are compared, so a
-    403 with details of its own, or without its request ID, would pass
-    (R-104).
+    the user what to do. The whole body is compared, so a 403 with details
+    of its own, or without the request ID its ``X-Request-ID`` header
+    carries, fails.
     """
     user.must_change_password = True
     db_session.flush()
@@ -1906,11 +1928,14 @@ def test_a_pending_password_change_blocks_other_routes(
     response = client.get(GATED_URL, headers=_auth_header(user))
 
     assert response.status_code == 403
-
-    error = response.json()["error"]
-
-    assert error["code"] == ErrorCode.PASSWORD_CHANGE_REQUIRED
-    assert error["message"] == "You must change your password before continuing."
+    assert response.json() == {
+        "error": {
+            "code": "PASSWORD_CHANGE_REQUIRED",
+            "message": "You must change your password before continuing.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 @pytest.mark.usefixtures("gated_route")
@@ -1939,15 +1964,22 @@ def test_a_user_without_a_pending_change_reaches_other_routes(
 def test_a_gated_route_without_an_access_token_is_the_standard_401(client: TestClient) -> None:
     """Without an access token the caller isn't signed in, so it's a 401, never a 403.
 
-    FastAPI's bearer scheme refuses the request before the gate runs. Only
-    the code is compared, so a 401 with a message or details of its own,
-    or without its request ID, would pass (R-104), and no test sends a
-    route behind the gate an expired access token (R-106).
+    FastAPI's bearer scheme refuses the request before the gate runs. The
+    whole body is compared, so a 401 with a message or details of its own,
+    or without the request ID its ``X-Request-ID`` header carries, fails.
+    No test sends a route behind the gate an expired access token (R-106).
     """
     response = client.get(GATED_URL)
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Not authenticated",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 @pytest.mark.usefixtures("gated_route")
@@ -1960,9 +1992,8 @@ def test_a_deactivated_user_with_a_pending_change_gets_401_not_403(
 
     A 403 would tell the holder of an old token that the account still
     exists and only needs a new password; a deactivated account must look
-    like any other rejected token. Only the code is compared, so a 401
-    whose message or details named the deactivated account would pass
-    (R-104).
+    like any other rejected token. The whole body is compared, so a 401
+    whose message or details named the deactivated account fails.
     """
     headers = _auth_header(user)
     user.must_change_password = True
@@ -1972,7 +2003,14 @@ def test_a_deactivated_user_with_a_pending_change_gets_401_not_403(
     response = client.get(GATED_URL, headers=headers)
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == ErrorCode.AUTHENTICATION_FAILED
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 @pytest.mark.usefixtures("gated_route")

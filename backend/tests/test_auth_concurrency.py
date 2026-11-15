@@ -1172,20 +1172,20 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     tokens committed when it started, and the thief kept a session that
     went on refreshing.
     """
-    thief_raw_token = _commit_refresh_token(session_factory, committed_user)
-    stolen_raw_token = _commit_refresh_token(
+    raw_thief_token = _commit_refresh_token(session_factory, committed_user)
+    raw_stolen_token = _commit_refresh_token(
         session_factory,
         committed_user,
         revoked_at=datetime.now(UTC),
-        replaced_by_id=_token_id(session_factory, thief_raw_token),
+        replaced_by_id=_token_id(session_factory, raw_thief_token),
     )
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _refresh_in_new_session(session_factory, thief_raw_token),
-        competing=lambda: _refresh_in_new_session(session_factory, stolen_raw_token),
+        held=lambda: _refresh_in_new_session(session_factory, raw_thief_token),
+        competing=lambda: _refresh_in_new_session(session_factory, raw_stolen_token),
     )
 
     thief_tokens = held_future.result()

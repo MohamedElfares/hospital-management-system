@@ -69,21 +69,22 @@ body. Nothing a change logs, at any level, or prints holds a password
 typed, the hash from before or after the change, the access token sent,
 a token the change returned, the email, or the full name, whether the
 service refuses the change, the schema refuses its body, or it
-succeeds. A refused change gets the standard 400, compared
-whole, with the message for its case and no details, and no cookie; a
-body the schema refuses gets a 422 that names the field and never
-repeats a password sent, and a form body gets a 422 too. Without an
-access token, or for a deactivated user, the change gets the standard
-401, compared whole. The route stays open while a password change is
-pending, and another device's old cookie is refused without signing out
-the device that made the change. A route behind the password-change
-gate, which ``gated_route`` adds, refuses a user with a pending change
-with the standard 403, compared whole, with a code and a message of its
-own, lets a user without one through, answers the standard 401 rather
-than a 403 without an access token or for a deactivated user with a
-pending change, each compared whole, and lets the user in once the
-password is changed, since the gate reads the flag from the database on
-every request.
+succeeds. A refused change gets the standard 400, compared whole, with
+the message for its case and no details, and no cookie; a body the
+schema refuses gets a 422 that names the field and never repeats a
+password sent, and a form body gets a 422 too. Without an access token,
+with an expired one, or for a deactivated user, the change gets the
+standard 401, compared whole. The route stays open while a password
+change is pending, and another device's old cookie is refused without
+signing out the device that made the change. A route behind the
+password-change gate, which ``gated_route`` adds, refuses a user with a
+pending change with the standard 403, compared whole, with a code and a
+message of its own, and lets a user without one through. Without an
+access token, with an expired one, or for a deactivated user, it answers
+the standard 401, compared whole, and never the 403, even when the
+deactivated user's change is pending. Once the password is changed, the
+user gets in, since the gate reads the flag from the database on every
+request.
 
 The service's rules are tested on their own in
 ``tests/test_auth_service.py``, the token and cookie helpers in
@@ -1831,6 +1832,34 @@ def test_change_password_without_an_access_token_is_the_standard_401(
     }
 
 
+def test_change_password_rejects_an_expired_access_token(user: User, client: TestClient) -> None:
+    """An expired access token can't change the password and gets the standard 401.
+
+    The token is signed with the application's key and names the ``user``
+    fixture's account, so its expiry is the only thing wrong with it. The
+    current-user route's test of an expired token pins the dependency this
+    route shares with it; this test shows that the route goes through it.
+    A route that took an expired token would let a stolen one go on
+    guessing the current password after it had expired. The whole body is
+    compared, so a refusal with details of its own fails.
+    """
+    expired_token_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
+
+    response = client.post(
+        CHANGE_PASSWORD_URL, json=_password_change_body(), headers=expired_token_header
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
+
+
 def test_change_password_rejects_a_deactivated_user(
     db_session: Session,
     user: User,
@@ -1844,8 +1873,7 @@ def test_change_password_rejects_a_deactivated_user(
     an account deactivated after the request was authenticated, isn't
     reached here; ``tests/test_auth_concurrency.py`` tests it. The whole
     body is compared, so a 401 with details of its own, which would tell
-    the caller that the account is the problem, fails. No test sends this
-    route an expired access token (R-106).
+    the caller that the account is the problem, fails.
     """
     headers = _auth_header(user)
     user.is_active = False
@@ -1998,7 +2026,6 @@ def test_a_gated_route_without_an_access_token_is_the_standard_401(client: TestC
     FastAPI's bearer scheme refuses the request before the gate runs. The
     whole body is compared, so a 401 with a message or details of its own,
     or without the request ID its ``X-Request-ID`` header carries, fails.
-    No test sends a route behind the gate an expired access token (R-106).
     """
     response = client.get(GATED_URL)
 
@@ -2007,6 +2034,38 @@ def test_a_gated_route_without_an_access_token_is_the_standard_401(client: TestC
         "error": {
             "code": "AUTHENTICATION_FAILED",
             "message": "Not authenticated",
+            "details": [],
+            "request_id": response.headers["x-request-id"],
+        }
+    }
+
+
+@pytest.mark.usefixtures("gated_route")
+def test_a_gated_route_rejects_an_expired_access_token(
+    db_session: Session,
+    user: User,
+    client: TestClient,
+) -> None:
+    """An expired access token gets the standard 401 on a route behind the gate.
+
+    ``CurrentUser`` is what every route that needs a signed-in user will
+    ask for, so this pins its expiry check for all of them, as the
+    current-user route's test pins the dependency it builds on. The flag
+    is cleared first, so the gate has nothing to refuse and the expiry is
+    the only thing that could. The whole body is compared, so a refusal
+    with details of its own fails.
+    """
+    user.must_change_password = False
+    db_session.flush()
+    expired_token_header = {"Authorization": f"Bearer {_expired_access_token(user)}"}
+
+    response = client.get(GATED_URL, headers=expired_token_header)
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "AUTHENTICATION_FAILED",
+            "message": "Invalid or expired token.",
             "details": [],
             "request_id": response.headers["x-request-id"],
         }

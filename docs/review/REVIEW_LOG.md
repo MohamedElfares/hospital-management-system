@@ -1031,6 +1031,20 @@ closes when the last stage is done, so an interrupted run is obvious.
   file changed since its review, by the fixes that followed it, such as
   `config.py` by R-109's. `tests/test_auth_concurrency.py`, stage 25's
   file, has no row yet, so it stays in scope either way.
+- **Merged before stage 25 (2026-11-15):** at your choice ("I am going
+  to merge but after doing the last step"), PR #42 was squash-merged as
+  `8dacfec` once stage 24's findings were settled, rather than after
+  stage 25 as planned on 2026-11-04; its tree is the branch tip's,
+  `410f627`. The run stays open, and stage 25 continues on branch
+  `docs/review-run-1-stage-25`, from `main` at `de8a315`, after three
+  Dependabot merges that changed only `ci.yml` and `backend/uv.lock`.
+  `STATE.md`'s rows were moved by the rule above: 20 to `8dacfec` and 31
+  to its parent, `1510f9d`, which a run of `/review new`'s scope rule
+  on the new branch confirms: the 31 are in scope, with
+  `tests/test_auth_concurrency.py`, and the 20 are not. The commit IDs
+  this entry cites are the pull request's; after the squash they stay
+  readable with `git fetch origin refs/pull/42/head:refs/pull/42/head`,
+  which GitHub keeps at `410f627`.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

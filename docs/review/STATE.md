@@ -46,6 +46,7 @@ with no row has never been reviewed and is always in scope.
 | `backend/tests/test_auth_schemas.py` | `f46a105` | 2026-11-08 | 1 |
 | `backend/tests/test_auth_service.py` | `360f3f1` | 2026-11-09 | 1 |
 | `backend/tests/test_cli.py` | `acf3765` | 2026-11-08 | 1 |
+| `backend/tests/test_config.py` | `62747e8` | 2026-11-15 | 1 |
 | `backend/tests/test_conftest.py` | `bf31a33` | 2026-11-06 | 1 |
 | `backend/tests/test_database.py` | `bf31a33` | 2026-11-06 | 1 |
 | `backend/tests/test_errors.py` | `d8362d5` | 2026-11-06 | 1 |

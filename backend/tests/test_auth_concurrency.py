@@ -523,7 +523,7 @@ def _change_password_in_new_session(
         return service.change_password(session, signed_in_user, data)
 
 
-def _sign_in_in_new_session(session_factory: SessionFactory, password: str) -> IssuedTokens:
+def _login_in_new_session(session_factory: SessionFactory, password: str) -> IssuedTokens:
     """Sign in as the committed user in a session of its own, as one request would.
 
     The email is ``committed_user``'s, typed here as the fixture saves it.
@@ -1286,13 +1286,13 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
     when it started, and the other device stayed signed in after the
     password change.
     """
-    other_device_raw_token = _commit_refresh_token(session_factory, committed_user)
+    raw_other_device_token = _commit_refresh_token(session_factory, committed_user)
     pause = pause_held_refresh(monkeypatch)
 
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _refresh_in_new_session(session_factory, other_device_raw_token),
+        held=lambda: _refresh_in_new_session(session_factory, raw_other_device_token),
         competing=lambda: _change_password_in_new_session(session_factory, committed_user),
     )
 
@@ -1487,15 +1487,15 @@ def test_a_refresh_whose_user_is_deleted_while_it_waits_is_refused(
 
 # What can happen to an account while a sign-in checks its password. Each
 # runs in a session of its own and commits before the sign-in continues.
-ACCOUNT_CHANGES_DURING_SIGN_IN = [
+ACCOUNT_CHANGES_DURING_LOGIN = [
     pytest.param(_change_password_in_new_session, id="password-changed"),
     pytest.param(_deactivate_user_in_new_session, id="deactivated"),
     pytest.param(_delete_user_in_new_session, id="deleted"),
 ]
 
 
-@pytest.mark.parametrize("change_account", ACCOUNT_CHANGES_DURING_SIGN_IN)
-def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check(
+@pytest.mark.parametrize("change_account", ACCOUNT_CHANGES_DURING_LOGIN)
+def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
     change_account: Callable[[SessionFactory, User], object],
     monkeypatch: pytest.MonkeyPatch,
     session_factory: SessionFactory,
@@ -1513,19 +1513,19 @@ def test_a_sign_in_is_refused_when_the_account_changes_during_its_password_check
     pause = _pause_after_the_password_check(monkeypatch)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
-        sign_in = pool.submit(_sign_in_in_new_session, session_factory, PASSWORD)
+        held_login = pool.submit(_login_in_new_session, session_factory, PASSWORD)
 
         try:
-            _wait_until_the_held_request_pauses(pause, sign_in)
+            _wait_until_the_held_request_pauses(pause, held_login)
             change_account(session_factory, committed_user)
         finally:
             pause.released.set()
 
     with pytest.raises(AuthenticationError):
-        sign_in.result()
+        held_login.result()
 
 
-def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
+def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
     session_factory: SessionFactory,
@@ -1545,18 +1545,18 @@ def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
     held_future, competing_future = _race(
         race_engine,
         pause,
-        held=lambda: _sign_in_in_new_session(session_factory, PASSWORD),
+        held=lambda: _login_in_new_session(session_factory, PASSWORD),
         competing=lambda: _change_password_in_new_session(session_factory, committed_user),
     )
 
-    sign_in_tokens = held_future.result()
+    login_tokens = held_future.result()
     this_device_tokens = competing_future.result()
 
-    assert isinstance(sign_in_tokens, IssuedTokens)
+    assert isinstance(login_tokens, IssuedTokens)
     assert isinstance(this_device_tokens, IssuedTokens)
 
     with pytest.raises(AuthenticationError):
-        _refresh_in_new_session(session_factory, sign_in_tokens.refresh_token)
+        _refresh_in_new_session(session_factory, login_tokens.refresh_token)
 
     assert isinstance(
         _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
@@ -1564,7 +1564,7 @@ def test_a_password_change_revokes_the_session_of_a_sign_in_still_in_flight(
     )
 
 
-def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
+def test_a_failed_login_checks_the_password_without_locking_the_account(
     monkeypatch: pytest.MonkeyPatch,
     session_factory: SessionFactory,
     committed_user: User,
@@ -1582,10 +1582,10 @@ def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
     pause = _pause_after_the_password_check(monkeypatch)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
-        first_sign_in = pool.submit(_sign_in_in_new_session, session_factory, WRONG_PASSWORD)
+        held_login = pool.submit(_login_in_new_session, session_factory, WRONG_PASSWORD)
 
         try:
-            _wait_until_the_held_request_pauses(pause, first_sign_in)
+            _wait_until_the_held_request_pauses(pause, held_login)
 
             with session_factory() as session:
                 session.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -1596,4 +1596,4 @@ def test_a_failed_sign_in_checks_the_password_without_locking_the_account(
             pause.released.set()
 
     with pytest.raises(AuthenticationError):
-        first_sign_in.result()
+        held_login.result()

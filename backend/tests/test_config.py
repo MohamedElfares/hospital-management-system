@@ -213,7 +213,7 @@ def test_token_lifetimes_must_be_greater_than_zero(field_name: str, lifetime: in
         pytest.param("../etc/passwd", id="path"),
     ],
 )
-def test_unknown_hospital_timezone_is_rejected(hospital_timezone: str) -> None:
+def test_unknown_or_malformed_hospital_timezone_is_rejected(hospital_timezone: str) -> None:
     """A timezone name the IANA database doesn't know stops startup.
 
     "Today" and appointment slots depend on it, so a typo must fail at once
@@ -312,10 +312,10 @@ def test_settings_repr_hides_the_database_passwords_and_the_secret() -> None:
 
 
 @pytest.mark.parametrize(
-    ("environment", "expected"),
+    ("environment", "is_production"),
     [("local", False), ("test", False), ("production", True)],
 )
-def test_is_production_only_in_production(environment: str, expected: bool) -> None:
+def test_is_production_only_in_production(environment: str, is_production: bool) -> None:
     """Only ``ENVIRONMENT=production`` counts as production.
 
     It decides whether the refresh cookie is marked ``Secure``, so the
@@ -324,4 +324,4 @@ def test_is_production_only_in_production(environment: str, expected: bool) -> N
     """
     settings = _make_settings(environment=environment)
 
-    assert settings.is_production is expected
+    assert settings.is_production is is_production

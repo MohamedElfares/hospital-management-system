@@ -10,16 +10,18 @@ two settings without a default; the values each setting refuses, which
 are an environment or a log level outside its list, a database URL without
 the psycopg 3 driver, a JWT secret under 32 characters, a token lifetime
 of zero or less, and an unknown or malformed timezone; an unknown key in
-``.env``; that neither a printed error nor the settings' ``repr`` shows a
-database password or the secret; and ``is_production``. What a setting
-changes is tested with the code that reads it: the refresh cookie's
-``Secure`` flag in ``tests/test_security.py``, the token lifetimes there
-and in ``tests/test_auth_service.py`` and ``tests/test_auth_api.py``, the
-log level in ``tests/test_logging.py``, and the test database in
+``.env``; that ``.env.example``, copied as it is, is refused only for its
+placeholder secret and lists every setting; that neither a printed error
+nor the settings' ``repr`` shows a database password or the secret; and
+``is_production``. What a setting changes is tested with the code that
+reads it: the refresh cookie's ``Secure`` flag in
+``tests/test_security.py``, the token lifetimes there and in
+``tests/test_auth_service.py`` and ``tests/test_auth_api.py``, the log
+level in ``tests/test_logging.py``, and the test database in
 ``tests/test_database.py``.
 """
 
-# Type of tmp_path, the temporary folder the unknown-key test writes its .env file in.
+# Finds .env.example beside tests/, and types tmp_path, where one test writes its .env file.
 from pathlib import Path
 
 # Test framework: the autouse fixture, parametrize, raises, and the monkeypatch type.
@@ -47,6 +49,9 @@ VALID_DATABASE_URL = "postgresql+psycopg://hms:hms@127.0.0.1:5432/hms"
 
 # Over the 32-character minimum, and plainly not a real secret.
 VALID_JWT_SECRET_KEY = "test-only-signing-key-0123456789abcdef"
+
+# The example settings file the README has a developer copy to .env; the tests only read it.
+EXAMPLE_ENV_FILE = Path(__file__).resolve().parents[1] / ".env.example"
 
 
 @pytest.fixture(autouse=True)
@@ -322,6 +327,50 @@ def test_unknown_key_with_a_value_in_the_env_file_is_rejected(tmp_path: Path) ->
     assert len(errors) == 1
     assert errors[0]["loc"] == ("hospital_timezon",)
     assert errors[0]["type"] == "extra_forbidden"
+
+
+def test_the_example_env_file_is_refused_only_for_its_placeholder_secret() -> None:
+    """``.env.example``, copied as it is, stops startup, and only for its placeholder secret.
+
+    The README has a developer copy the file to ``.env`` and then generate
+    a secret to paste in. The placeholder, ``change-me``, is published in
+    the repository, so a server started with it would sign access tokens
+    that anyone could forge, for any user; it is deliberately shorter than
+    32 characters, so a developer who skips the second step is stopped at
+    startup. Every other line must load as it is, because the README says
+    only ``JWT_SECRET_KEY`` has to be replaced: a leftover key that
+    ``Settings`` no longer has, or a value it refuses, would stop the
+    developer for something else, and the error list would hold it too.
+    The file is read with the fixture's clean environment, and never
+    changed.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=EXAMPLE_ENV_FILE)
+
+    errors = exc_info.value.errors()
+
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("jwt_secret_key",)
+    assert errors[0]["msg"] == "Value error, JWT_SECRET_KEY must be at least 32 characters long"
+
+
+def test_the_example_env_file_lists_every_setting() -> None:
+    """``.env.example`` has one line for each setting, and none for anything else.
+
+    The README says the file lists every setting with a safe development
+    value, so a setting added to ``Settings`` without a line there would
+    be missing from every new developer's ``.env``. The test above can't
+    see that, because the setting then takes its default. Names are
+    compared in upper case, the spelling the file and CI use, and a name
+    listed twice fails too, since python-dotenv would quietly keep only
+    the last value. Blank lines and comments are skipped; every other line
+    is ``NAME=value``.
+    """
+    lines = EXAMPLE_ENV_FILE.read_text(encoding="utf-8").splitlines()
+    listed_names = [line.split("=", 1)[0] for line in lines if line and not line.startswith("#")]
+    setting_names = [field_name.upper() for field_name in Settings.model_fields]
+
+    assert sorted(listed_names) == sorted(setting_names)
 
 
 @pytest.mark.parametrize(

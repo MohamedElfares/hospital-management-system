@@ -1000,12 +1000,13 @@ Check every item before each release.
 
 - Tests run against PostgreSQL, never SQLite, because the design depends on partial indexes, row locks, and sequences.
 - Each test runs inside an outer transaction that is rolled back afterward, using SQLAlchemy's "join a session into an external transaction" pattern (`join_transaction_mode="create_savepoint"`), so services can still call `commit()`. The test's session is built by the application's `SessionLocal`, so it has the same options. API and CLI tests get that session the way a request or a command gets one: what the test set up is committed first, and whatever the code didn't commit is rolled back when it ends, so a forgotten `commit()` fails a test. No test can reach the development database: the suite refuses every connection through the application's engine, which stays bound to `DATABASE_URL`.
+- Tests of row locks are the exception, because a lock only matters between two transactions that commit. `tests/test_auth_concurrency.py` runs them on a database of its own, which it creates next to the test database for each run, migrates the same way, and drops at the end. Each request opens a session from `SessionLocal`, bound to that database, and commits for real, and each test deletes the account it committed. The role in `TEST_DATABASE_URL` must therefore be allowed to create databases.
 - Factory functions in `tests/factories.py` build valid users of any role, and patients, medicines, batches, and branches as their modules arrive. Their defaults are fixed and readable, with random values only where a unique column needs them, such as a refresh token's hash, so failures are easy to read and every run is the same. A test overrides only the field it is about.
 - **Authorization matrix test:** a parametrized test sends a request to each protected endpoint as each role and checks for `403` wherever §6 denies access.
 - **Route guard test:** fails if any route isn't marked Public, Authenticated, or permission-protected.
 - **Isolation tests:** two patients, two doctors, and two branches confirm every record-level rule in §6.
 - **Delegated administration tests:** confirm the Manager rules in MGR-2.
-- **Concurrency tests:** two threads book the same slot, dispense the same prescription, or dispatch the same transfer; exactly one succeeds.
+- **Concurrency tests:** two threads book the same slot, dispense the same prescription, or dispatch the same transfer; exactly one succeeds. They commit on a database of their own, as the row-lock rule above describes.
 - **Conservation test:** stock totals stay consistent across dispensing, adjustments, and transfers.
 - **Contract check:** CI regenerates the web client from the OpenAPI schema and fails if anything changed.
 - **Bug rule:** every bug fix comes with a test that fails before the fix.
@@ -1155,7 +1156,7 @@ You create these settings in `backend/.env` and load them in `backend/app/core/c
 |---|---|---|
 | `ENVIRONMENT` | `local`, `test`, or `production` | Controls the refresh cookie's `Secure` flag. Error responses are generic in every environment; the traceback goes to the log |
 | `DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms` | Must start with `postgresql+psycopg://` (the settings validator checks it). In production, use Neon's connection string with its `postgresql://` prefix changed to `postgresql+psycopg://`, keeping `sslmode=require` |
-| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`. Without it, every test that needs the database errors with `TEST_DATABASE_URL is not set`, and the suite never falls back to `DATABASE_URL` |
+| `TEST_DATABASE_URL` | `postgresql+psycopg://hms:hms@localhost:5432/hms_test` | Local and CI only: the database the tests use, so they never touch development data. Same prefix rule as `DATABASE_URL`. Without it, every test that needs the database errors with `TEST_DATABASE_URL is not set`, and the suite never falls back to `DATABASE_URL`. Its role must be allowed to create databases, because the race tests make one of their own next to it |
 | `JWT_SECRET_KEY` | *(64 hex characters)* | At least 32 characters and different in every environment; generate with `uv run python -c "import secrets; print(secrets.token_hex(32))"` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | |

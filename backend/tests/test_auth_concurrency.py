@@ -52,13 +52,14 @@ token gets. A sign-in whose account changes during its password check,
 because the password was changed or the account deactivated or deleted, is
 refused with the error every failed sign-in gets; a password change waits for
 the user's row lock that a sign-in still in flight holds, then revokes the
-session that sign-in started; and a failed sign-in checks the password
-without locking the account, so failed attempts on one account never wait
-for each other. Every refusal that no other test reaches, here and in the
-refresh races, has its whole error compared, its status, code, message, and
-details, since the API sends all four. No race has a sign-in wait for the
-user's lock (R-116), or a password change wait for another password change
-(R-117).
+session that sign-in started; a sign-in that meets a password change still
+in progress waits for that lock, then is refused; two sign-ins of one
+account sent together take turns at it, and each starts a session; and a
+failed sign-in checks the password without locking the account, so failed
+attempts on one account never wait for each other. Every refusal that only
+the tests in this file reach has its whole error compared, its status, code,
+message, and details, since the API sends all four. No race has a password
+change wait for another password change (R-117).
 
 The same use cases without a competing request are tested in
 ``tests/test_auth_service.py``, the routes in ``tests/test_auth_api.py``, and
@@ -618,7 +619,7 @@ def _token_id(session_factory: SessionFactory, raw_token: str) -> uuid.UUID:
 def _assert_generic_error(error: AuthenticationError, message: str) -> None:
     """Check that an error is the very one a failed sign-in or a rejected token gets.
 
-    A sign-in refused because its account changed while it checked the
+    A sign-in refused because its account changed after it checked the
     password must look like every other failed sign-in, and a refresh or a
     password change refused because its account was deactivated or deleted
     in the meantime like every other rejected token, so the caller can't
@@ -1566,13 +1567,14 @@ def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
     Each change commits before the sign-in asks for the lock, so the test
     shows that the sign-in reads the account again, but not that it reads
     it under the lock, which is what refuses a sign-in that meets a change
-    still in progress: no race has a sign-in wait for the user's lock
-    (R-116). The refusal is the error a wrong password gets at the check,
-    so the test alone can't tell this refusal from one at the check. No
-    other test reaches this refusal, so the whole error is compared, its
-    status, code, message, and details: every failed sign-in must get the
-    very same one, and a refusal with any of them its own would tell the
-    caller why the sign-in failed.
+    still in progress; ``test_a_login_that_waits_for_a_password_change_is_refused``
+    shows that. The refusal is the error a wrong password gets at the
+    check, so this test alone can't tell the two apart, but that race can,
+    since a sign-in waits for the lock only once its password has passed.
+    Only these two tests reach this refusal, so both compare the whole
+    error, its status, code, message, and details: every failed sign-in
+    must get the very same one, and a refusal with any of them its own
+    would tell the caller why the sign-in failed.
     """
     pause = _pause_after_the_password_check(monkeypatch)
 
@@ -1606,8 +1608,9 @@ def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(
     token is refused, while the new session the change started goes on
     refreshing. Before the fix the sign-in held no lock, the change didn't
     wait, and the sign-in's session outlived it. Here the sign-in holds the
-    lock and the change waits; no race has it the other way round, with a
-    sign-in waiting for the user's lock (R-116).
+    lock and the change waits;
+    ``test_a_login_that_waits_for_a_password_change_is_refused`` has it the
+    other way round.
     """
     pause = _pause_before_issuing_tokens(monkeypatch)
 
@@ -1631,6 +1634,104 @@ def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(
         _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
         IssuedTokens,
     )
+
+
+def test_a_login_that_waits_for_a_password_change_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A sign-in that meets a password change still in progress waits for it, then is refused.
+
+    The user changes the password on this device, and the change is held
+    just before it issues its tokens, with the user's row locked and the
+    new hash and the revocation written but not committed. A sign-in with
+    the old password on another device, sent at that moment, still reads
+    the committed account, so its password passes, and it then has to wait
+    for the user's lock. Once the change commits, the sign-in reads the
+    account again under the lock, finds the hash changed, and must be
+    refused with the whole error every failed sign-in gets, so the old
+    password can't start a session that the change should have ended. The
+    sign-in must write nothing, which leaves the change's session as the
+    user's only token, and that session must go on refreshing.
+
+    A sign-in waits for the lock only once its password has passed, since a
+    failed one takes no lock, so this refusal is the one under the lock: a
+    sign-in refused at its check never waits, and the race would fail at
+    once with that refusal. A sign-in that read the account again before
+    it took the lock, or locked it ``FOR KEY SHARE``, which the change's
+    lock doesn't block, would start its session. One that locked with
+    ``NOWAIT`` would fail with an error the API answers with a 500, and one
+    with ``SKIP LOCKED`` would be refused without waiting, as if the
+    account were gone.
+    """
+    pause = _pause_before_issuing_tokens(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _change_password_in_new_session(session_factory, committed_user),
+        competing=lambda: _login_in_new_session(session_factory, PASSWORD),
+    )
+
+    this_device_tokens = held_future.result()
+
+    assert isinstance(this_device_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        competing_future.result()
+
+    _assert_generic_error(exc_info.value, INVALID_CREDENTIALS)
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert isinstance(
+        _refresh_in_new_session(session_factory, this_device_tokens.refresh_token),
+        IssuedTokens,
+    )
+
+
+def test_a_second_login_waits_for_the_first_and_both_start_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+    race_engine: Engine,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """Two sign-ins of one account sent together take turns, and each starts a session.
+
+    A double-clicked button, or two tabs, can send the same sign-in twice
+    at the same moment. The first is held just before it issues its
+    tokens, with the user's row locked and nothing written yet. The second
+    passes its password check, then has to wait for the user's lock, which
+    sign-in takes as refresh and a password change do, so that all three
+    take turns. Once the first commits, the second reads the account again,
+    finds it unchanged, and goes on. Both must start a session, each with
+    its own refresh token, so the user then holds two unrevoked tokens, as
+    after two sign-ins on two devices.
+
+    A sign-in that locked with ``NOWAIT`` would fail the second with an
+    error the API answers with a 500, and one with ``SKIP LOCKED`` would
+    refuse it as if the account were gone. One that locked ``FOR SHARE``
+    would let both take the lock and then deadlock when each recorded its
+    sign-in time, until PostgreSQL aborted one, again a 500. And with
+    ``FOR KEY SHARE`` the second would not wait at all, nor would a
+    password change.
+    """
+    pause = _pause_before_issuing_tokens(monkeypatch)
+
+    held_future, competing_future = _race(
+        race_engine,
+        pause,
+        held=lambda: _login_in_new_session(session_factory, PASSWORD),
+        competing=lambda: _login_in_new_session(session_factory, PASSWORD),
+    )
+
+    first_login_tokens = held_future.result()
+    second_login_tokens = competing_future.result()
+
+    assert isinstance(first_login_tokens, IssuedTokens)
+    assert isinstance(second_login_tokens, IssuedTokens)
+    assert first_login_tokens.refresh_token != second_login_tokens.refresh_token
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 2
 
 
 def test_a_failed_login_checks_the_password_without_locking_the_account(

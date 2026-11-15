@@ -105,7 +105,7 @@ def _run_migrations(database_url: str) -> None:
         Failed: pytest's failure, with Alembic's error output, if the
             migration fails.
     """
-    result = subprocess.run(
+    upgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=Path(__file__).resolve().parents[1],
         env=os.environ | {"DATABASE_URL": database_url},
@@ -114,8 +114,8 @@ def _run_migrations(database_url: str) -> None:
         text=True,
     )
 
-    if result.returncode != 0:
-        pytest.fail(f"Alembic migration failed:\n{result.stderr}", pytrace=False)
+    if upgrade.returncode != 0:
+        pytest.fail(f"Alembic migration failed:\n{upgrade.stderr}", pytrace=False)
 
 
 @pytest.fixture(scope="module")
@@ -242,13 +242,15 @@ def _commit_refresh_token(
     return raw_token
 
 
-def _count_tokens(session_factory: sessionmaker[Session], user: User, *, is_usable: bool) -> int:
+def _count_tokens(
+    session_factory: sessionmaker[Session], user: User, *, is_unrevoked_only: bool
+) -> int:
     """Count a user's refresh tokens, all of them or only the unrevoked ones.
 
     Args:
         session_factory: Makes the session that counts.
         user: The user whose tokens to count.
-        is_usable: True to count only tokens that aren't revoked.
+        is_unrevoked_only: True to count only tokens that aren't revoked.
 
     Returns:
         How many of the user's token rows match.
@@ -257,7 +259,7 @@ def _count_tokens(session_factory: sessionmaker[Session], user: User, *, is_usab
         select(func.count()).select_from(RefreshToken).where(RefreshToken.user_id == user.id)
     )
 
-    if is_usable:
+    if is_unrevoked_only:
         statement = statement.where(RefreshToken.revoked_at.is_(None))
 
     with session_factory() as session:
@@ -435,9 +437,9 @@ def _pause_after_the_token_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     def lookup_then_pause(session: Session, token_hash: str) -> RefreshToken | None:
         """Look the token up as usual, then stop the held request."""
-        token = real_lookup(session, token_hash)
+        found_token = real_lookup(session, token_hash)
         pause.wait_here()
-        return token
+        return found_token
 
     monkeypatch.setattr(repository, "get_refresh_token_by_hash_for_update", lookup_then_pause)
     return pause
@@ -461,9 +463,9 @@ def _pause_after_the_owner_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pause:
 
     def lookup_then_pause(session: Session, token_hash: str) -> uuid.UUID | None:
         """Find the token's user as usual, then stop the held request."""
-        user_id = real_lookup(session, token_hash)
+        found_user_id = real_lookup(session, token_hash)
         pause.wait_here()
-        return user_id
+        return found_user_id
 
     monkeypatch.setattr(repository, "get_refresh_token_user_id_by_hash", lookup_then_pause)
     return pause
@@ -487,9 +489,9 @@ def _pause_after_the_replacement_lookup(monkeypatch: pytest.MonkeyPatch) -> _Pau
 
     def lookup_then_pause(session: Session, token_id: uuid.UUID) -> RefreshToken | None:
         """Look the token up as usual, then stop the held request."""
-        token = real_lookup(session, token_id)
+        found_token = real_lookup(session, token_id)
         pause.wait_here()
-        return token
+        return found_token
 
     monkeypatch.setattr(repository, "get_refresh_token_by_id_for_update", lookup_then_pause)
     return pause
@@ -631,7 +633,7 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
@@ -665,8 +667,8 @@ def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=False) == 1
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 1
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_too(
@@ -699,7 +701,7 @@ def test_a_sign_out_that_waits_for_a_refresh_of_its_token_ends_the_new_session_t
 
     assert isinstance(refreshed_tokens, IssuedTokens)
     assert competing_future.result() is None
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
     with pytest.raises(AuthenticationError):
         _refresh_in_new_session(session_factory, refreshed_tokens.refresh_token)
@@ -742,7 +744,7 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
 # Where the held refresh in the next two tests stops: after all its checks,
@@ -800,7 +802,7 @@ def test_the_reuse_alarm_revokes_the_token_of_a_refresh_still_in_flight(
     with pytest.raises(AuthenticationError):
         competing_future.result()
 
-    assert _count_tokens(session_factory, committed_user, is_usable=True) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
     with pytest.raises(AuthenticationError):
         _refresh_in_new_session(session_factory, thief_tokens.refresh_token)
@@ -950,7 +952,7 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
     assert exc_info.value.message == INVALID_TOKEN
     assert stored_user is not None
     assert verify_password(PASSWORD, stored_user.password_hash)
-    assert _count_tokens(session_factory, committed_user, is_usable=False) == 0
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=False) == 0
 
 
 def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(

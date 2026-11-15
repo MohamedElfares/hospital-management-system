@@ -1,16 +1,51 @@
+"""Tests for ``Settings``, the validated configuration in ``app/core/config.py``.
+
+These are unit tests: they build ``Settings`` directly, never through the
+cached ``get_settings``, with no database and no request. The
+``isolated_environment`` fixture removes every settings variable from the
+environment, and ``_make_settings`` reads no ``.env`` file and supplies
+the two required values, so each test sees only what it passes and
+changes only the setting it is about. The tests check the defaults; the
+two settings without a default; the values each setting refuses, which
+are an environment or a log level outside its list, a database URL without
+the psycopg 3 driver, a JWT secret under 32 characters, a token lifetime
+of zero or less, and an unknown or malformed timezone; an unknown key in
+``.env``; that neither a printed error nor the settings' ``repr`` shows a
+database password or the secret; and ``is_production``. What a setting
+changes is tested with the code that reads it: the refresh cookie's
+``Secure`` flag in ``tests/test_security.py``, the token lifetimes there
+and in ``tests/test_auth_service.py`` and ``tests/test_auth_api.py``, the
+log level in ``tests/test_logging.py``, and the test database in
+``tests/test_database.py``.
+"""
+
+# Type of tmp_path, the temporary folder the unknown-key test writes its .env file in.
 from pathlib import Path
 
+# Test framework: the autouse fixture, parametrize, raises, and the monkeypatch type.
 import pytest
+
+# What Settings raises for a refused value; its errors() name the setting that failed.
 from pydantic import ValidationError
 
+# The settings class under test, built directly in each test.
 from app.core.config import Settings
 
+# The password each rejected value below holds, which no printed error may show.
 LEAKED_PASSWORD = "Leaked-Password-1"
-# Kept short on purpose: pydantic cuts long values in the middle when it
-# prints them, which could hide a leaked password by accident.
+
+# A URL with Neon's postgresql:// prefix, which the URL check refuses, holding the password.
+# Kept short on purpose: pydantic prints a value of up to 50 characters, quotes included, in
+# full, and cuts a longer one in the middle, which could hide a leaked password by accident.
 LEAKED_DATABASE_URL = f"postgresql://u:{LEAKED_PASSWORD}@h/db"
+
+# The same for TEST_DATABASE_URL, which goes through the same check.
 LEAKED_TEST_DATABASE_URL = f"postgresql://u:{LEAKED_PASSWORD}@h/test"
+
+# A URL the check accepts: the development database's, as .env.example and CI give it.
 VALID_DATABASE_URL = "postgresql+psycopg://hms:hms@127.0.0.1:5432/hms"
+
+# Over the 32-character minimum, and plainly not a real secret.
 VALID_JWT_SECRET_KEY = "test-only-signing-key-0123456789abcdef"
 
 
@@ -18,10 +53,16 @@ VALID_JWT_SECRET_KEY = "test-only-signing-key-0123456789abcdef"
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove every settings variable from the environment for each test.
 
-    CI sets ``DATABASE_URL``, ``TEST_DATABASE_URL``, ``JWT_SECRET_KEY``, and
-    ``ENVIRONMENT`` as real environment variables, and ``Settings`` reads
-    those even when no ``.env`` file is used. Clearing them means each test
-    sees only the values it passes, on every machine.
+    CI sets ``DATABASE_URL``, ``TEST_DATABASE_URL``, ``JWT_SECRET_KEY``,
+    ``ENVIRONMENT``, and ``LOG_LEVEL`` as real environment variables, and
+    ``Settings`` reads those even when no ``.env`` file is used: left in
+    place, CI's ``ENVIRONMENT=test`` and ``LOG_LEVEL=WARNING`` would fail
+    the defaults test. Clearing them means each test sees only the values
+    it passes. Each variable is removed under its upper-case name, the
+    spelling CI and ``.env.example`` use. pydantic-settings matches names
+    in any case, and so does the environment on Windows, where that
+    removes every spelling; on Linux, a variable spelled in lower case
+    would survive and still reach the settings.
 
     Args:
         monkeypatch: pytest's helper for changes that are undone after the
@@ -34,9 +75,11 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def _make_settings(**overrides: object) -> Settings:
     """Build settings from keyword values only, with valid required ones.
 
-    ``_env_file=None`` keeps the developer's ``.env`` out of the test, so
-    only the values given here count. Each test passes just the setting it
-    is about.
+    ``_env_file=None`` keeps the developer's ``.env`` out of the test, and
+    ``isolated_environment`` has already removed the settings variables
+    from the environment, so only the values given here count. It fills
+    in a valid database URL and JWT secret, the two settings without a
+    default of their own; each test passes just the setting it is about.
 
     Args:
         **overrides: Settings that replace or add to the valid defaults.
@@ -60,11 +103,14 @@ def _make_settings(**overrides: object) -> Settings:
 def test_only_the_required_settings_give_the_documented_defaults() -> None:
     """With only the two required values set, every other setting has its default.
 
-    This is also the positive control: every rejection test below changes
-    one value of this baseline, so it can only fail because of that value.
-    The token lifetimes matter most, because plan §8.1 fixes them at 15
-    minutes and 7 days, and ``TEST_DATABASE_URL`` must stay unset rather
-    than fall back to the development database.
+    The defaults are the values ``.env.example`` lists, except that
+    ``TEST_DATABASE_URL`` is unset, where the file names the test database
+    for local development. The token lifetimes matter most, because plan
+    §8.1 fixes them at 15 minutes and 7 days, and ``TEST_DATABASE_URL``
+    must stay unset rather than fall back to the development database.
+    This is also the positive control: the other tests start from the same
+    baseline and change only what they are about, so a failure points at
+    that change.
     """
     settings = _make_settings()
 
@@ -82,8 +128,9 @@ def test_only_the_required_settings_give_the_documented_defaults() -> None:
 def test_database_url_and_jwt_secret_key_are_required() -> None:
     """Without the database URL and the JWT secret, the settings refuse to load.
 
-    No default would be safe for either: a default secret would let anyone
-    who reads the code sign access tokens, and a default URL could point the
+    The error names exactly those two settings, each as missing. No default
+    would be safe for either: a default secret would let anyone who reads
+    the code sign access tokens, and a default URL could point the
     application at the wrong database.
     """
     with pytest.raises(ValidationError) as exc_info:
@@ -109,6 +156,9 @@ def test_settings_with_a_fixed_set_of_values_reject_any_other(field_name: str, v
 
     A typo such as ``prod`` must stop startup: read as anything other than
     production, it would quietly drop the refresh cookie's ``Secure`` flag.
+    ``logging`` refuses ``VERBOSE`` too, but only when the application
+    configures it, and its message doesn't name ``LOG_LEVEL``. Each value
+    gets a single ``literal_error`` on its own setting.
     """
     with pytest.raises(ValidationError) as exc_info:
         _make_settings(**{field_name: value})
@@ -134,7 +184,9 @@ def test_database_url_without_the_psycopg_driver_is_rejected(database_url: str) 
 
     The design depends on PostgreSQL features and on psycopg 3. Neon's
     connection string starts with ``postgresql://``, so forgetting to
-    rewrite its prefix is the likeliest mistake of all.
+    rewrite its prefix is the likeliest mistake of all. Each URL gets the
+    one error, whose message names ``DATABASE_URL`` and the prefix it
+    needs.
     """
     with pytest.raises(ValidationError) as exc_info:
         _make_settings(database_url=database_url)
@@ -192,8 +244,10 @@ def test_jwt_secret_key_of_exactly_32_characters_is_accepted() -> None:
 def test_token_lifetimes_must_be_greater_than_zero(field_name: str, lifetime: int) -> None:
     """A token lifetime of zero or less stops startup.
 
-    A token that expires the moment it is issued would sign every user out
-    at once, and a negative lifetime means nothing, so both are refused.
+    A lifetime of zero would issue tokens that have already expired, since
+    both kinds count as expired from their expiry time on, so no one could
+    stay signed in, and a negative lifetime means nothing. Both are
+    refused, for the access token and the refresh token alike.
     """
     with pytest.raises(ValidationError) as exc_info:
         _make_settings(**{field_name: lifetime})
@@ -214,11 +268,15 @@ def test_token_lifetimes_must_be_greater_than_zero(field_name: str, lifetime: in
     ],
 )
 def test_unknown_or_malformed_hospital_timezone_is_rejected(hospital_timezone: str) -> None:
-    """A timezone name the IANA database doesn't know stops startup.
+    """An unknown or malformed timezone name stops startup.
 
-    "Today" and appointment slots depend on it, so a typo must fail at once
-    rather than on the first booking. A path is refused too, so the name
-    can never point the timezone loader at another file.
+    The unknown name fails the lookup in the IANA database, and ``ZoneInfo``
+    refuses the empty string and the path as keys before any lookup, so the
+    name can never point the timezone loader at another file; the validator
+    turns both errors into the same refusal. From Milestone 1.4, "today"
+    and the appointment rules, such as check-in only on the appointment
+    date, depend on the name, so a typo must fail at once rather than on
+    the first booking.
     """
     with pytest.raises(ValidationError) as exc_info:
         _make_settings(hospital_timezone=hospital_timezone)
@@ -291,9 +349,9 @@ def test_settings_repr_hides_the_database_passwords_and_the_secret() -> None:
     """Printing the settings shows neither database password nor the JWT secret.
 
     The settings object can end up in a traceback or a debug print, so the
-    two URLs are left out of its ``repr`` and the secret is masked. The
-    values themselves stay readable, because the application connects with
-    them.
+    two URLs are left out of its ``repr`` and the secret is masked; ``str``
+    hides them the same way, and the test reads both. The values themselves
+    stay readable, because the application connects with them.
     """
     settings = _make_settings(
         database_url="postgresql+psycopg://hms:Leaked-Password-1@db.example.com/hms",

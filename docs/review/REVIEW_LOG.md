@@ -946,6 +946,24 @@ closes when the last stage is done, so an interrupted run is obvious.
   `CLAUDE.md`'s rules from stages 19 to 21 and plan §13's checklist
   already cover, found in tests written before those rules, so no line
   is proposed.
+- **Stage 23's findings fixed (2026-11-15):** R-104 (`6f13645`), R-105
+  (`a4e72ce`), and R-106 (`0828e48`), written at your request ("if
+  there are opening fix them with recommendations and best practices
+  and then push"), one commit each, in ID order, all in the tests. None
+  changes the code under test, so there is no OpenAPI change. Steps
+  beyond the recommendations: R-105's short password is built from
+  `PASSWORD_MIN_LENGTH`, as part 1's overlong one is from the maximum,
+  so the 422 follows the rule, and the module docstrings of both files
+  say what each test now checks. The fixes change
+  `tests/test_auth_api.py` after this stage reviewed it, which its
+  `STATE.md` row at `d9b4837` already sends to the next `/review new`,
+  and `tests/test_auth_service.py` after stage 20 reviewed it, as its
+  row at `360f3f1` does. Each commit passes Ruff and the suite on its
+  own, run like CI in a clean worktree: 409, 409, then 411 tests, with
+  coverage at 99.86%, and the final suite also passes reversed, shuffled
+  twice, and at `LOG_LEVEL` INFO and DEBUG. Run against the fixed suite,
+  all 18 copies the fixes target fail it, as do the 13 controls. No
+  finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

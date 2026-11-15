@@ -13,9 +13,9 @@ parent, `1510f9d`, so the next `/review new` takes it again. The one
 exception is `tests/test_auth_concurrency.py`, reviewed in stage 25 after
 that merge, on branch `docs/review-run-1-stage-25`: its row names
 `33cd514`, where stage 25a documented part 1, because the fixes after
-stages 25a and 25b changed parts 1 and 2 after their reviews, so the next
-`/review new` takes the whole file again. When that branch is merged, the
-row moves by the same rule.
+stages 25a, 25b, and 25c changed all three parts after their reviews, so
+the next `/review new` takes the whole file again. When that branch is
+merged, the row moves by the same rule.
 
 | File | Reviewed at commit | Date | Run |
 |---|---|---|---|

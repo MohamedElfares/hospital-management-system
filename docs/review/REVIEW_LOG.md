@@ -1202,6 +1202,34 @@ closes when the last stage is done, so an interrupted run is obvious.
   proposed for recurring findings, in stages 2, 8, 12b, 13, 19, 20, 21,
   and 22, and all were accepted: seven new lines, and stage 13's in
   place of stage 2's.
+- **Stage 25c's findings fixed (2026-11-15):** R-115 (`cec06c9`), R-116
+  (`62cfd03`), and R-117 (`64a9f89`), written at your request ("fix the
+  open findings with recommendations and best practices, then push"),
+  one commit each, in ID order, which is also their dependency order,
+  since R-116's first race compares its refusal through R-115's helper.
+  Steps beyond the recommendations: R-115's fix was also run against
+  R-113's copies, since the helper now holds that test's asserts; R-116's
+  first race was probed with a wrong password, which fails it at once
+  with the refusal from the password check, as the refusal test's
+  docstring now says; and R-117's race also checks that the first
+  change's session still refreshes, with a `new_password` option on
+  `_change_password_in_new_session` and the committed-change test's
+  third password now the constant `THIRD_PASSWORD`. The fixes change all
+  three parts of `tests/test_auth_concurrency.py` after their reviews,
+  so the file's `STATE.md` row still names `33cd514`, as its intro now
+  says, and the next `/review new` takes the whole file again, the three
+  new races, the new helper, and the new pause included. Each commit
+  passes Ruff and the suite on its own, run like CI in a clean worktree:
+  422, 424, then 425 tests, with coverage at 99.86%, and the final race
+  file also passes reversed, shuffled twice, and at `LOG_LEVEL` INFO and
+  DEBUG. Run against the fixed file, all 13 copies the findings named
+  fail it, as do the sign-in that locks `FOR KEY SHARE`, R-113's four,
+  the four owner-lookup copies, and every control but one, sign-in's own
+  locked read with the shared function's options, which passes, as it
+  should; each new race passed ten runs in a row. With these, all 117 findings of run 1 are settled: 115 resolved
+  by a change (112 fixes, R-002's naming rule applied in its stages,
+  R-007's removal, and R-030's rename), R-013 settled as fine, and R-034
+  turned into issue #41. No finding is open.
 
 Each ticked stage lists its `refactor` and `docs` commit SHAs.
 

@@ -42,16 +42,21 @@ its checks or right after it has locked the token, and then revokes the
 token that refresh issued. A refresh whose user is deleted while it waits
 for the user's lock is refused with the error every rejected token gets.
 
-The password change and sign-in races: a password change revokes the token of
-a refresh still in flight, held at either of those points, and never waits
-for a refresh that has only found its user. It checks the current password
-against a change committed after the request loaded the account, and refuses
-an account deactivated or deleted after loading with the usual token error. A
-sign-in whose account changes during its password check, because the
-password was changed or the account deactivated or deleted, is refused; a
-password change revokes the session of a sign-in still in flight; and a
-failed sign-in checks the password without locking the account, so failed
-attempts on one account never wait for each other.
+The password change and sign-in races: a password change waits for the
+user's row lock that a refresh still in flight holds, held at either of those
+points, then revokes the token that refresh issued, and it never waits for a
+refresh that has only found its user. It checks the current password against
+a change committed after the request loaded the account, and refuses an
+account deactivated or deleted after loading with the error every rejected
+token gets. A sign-in whose account changes during its password check,
+because the password was changed or the account deactivated or deleted, is
+refused; a password change waits for the user's row lock that a sign-in still
+in flight holds, then revokes the session that sign-in started; and a failed
+sign-in checks the password without locking the account, so failed attempts
+on one account never wait for each other. The refusals that only these races
+reach are checked by their class or their message alone (R-115), and no race
+has a sign-in wait for the user's lock (R-116), or a password change wait
+for another password change (R-117).
 
 The same use cases without a competing request are tested in
 ``tests/test_auth_service.py``, the routes in ``tests/test_auth_api.py``, and
@@ -1278,13 +1283,15 @@ def test_a_password_change_revokes_the_token_of_a_refresh_still_in_flight(
 ) -> None:
     """A password change also ends a session another device is refreshing at that moment.
 
-    The other device's refresh is held with its locks taken, and the user
+    The other device's refresh is held with the user's row and its token's
+    locked, at either point of ``HELD_REFRESH_PAUSES``, and the user
     changes the password on this device. The change has to wait for the
-    held refresh, then revoke the token that refresh issued along with the
-    rest, while this device keeps the new session the change started.
-    Before the fix the change's revocation saw only the tokens committed
-    when it started, and the other device stayed signed in after the
-    password change.
+    user's lock until the held refresh commits, then revokes the token that
+    refresh issued along with the rest, so the other device's next refresh
+    is refused, while the new session the change started goes on
+    refreshing. Before the fix, when neither request took the user's lock,
+    the change's revocation saw only the tokens committed when it started,
+    and the other device stayed signed in after the password change.
     """
     raw_other_device_token = _commit_refresh_token(session_factory, committed_user)
     pause = pause_held_refresh(monkeypatch)
@@ -1316,16 +1323,21 @@ def test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_use
     session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A refresh takes no lock before it locks the user, so a password change never waits for it.
+    """A refresh holds no row lock until it locks the user, so a password change never waits for it.
 
     The refresh is held right after its first lookup, which reads only the
-    token's user. A password change of the same user must then finish
-    without waiting: ``lock_timeout`` turns any wait into an error. If that
-    lookup locked the token, the held refresh would go on to wait for the
-    user's lock while holding the token, and a password change, holding
-    the user's lock, would wait for the token: a deadlock, which PostgreSQL
-    ends by aborting one of them with an error. Released after the change,
-    the refresh finds its token revoked and is refused.
+    token's user and holds only the lock every read takes on the table. A
+    password change of the same user must then finish without waiting:
+    ``lock_timeout`` turns any wait into an error. If that lookup locked
+    the token's row in a mode the change's revocation waits for,
+    ``FOR SHARE`` or a stronger one, the held refresh would go on to wait
+    for the user's lock while holding the token, and a password change,
+    holding the user's lock, would wait for the token: a deadlock, which
+    PostgreSQL ends by aborting one of them with an error. The weakest,
+    ``FOR KEY SHARE``, blocks no revocation, so this test can't see it;
+    ``test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user``
+    does. Released after the change, the refresh finds its token revoked
+    and is refused.
     """
     raw_token = _commit_refresh_token(session_factory, committed_user)
     pause = _pause_after_the_owner_lookup(monkeypatch)
@@ -1359,9 +1371,14 @@ def test_a_password_change_is_checked_against_a_change_committed_after_loading(
     This request loads the user first, as its authentication does. Another
     device then changes the password from ``PASSWORD`` and commits before
     this request continues with the same old password. It must be refused,
-    because the stored password is no longer the one it gives. Checked
-    against the copy it loaded at the start, it would succeed and silently
-    overwrite the other device's change.
+    because the stored password is no longer the one it gives, and the
+    other device's password must stay. Checked against the copy it loaded
+    at the start, it would succeed and silently overwrite the other
+    device's change. The other change commits before this request asks for
+    its lock, so the test shows that the check reads the stored hash
+    afresh, not that it reads it under the lock: no race has a password
+    change wait for another one, and a change that checked the passwords
+    before it took its lock would pass (R-117).
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1389,11 +1406,16 @@ def test_a_password_change_is_refused_when_the_account_is_deactivated_after_load
 
     This request loads the user first, as its authentication does, and the
     account is then deactivated on another connection. The change reads
-    the account again under its lock, so it must refuse with the usual
-    token error, as the request's authentication would refuse it now, keep
-    the old password, and issue no session. Before the fix it went on with
-    the account it had loaded, so the inactive account got a new password
-    and a refresh token.
+    the account again under its lock, so it must refuse with the error
+    every rejected token gets, as the request's authentication would
+    refuse it now, keep the old password, and issue no session. Before the
+    fix the change took the lock and read the account again, but never
+    checked it, so the inactive account got a new password and a refresh
+    token. No other test reaches this refusal, since through the API the
+    bearer-token dependency refuses a deactivated account before the route
+    runs, yet only the error's message is checked: a refusal with details,
+    a code, or a status of its own, which would tell the token's holder
+    that the account is the problem, would pass (R-115).
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1419,14 +1441,17 @@ def test_a_password_change_is_refused_when_the_account_is_deleted_after_loading(
     session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A password change gets the usual refusal, not a 500, if its account is deleted after loading.
+    """A password change is refused, not answered with a 500, if its account is deleted after loading.
 
-    The app never deletes users, but a development database can be reset
-    while a browser still holds a token. The change finds no account under
-    its lock, so it must raise the usual token error. Before the fix it
-    changed the copy it had loaded, and flushing an ``UPDATE`` that matched
-    no row raised SQLAlchemy's ``StaleDataError``, which the API answers
-    with a 500.
+    The application never deletes users, but a development database can
+    be reset while a browser still holds a token. The change finds no
+    account under its lock, so it must raise the error every rejected
+    token gets. Before the fix it ignored what the lock found and changed
+    the copy it had loaded, and flushing an ``UPDATE`` that matched no row
+    raised SQLAlchemy's ``StaleDataError``, which the API answers with a
+    500. No other test reaches this refusal either, and only the error's
+    message is checked, so one with details, a code, or a status of its
+    own would pass (R-115).
     """
     with session_factory() as session:
         signed_in_user = session.get(User, committed_user.id)
@@ -1501,14 +1526,25 @@ def test_a_login_is_refused_when_the_account_changes_during_its_password_check(
     session_factory: SessionFactory,
     committed_user: User,
 ) -> None:
-    """A sign-in whose account changes while it checks the password starts no session.
+    """A sign-in whose account changes while it checks the password is refused.
 
     The sign-in is held right after its check passed, against the account
-    as it read it, and the account then changes and commits: its password
-    is changed, it is deactivated, or it is deleted. Released, the sign-in
-    must be refused with the usual error. Before the fix it went on with
-    what it had read, so a sign-in with the old password kept a session
-    that the password change should have ended.
+    as it read it, with no row locked, and the account then changes and
+    commits: its password is changed, it is deactivated, or it is deleted.
+    Released, the sign-in locks the account, reads it again, and must be
+    refused. Before the fix it went on with what it had read, so a sign-in
+    with the old password kept a session that the password change should
+    have ended.
+
+    Each change commits before the sign-in asks for the lock, so the test
+    shows that the sign-in reads the account again, but not that it reads
+    it under the lock, which is what refuses a sign-in that meets a change
+    still in progress: no race has a sign-in wait for the user's lock
+    (R-116). The refusal is the error a wrong password gets at the check,
+    so the test alone can't tell this refusal from one at the check. And
+    only the error's class is checked, although no other test reaches this
+    refusal: one with a message, details, a code, or a status of its own,
+    which would tell the caller why the sign-in failed, would pass (R-115).
     """
     pause = _pause_after_the_password_check(monkeypatch)
 
@@ -1533,12 +1569,15 @@ def test_a_password_change_revokes_the_session_of_a_login_still_in_flight(
 ) -> None:
     """A password change also ends a session that a sign-in is starting at that moment.
 
-    The sign-in is held after its checks, with the account locked, and the
-    user changes the password on another device. The change has to wait
-    for the held sign-in, then revoke the session it started along with
-    the rest, while the changing device keeps its own new session. Before
-    the fix the sign-in held no lock, the change didn't wait, and the
-    sign-in's session outlived it.
+    A sign-in on another device is held after its checks, with the user's
+    row locked, and the user changes the password on this device. The
+    change has to wait for the user's lock until the held sign-in commits,
+    then revokes the session that sign-in started, so a refresh with its
+    token is refused, while the new session the change started goes on
+    refreshing. Before the fix the sign-in held no lock, the change didn't
+    wait, and the sign-in's session outlived it. Here the sign-in holds the
+    lock and the change waits; no race has it the other way round, with a
+    sign-in waiting for the user's lock (R-116).
     """
     pause = _pause_before_issuing_tokens(monkeypatch)
 
@@ -1571,13 +1610,16 @@ def test_a_failed_login_checks_the_password_without_locking_the_account(
 ) -> None:
     """Two failed sign-ins of one account never wait for each other.
 
-    A sign-in with a wrong password is held right after its check. A second
-    wrong-password sign-in for the same account must be refused at once,
-    without waiting for a lock: ``lock_timeout`` turns any wait into an
-    error. If sign-in locked the account before the check, the second
-    attempt would wait for the first, while attempts on an unknown email
-    never wait, and that difference in time would tell an attacker which
-    accounts exist. Sign-in therefore locks only after a password passes.
+    A sign-in with a wrong password for the committed account is held right
+    after its check, with no row locked. A second wrong-password sign-in
+    for the same account must then be refused without waiting for a lock:
+    ``lock_timeout`` turns any wait into an error. If sign-in locked the
+    account before the check, the held attempt would hold that lock and
+    the second would wait for it, while attempts on an unknown email never
+    wait, so that difference in time would tell an attacker which accounts
+    exist. Sign-in therefore locks only after a password passes. Both
+    refusals are the one a wrong password gets at the check, whose whole
+    error ``tests/test_auth_service.py`` compares.
     """
     pause = _pause_after_the_password_check(monkeypatch)
 

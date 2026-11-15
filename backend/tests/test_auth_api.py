@@ -60,19 +60,26 @@ hash, the email, or the full name. Without an access token it gets the
 standard 401, compared whole, and ends no session, and it works without
 a cookie and while a password change is pending.
 
-A password change answers with a new access token and a new cookie, ends
-the session from before the change, and lets only the new password sign
-in, both passwords used as typed; the new refresh token never appears in
-the body, and no password, hash, or token is logged. A refused change
-gets the standard 400 with its message and no cookie, an invalid or form
-body gets a 422, and a missing access token or a deactivated user gets a
-401. The route stays open while a password change is pending, and another
-device's old cookie is refused without signing out the device that made
-the change. A route that applies the password-change gate, which
-``gated_route`` adds, refuses a user with a pending change with a 403 and
-a code of its own, lets a user without one through, answers 401 rather
-than 403 without an access token or for a deactivated user, and lets the
-user in once the password is changed.
+A password change answers with a bearer access token that names the user
+and opens the current-user route, and with one new cookie, with the
+cookie's flags, that refresh accepts; the session from before the change
+ends, and only the new password signs in afterwards, both passwords used
+as typed, spaces included. The new refresh token never appears in the
+body. Nothing a refused or a successful change logs, at any level, holds
+a password typed, the hash from before or after the change, or a token
+the change returned. A refused change gets a 400 with the code and the
+message for its case and no cookie; a body the schema refuses gets a 422
+that names the field and never repeats a password sent, and a form body
+gets a 422 too. Without an access token, or for a deactivated user, the
+change gets a 401 with the code every 401 has. The route stays open
+while a password change is pending, and another device's old cookie is
+refused without signing out the device that made the change. A route
+behind the password-change gate, which ``gated_route`` adds, refuses a
+user with a pending change with a 403 with a code and a message of its
+own, lets a user without one through, answers 401 rather than 403
+without an access token or for a deactivated user with a pending change,
+and lets the user in once the password is changed, since the gate reads
+the flag from the database on every request.
 
 The service's rules are tested on their own in
 ``tests/test_auth_service.py``, the token and cookie helpers in
@@ -1475,7 +1482,15 @@ def test_logout_works_while_a_password_change_is_pending(
 
 
 def test_change_password_returns_a_new_access_token(user: User, client: TestClient) -> None:
-    """A successful change returns a bearer access token that works on /auth/me."""
+    """A successful change returns a bearer access token that works on /auth/me.
+
+    Decoding the token with the application's key proves it is genuine and
+    names the user, and the current-user route accepts it. Two tokens
+    signed for one user in the same second are the same string, so the
+    test can't tell the new token from the one the request sent, which
+    keeps working until it expires; that the change starts a new session
+    shows in the cookie it sets.
+    """
     response = client.post(
         CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
     )
@@ -1495,9 +1510,15 @@ def test_change_password_sets_a_new_refresh_cookie(user: User, client: TestClien
 
     The user signs in first, so the browser holds a cookie. Changing the
     password revokes that token, so the response must send exactly one new
-    cookie with the same security flags. Without it, the device would be
-    signed out when its access token expires. The new cookie differs from
-    the old one, and ``/auth/refresh`` accepts it.
+    cookie, with ``HttpOnly``, ``SameSite=Strict``, and the auth path,
+    checked as text, as the sign-in cookie test does. Without it, the
+    device would be signed out when its access token expires. The new
+    cookie differs from the old one and replaces it in the client's jar,
+    so the refresh that follows sends only the new one, which
+    ``/auth/refresh`` accepts. ``Max-Age`` and ``Secure`` aren't checked
+    here: ``set_refresh_cookie`` sets both, and the sign-in cookie test
+    pins its lifetime, which a change starts afresh, as sign-in does, and
+    ``tests/test_security.py`` its ``Secure`` flag in production.
     """
     login_response = client.post(LOGIN_URL, data={"username": user.email, "password": PASSWORD})
 
@@ -1554,7 +1575,11 @@ def test_change_password_ends_the_old_session(user: User, client: TestClient) ->
 
 
 def test_only_the_new_password_signs_in(user: User, client: TestClient) -> None:
-    """After the change, the new password signs in and the old one is refused."""
+    """After the change, the new password signs in and the old one is refused.
+
+    The change's status is checked first, so a refused change fails there,
+    not at the old password's sign-in.
+    """
     change_response = client.post(
         CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
     )
@@ -1603,7 +1628,11 @@ def test_change_password_keeps_the_spaces_around_both_passwords(
 
 
 def test_the_new_refresh_token_never_appears_in_the_body(user: User, client: TestClient) -> None:
-    """The new refresh token travels only in its HttpOnly cookie, never in the body."""
+    """The new refresh token's value appears nowhere in the response body.
+
+    The body is searched as text, so the token can't hide in any field. It
+    must stay in the ``HttpOnly`` cookie, out of reach of page scripts.
+    """
     response = client.post(
         CHANGE_PASSWORD_URL, json=_password_change_body(), headers=_auth_header(user)
     )
@@ -1621,7 +1650,7 @@ def test_change_password_logs_neither_the_passwords_nor_the_tokens(
     client: TestClient,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A password change through the API logs no password, hash, or token at any level.
+    """A password change through the API logs no password, no hash, and neither token it returns.
 
     The service test of the same name sees only the service. Here the
     route, its dependencies, the middleware, and the error handler run
@@ -1631,7 +1660,12 @@ def test_change_password_logs_neither_the_passwords_nor_the_tokens(
     before the change, the new hash, read back from the database, nor
     either token the successful change returned may appear in the
     captured text: the access token from the body, and the refresh token
-    from the cookie.
+    from the cookie. What a change prints isn't captured; the access token
+    it is sent is found only when it is the same string as the one it
+    returns, which holds only when both were signed in the same second;
+    the email and the full name, which the change reads with the account,
+    aren't looked for; and no body the schema refuses is sent, although
+    FastAPI's validation error holds the real current password (R-105).
     """
     headers = _auth_header(user)
     original_hash = user.password_hash
@@ -1667,10 +1701,13 @@ def test_a_refused_change_is_a_400_without_a_cookie(
     overrides: dict[str, str],
     message: str,
 ) -> None:
-    """A refused change returns the standard 400 with its message and sets no cookie.
+    """A refused change returns a 400 with its code and message, and sets no cookie.
 
     Nothing changed, so the browser keeps its current cookie: sending a new
-    one would replace a working session for no reason.
+    one would replace a working session for no reason. Only the code and
+    the message are compared, so a 400 with details of its own, which
+    could tell a caller holding only an access token whether a guess of
+    the password, sent as the new one, is right, would pass (R-104).
     """
     response = client.post(
         CHANGE_PASSWORD_URL,
@@ -1694,10 +1731,16 @@ def test_change_password_with_an_invalid_body_is_a_validation_error(
     body: dict[str, str],
     field: str,
 ) -> None:
-    """A body that breaks the password rule is a 422 naming the field.
+    """A body the schema refuses is a 422 that names the field.
 
-    The error body never contains a password that was sent, so a rejected
-    password can't end up in logs or in the browser's network panel.
+    The cases are a new password one character shorter than the rule
+    allows, a current password one character longer than any password can
+    be, and a body without the new password. The response never repeats a
+    password that was sent, so the browser's network panel can't show one.
+    Only the response is read: no test captures what the validation handler
+    logs, although FastAPI's validation error holds the body as it was
+    sent, so for the short and the missing new password it holds the real
+    current password (R-105).
     """
     response = client.post(CHANGE_PASSWORD_URL, json=body, headers=_auth_header(user))
 
@@ -1714,7 +1757,12 @@ def test_change_password_with_a_form_body_is_a_validation_error(
     user: User,
     client: TestClient,
 ) -> None:
-    """The route reads JSON only; a form body like login's is a 422."""
+    """The route reads JSON only; a form body like sign-in's is a 422.
+
+    FastAPI parses a body as JSON only when its content type says JSON, so
+    the form reaches validation as raw bytes, which aren't an object with
+    fields, and the request is refused before the route runs.
+    """
     response = client.post(
         CHANGE_PASSWORD_URL, data=_password_change_body(), headers=_auth_header(user)
     )
@@ -1726,7 +1774,12 @@ def test_change_password_without_an_access_token_is_the_standard_401(
     user: User,
     client: TestClient,
 ) -> None:
-    """Without an access token the change is refused with the standard 401 body."""
+    """Without an access token the change is refused with a 401.
+
+    FastAPI's bearer scheme refuses the request, so neither the route nor
+    the service runs. Only the code is compared, so a 401 with a message or
+    details of its own, or without its request ID, would pass (R-104).
+    """
     response = client.post(CHANGE_PASSWORD_URL, json=_password_change_body())
 
     assert response.status_code == 401
@@ -1738,7 +1791,16 @@ def test_change_password_rejects_a_deactivated_user(
     user: User,
     client: TestClient,
 ) -> None:
-    """A deactivated user's still-valid access token can't change the password."""
+    """A deactivated user's still-valid access token can't change the password.
+
+    The header is built while the user is active, as when someone signs in
+    and is then deactivated. The bearer-token dependency reads the account
+    and refuses it before the route runs, so the service's own check, for
+    an account deactivated after the request was authenticated, isn't
+    reached here; ``tests/test_auth_concurrency.py`` tests it. Only the
+    code is compared (R-104), and no test sends this route an expired
+    access token (R-106).
+    """
     headers = _auth_header(user)
     user.is_active = False
     db_session.flush()
@@ -1754,11 +1816,13 @@ def test_change_password_works_while_a_password_change_is_pending(
     user: User,
     client: TestClient,
 ) -> None:
-    """A user who must change their password can still reach this route.
+    """A user who must change their password can still change it.
 
-    This route is how the forced change gets done, so the 7d gate must
-    exempt it. The test passes today and keeps that exemption in place once
-    the gate is added.
+    This route is how the forced change gets done, so the password-change
+    gate, which every route that asks for ``CurrentUser`` applies, must not
+    cover it; this test fails if the route asks for ``CurrentUser``. The
+    flag is set here, although the fixture's account already has it, so
+    the test doesn't rest on that default.
     """
     user.must_change_password = True
     db_session.flush()
@@ -1826,11 +1890,15 @@ def test_a_pending_password_change_blocks_other_routes(
     user: User,
     client: TestClient,
 ) -> None:
-    """A user who must change their password gets the standard 403 elsewhere.
+    """A user who must change their password gets a 403 on a route behind the gate.
 
-    The route uses the ordinary ``CurrentUser``, as every route outside the
-    exempt three does. The body has the ``PASSWORD_CHANGE_REQUIRED`` code
-    the web app reads to show the change-password screen.
+    The route asks for the ordinary ``CurrentUser``, as every route that
+    needs a signed-in user will, apart from the three the gate leaves open.
+    The body has the ``PASSWORD_CHANGE_REQUIRED`` code, which the web app
+    reads to show the change-password screen, and the message that tells
+    the user what to do. Only the code and the message are compared, so a
+    403 with details of its own, or without its request ID, would pass
+    (R-104).
     """
     user.must_change_password = True
     db_session.flush()
@@ -1854,7 +1922,9 @@ def test_a_user_without_a_pending_change_reaches_other_routes(
     """Without a pending change the same route answers 200 for that user.
 
     This is the positive control: it proves the test route works, so the
-    403 in the previous test comes from the gate and nothing else.
+    403 in ``test_a_pending_password_change_blocks_other_routes`` comes
+    from the gate and nothing else. The body names the user, so the route
+    ran for the account the token names.
     """
     user.must_change_password = False
     db_session.flush()
@@ -1867,7 +1937,13 @@ def test_a_user_without_a_pending_change_reaches_other_routes(
 
 @pytest.mark.usefixtures("gated_route")
 def test_a_gated_route_without_an_access_token_is_the_standard_401(client: TestClient) -> None:
-    """Without an access token the caller isn't signed in, so it's a 401, never a 403."""
+    """Without an access token the caller isn't signed in, so it's a 401, never a 403.
+
+    FastAPI's bearer scheme refuses the request before the gate runs. Only
+    the code is compared, so a 401 with a message or details of its own,
+    or without its request ID, would pass (R-104), and no test sends a
+    route behind the gate an expired access token (R-106).
+    """
     response = client.get(GATED_URL)
 
     assert response.status_code == 401
@@ -1884,7 +1960,9 @@ def test_a_deactivated_user_with_a_pending_change_gets_401_not_403(
 
     A 403 would tell the holder of an old token that the account still
     exists and only needs a new password; a deactivated account must look
-    like any other rejected token.
+    like any other rejected token. Only the code is compared, so a 401
+    whose message or details named the deactivated account would pass
+    (R-104).
     """
     headers = _auth_header(user)
     user.must_change_password = True
@@ -1907,7 +1985,10 @@ def test_changing_the_password_opens_the_other_routes(
 
     The user is refused first, changes the password through the exempt
     route, and with the access token that change returns reaches the route
-    that refused them a moment earlier.
+    that refused them a moment earlier. The gate reads the flag from the
+    database on every request, so the access token from before the change
+    would get in too: what lets the user in is the cleared flag, which the
+    change committed.
     """
     user.must_change_password = True
     db_session.flush()

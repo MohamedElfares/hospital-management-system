@@ -30,16 +30,17 @@ moment it locks it.
 
 The refresh and sign-out races: two refreshes with one cookie run one after
 the other, because the second waits for the user's row lock, and that one
-raises the reuse alarm, which also ends the session the first one started. A
-sign-out locks tokens but never the user, so a refresh that meets a sign-out
-of its token takes the user's lock, waits for the token's, and is refused; a
-sign-out that waits for a refresh of its token revokes the replacement that
-refresh issues; and a refresh of a replacement waits for the sign-out that is
-revoking it, and is refused. The reuse alarm waits for a refresh still in
-flight, held after its checks or right after it has locked the token, and
-then revokes the token that refresh issued. A refresh whose user is deleted
-while it waits for the user's lock is refused with the error every rejected
-token gets.
+raises the reuse alarm, which also ends the session the first one started.
+A refresh that has only found the token's user holds no row lock yet, so a
+second refresh of its cookie never waits for it. A sign-out locks tokens but
+never the user, so a refresh that meets a sign-out of its token takes the
+user's lock, waits for the token's, and is refused; a sign-out that waits
+for a refresh of its token revokes the replacement that refresh issues; and
+a refresh of a replacement waits for the sign-out that is revoking it, and
+is refused. The reuse alarm waits for a refresh still in flight, held after
+its checks or right after it has locked the token, and then revokes the
+token that refresh issued. A refresh whose user is deleted while it waits
+for the user's lock is refused with the error every rejected token gets.
 
 The password change and sign-in races: a password change revokes the token of
 a refresh still in flight, held at either of those points, and never waits
@@ -1040,6 +1041,52 @@ def test_a_second_refresh_with_the_same_cookie_waits_and_raises_the_alarm(
     assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
 
 
+def test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: SessionFactory,
+    committed_user: User,
+) -> None:
+    """A refresh holds no row lock until it locks the user, so a second refresh never waits for it.
+
+    The first refresh is held right after its first lookup, which reads
+    only the token's user. A second refresh with the same cookie must then
+    go through without waiting: ``lock_timeout`` turns any wait into an
+    error. If that lookup locked the token's row, in any mode, the second
+    refresh would wait for it, at the latest when it locks the token
+    ``FOR UPDATE``, which conflicts with every row lock. Even
+    ``FOR KEY SHARE``, the weakest, which no password change waits for,
+    would let two refreshes sent together deadlock: each would hold that
+    lock on the token, and the one that locked the user first would wait
+    for the other's before it could lock the token itself, while the other
+    waited for the user's lock, until PostgreSQL aborted one of them with
+    an error the API answers with a 500. Released after the second refresh
+    commits, the first finds its token rotated and raises the reuse alarm,
+    which revokes the token the second issued too, so no token of the user
+    is left unrevoked.
+    """
+    raw_token = _commit_refresh_token(session_factory, committed_user)
+    pause = _pause_after_the_owner_lookup(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=HELD) as pool:
+        held_refresh = pool.submit(_refresh_in_new_session, session_factory, raw_token)
+
+        try:
+            _wait_until_the_held_request_pauses(pause, held_refresh)
+
+            with session_factory() as session:
+                session.execute(text("SET LOCAL lock_timeout = '1s'"))
+                second_refresh_tokens = service.refresh(session, raw_token)
+        finally:
+            pause.released.set()
+
+    assert isinstance(second_refresh_tokens, IssuedTokens)
+
+    with pytest.raises(AuthenticationError):
+        held_refresh.result()
+
+    assert _count_tokens(session_factory, committed_user, is_unrevoked_only=True) == 0
+
+
 def test_a_refresh_waits_for_a_sign_out_of_the_same_token_and_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     race_engine: Engine,
@@ -1161,12 +1208,11 @@ def test_a_refresh_of_the_replacement_waits_for_the_sign_out_revoking_it(
 # would hold only the token at the second point, and it and the competing
 # request would then wait for each other until PostgreSQL aborted one, so
 # the second point is what pins the order of the two locks. That the lookup
-# before them, which finds the token's user, takes no row lock a password
-# change would wait for is pinned by
-# test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user.
-# A FOR KEY SHARE lock there passes it, since no password change waits for
-# that lock, although two refreshes of one cookie would then deadlock
-# (R-114).
+# before them, which finds the token's user, takes no row lock is pinned by
+# test_a_second_refresh_with_the_same_cookie_never_waits_for_one_that_has_only_found_its_user;
+# test_a_password_change_never_waits_for_a_refresh_that_has_only_found_its_user
+# sees every row lock there but FOR KEY SHARE, which no password change
+# waits for.
 HELD_REFRESH_PAUSES = [
     pytest.param(_pause_before_issuing_tokens, id="held-before-issuing-tokens"),
     pytest.param(_pause_after_the_token_lookup, id="held-after-locking-the-token"),
